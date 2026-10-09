@@ -1613,6 +1613,10 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(detail.media?.transcriptionStatus, .completed)
     XCTAssertEqual(try fixture.repository.exportProjection(taskID: fixture.taskID).snapshots.last?.bodyText, "完整中文转写")
     XCTAssertEqual(transcriber.lastLocaleIdentifier, "zh_CN")
+    // 列表那一行也要跟着变成已转写，不用切一下列表才更新。
+    let row = try XCTUnwrap(fixture.model.rows.first { $0.taskID == fixture.taskID })
+    XCTAssertEqual(row.hasTranscript, true)
+    XCTAssertNil(row.transcriptionFailed)
   }
 
   func testEnglishCaptionUsesEnglishSpeechLocaleForLocalTranscription() async throws {
@@ -2632,22 +2636,17 @@ final class HistoryViewModelTests: XCTestCase {
       .failed("需先在设置里配置聊天模型")
     )
 
-    // 绿的一侧：条件齐了就必须能跑，别把功能整个焊死。
-    let tidier = RecordingTranscriptTidier(result: "00:03 衡量的标准是完成该任务人类需要多长时间")
+    // 字幕层已下线（2026-10-07）：条件齐了也不能再校对旧字幕，正文一个字都不发出去。
+    let tidier = RecordingTranscriptTidier(result: "不该被调用")
     let model = HistoryViewModel(transcriptTidier: tidier)
     model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
     await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
 
-    XCTAssertNil(model.subtitleTidyUnavailableReason(taskID: accepted.taskID))
-    XCTAssertTrue(model.canTidySubtitles(taskID: accepted.taskID))
+    XCTAssertFalse(model.canTidySubtitles(taskID: accepted.taskID))
     model.requestTranscriptTidy(taskID: accepted.taskID, model: "tidy-model", style: .subtitles)
-    XCTAssertTrue(model.isTranscriptTidyConfirmationPresented)
-    model.confirmTranscriptTidy()
-    await waitUntil { model.transcriptTidyState(for: accepted.taskID) == .completed }
-    let sentStyle = await tidier.receivedStyle
+    XCTAssertFalse(model.isTranscriptTidyConfirmationPresented)
     let sentText = await tidier.receivedText
-    XCTAssertEqual(sentStyle, .subtitles)
-    XCTAssertEqual(sentText, rawSubtitles)
+    XCTAssertNil(sentText, "\(rawSubtitles) 不该发给模型")
   }
 
   /// 没有画面字幕层时，理由要说「先去读字幕」，不能沿用听写那句「先完成转写」。

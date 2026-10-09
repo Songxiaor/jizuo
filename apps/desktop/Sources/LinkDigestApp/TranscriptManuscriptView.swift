@@ -303,13 +303,57 @@ struct TranscriptManuscriptView: View {
   let secondaryTextColor: Color
   let sealColor: Color
   let onSeek: ((Double) -> Void)?
+  /// 单击正文进入编辑（原生文字块吃掉了点击，SwiftUI 的点按手势收不到）。
+  var onTapText: (() -> Void)? = nil
 
   var body: some View {
+    if showsNotes {
+      annotatedBody
+    } else {
+      // 不看朱批时整份排进一块原生文字（见 `TranscriptTextBlock`）：滑动不再逐段量。
+      TranscriptTextBlock(
+        lines: textLines,
+        style: TranscriptTextStyle(
+          readingFont: readingFont,
+          primaryText: NSColor(primaryTextColor),
+          secondaryText: NSColor(secondaryTextColor),
+          showsTimecodes: showsTimecodes
+        ),
+        onSeek: onSeek,
+        onTapText: onTapText,
+        identifier: "transcript-manuscript"
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private var textLines: [TranscriptTextLine] {
+    paragraphs.map { paragraph in
+      if paragraph.isHeading {
+        // 小标题上方多留一截（原来 18 的段距再加 18）。
+        return TranscriptTextLine(
+          kind: .heading, stamp: nil, seekSeconds: nil, text: paragraph.text,
+          spacingBefore: TranscriptGutter.paragraphSpacing * 2
+        )
+      }
+      let stamp = paragraph.stamp
+      return TranscriptTextLine(
+        kind: .body,
+        stamp: stamp,
+        seekSeconds: onSeek == nil ? nil : paragraph.seconds,
+        stampHelp: stamp.map { paragraph.isEstimated ? "跳到约 \($0)（按字数估算）" : "跳到 \($0)" },
+        text: paragraph.text
+      )
+    }
+  }
+
+  /// 朱批模式：右边要挂批注栏，仍按段排 SwiftUI 视图（偶尔才打开，稿子长时会慢一些）。
+  private var annotatedBody: some View {
     // 不用 LazyVStack（2026-10-04）：这一块外面要先量出整份高度（阅读区按面板实测高度定高），
     // 懒加载列表的高度却是边滑边估的——每排出一段新段落，估计值就变一两个点，
     // 高度一变整个详情页重算一遍，7 万字的转写稿一滑就卡死、静止时也在空转。
     // 普通 VStack 第一次打开时一次排完，之后高度不再变。
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: TranscriptGutter.paragraphSpacing) {
       ForEach(paragraphs) { paragraph in
         if paragraph.isHeading {
           sectionHeading(paragraph)
@@ -324,15 +368,15 @@ struct TranscriptManuscriptView: View {
   /// 校对时加的小标题：宋体半粗、上方多留一截空白。页边不挂时间码——紧跟的第一段
   /// 已经挂着同一个时间，重复一遍只是噪音；页边留空让标题和正文对齐。
   private func sectionHeading(_ paragraph: TranscriptManuscript.Paragraph) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 14) {
+    HStack(alignment: .firstTextBaseline, spacing: TranscriptGutter.spacing) {
       if showsTimecodes {
-        Color.clear.frame(width: 44, height: 1)
+        Color.clear.frame(width: TranscriptGutter.timecodeWidth, height: 1)
       }
       Text(paragraph.text)
         .font(readingFont.font(size: readingFont.scaledSize(19), weight: .semibold))
         .foregroundStyle(primaryTextColor)
         .textSelection(.enabled)
-        .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityAddTraits(.isHeader)
     }
@@ -340,17 +384,17 @@ struct TranscriptManuscriptView: View {
   }
 
   private func bodyRow(_ paragraph: TranscriptManuscript.Paragraph) -> some View {
-    HStack(alignment: .top, spacing: 14) {
+    HStack(alignment: .top, spacing: TranscriptGutter.spacing) {
       if showsTimecodes {
         gutter(paragraph)
-          .frame(width: 44, alignment: .trailing)
+          .frame(width: TranscriptGutter.timecodeWidth, alignment: .leading)
       }
       Text(attributed(paragraph))
         .font(readingFont.body())
         .lineSpacing(MarkdownPresentation.bodyLineSpacing)
         .foregroundStyle(primaryTextColor)
         .textSelection(.enabled)
-        .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
       if showsNotes {
         notes(paragraph)
@@ -365,8 +409,10 @@ struct TranscriptManuscriptView: View {
         if let seconds = paragraph.seconds { onSeek?(seconds) }
       } label: {
         Text(stamp)
-          .font(.system(size: 11, weight: .regular, design: .monospaced))
+          .font(TranscriptGutter.timecodeFont)
           .monospacedDigit()
+          .lineLimit(1)
+          .fixedSize()
           .foregroundStyle(secondaryTextColor.opacity(0.8))
       }
       .buttonStyle(.plain)

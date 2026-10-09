@@ -608,8 +608,13 @@ struct ProviderSettingsView: View {
             ForEach(libraryProviderGroups) { group in
               libraryProviderCard(group)
               if expandedLibraryProvider == group.id {
-                ForEach(group.entries) { entry in
-                  libraryRow(entry)
+                // 渠道只拿来分组（2026-10-09 Syc）：Magpie 一个组里混着 Claude Code、Cursor 等几条订阅，
+                // 按渠道分小节；只有一条渠道的服务商不加小节标题。
+                ForEach(ModelChannelSection.sections(group.entries)) { section in
+                  if let heading = section.heading { channelSubheader(heading) }
+                  ForEach(section.entries) { entry in
+                    libraryRow(entry)
+                  }
                 }
               }
               if group.id != libraryProviderGroups.last?.id {
@@ -941,7 +946,8 @@ struct ProviderSettingsView: View {
         ForEach(candidates.prefix(8)) { candidate in
           HStack(spacing: 8) {
             VStack(alignment: .trailing, spacing: 0) {
-              Text(candidate.model).themedFont(.caption).lineLimit(1).truncationMode(.middle)
+              Text(ModelNameHintStore.shared.label(baseURL: candidate.baseURL.absoluteString, model: candidate.model).title)
+                .themedFont(.caption).lineLimit(1).truncationMode(.middle).help(candidate.model)
               Text(candidate.providerTitle).themedFont(.caption2).foregroundStyle(.tertiary)
             }
             Button("用这个") { Task { await model.addDiscoveredTranscriptionModel(candidate) } }
@@ -1083,8 +1089,9 @@ struct ProviderSettingsView: View {
   ///
   /// 不用系统 `Picker`：选项要按服务商分组、每项带模型 ID 副标题，menu Picker 画不出来。
   private func pickerLabel(for name: String) -> String {
-    guard let base = model.editorHealthBaseURL, model.healthRecord(baseURL: base, model: name) != nil else { return name }
-    return "\(name)　·　\(model.healthBadge(baseURL: base, model: name).text)"
+    let title = model.catalogLabel(name).title
+    guard let base = model.editorHealthBaseURL, model.healthRecord(baseURL: base, model: name) != nil else { return title }
+    return "\(title)　·　\(model.healthBadge(baseURL: base, model: name).text)"
   }
 
   /// 「检测可用」：免费模型直接测；有付费模型时先问一句，因为每条会扣一点点费用。
@@ -1103,9 +1110,10 @@ struct ProviderSettingsView: View {
         if case let .finished(available, total) = model.modelProbeState, total > 0 {
           Text("\(available)/\(total) 可用").themedFont(.caption).foregroundStyle(.secondary).monospacedDigit()
         }
-        Button("检测可用") {
-          if plan.paidModels.isEmpty {
-            startProbe(scope: scope, includesPaid: false)
+        // 测眼前的那个（2026-10-09 Syc）：编辑一个模型就只测它，勾了就测勾的；只测一个不用再问。
+        Button(scope == .catalog ? model.catalogProbeButtonTitle : "检测可用") {
+          if plan.paidModels.isEmpty || plan.total == 1 {
+            startProbe(scope: scope, includesPaid: true)
           } else {
             pendingProbeScope = scope
           }
@@ -1189,7 +1197,7 @@ struct ProviderSettingsView: View {
     kind: AssignmentPicker,
     entry: ProviderSettingsViewModel.LibraryEntryDisplay?
   ) -> String {
-    if let entry { return entry.title }
+    if let entry { return entry.channel }
     return kind == .transcription ? "本机 · 离线" : "请选择模型"
   }
 
@@ -1220,6 +1228,7 @@ struct ProviderSettingsView: View {
 
           if !entries.isEmpty {
             assignmentSectionTitle(kind == .transcription ? "在线模型" : UISettingsPresentation.modelServicesCardTitle)
+            // 按渠道分组；每行「模型名 · 厂商」，原始 ID 放悬停提示（2026-10-09 Syc）。
             ForEach(assignmentProviderTitles(in: entries), id: \.self) { providerTitle in
               Text(providerTitle)
                 .themedFont(.caption, weight: .semibold)
@@ -1228,10 +1237,11 @@ struct ProviderSettingsView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 3)
 
-              ForEach(entries.filter { $0.title == providerTitle }) { entry in
+              ForEach(entries.filter { $0.channel == providerTitle }) { entry in
                 assignmentOptionRow(
                   title: entry.displayName,
-                  detail: entry.modelName,
+                  detail: nil,
+                  help: entry.modelName,
                   isSelected: selectedAssignmentID(for: kind) == entry.id,
                   health: model.healthBadge(baseURL: entry.baseURL, model: entry.modelName)
                 ) {
@@ -1273,7 +1283,8 @@ struct ProviderSettingsView: View {
 
   private func assignmentOptionRow(
     title: String,
-    detail: String,
+    detail: String?,
+    help: String? = nil,
     isSelected: Bool,
     health: ModelHealthBadge? = nil,
     action: @escaping () -> Void
@@ -1284,10 +1295,12 @@ struct ProviderSettingsView: View {
           Text(title)
             .themedFont(.headline)
             .foregroundStyle(.primary)
-          Text(detail)
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+          if let detail {
+            Text(detail)
+              .themedFont(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+          }
         }
         Spacer(minLength: 12)
         if let health {
@@ -1302,13 +1315,14 @@ struct ProviderSettingsView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .help(help ?? "")
   }
 
   private func assignmentProviderTitles(
     in entries: [ProviderSettingsViewModel.LibraryEntryDisplay]
   ) -> [String] {
     entries.reduce(into: [String]()) { titles, entry in
-      if !titles.contains(entry.title) { titles.append(entry.title) }
+      if !titles.contains(entry.channel) { titles.append(entry.channel) }
     }
   }
 
@@ -1397,6 +1411,11 @@ struct ProviderSettingsView: View {
           }
           .accessibilityIdentifier("library-provider-fetch-models-menu")
         }
+        Button("检测这一家（\(group.entries.count) 个）") {
+          model.probeLibraryModels(includesPaid: true, profileIDs: Set(group.entries.map(\.id)))
+        }
+        .disabled(model.isModelProbeRunning)
+        .accessibilityIdentifier("probe-library-provider")
         Button("全部删除（\(group.entries.count) 个）", role: .destructive) {
           pendingGroupDeletion = group
         }
@@ -1432,13 +1451,27 @@ struct ProviderSettingsView: View {
   }
 
   /// 模型行：和组头同一个左边距，靠 24pt 缩进表示从属。
+  private func channelSubheader(_ text: String) -> some View {
+    Text(text)
+      .themedFont(.caption, weight: .medium)
+      .foregroundStyle(.secondary)
+      .padding(.top, DesignTokens.Space.sm)
+      .padding(.bottom, 2)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityAddTraits(.isHeader)
+  }
+
   private func libraryRow(_ entry: ProviderSettingsViewModel.LibraryEntryDisplay) -> some View {
     HStack(spacing: 10) {
-      // 服务商图标已在组头，行内不再重复。
-      VStack(alignment: .leading, spacing: 1) {
-        Text(entry.displayName).themedFont(.body)
-        Text(entry.modelName).themedFont(.subheadline).foregroundStyle(.secondary)
+      // 服务商图标已在组头，行内不再重复。Magpie 例外：一个组里混着十几家的模型，行内标上游厂商。
+      if entry.preset == .magpie {
+        vendorIcon(ownedBy: nil, modelID: entry.modelName)
       }
+      // 一行「模型名 · 厂商」；原始 ID 只放悬停提示。
+      Text(entry.displayName)
+        .themedFont(.body)
+        .lineLimit(1)
+        .help(entry.modelName)
       Spacer(minLength: 12)
       ModelHealthBadgeView(badge: model.healthBadge(baseURL: entry.baseURL, model: entry.modelName), theme: settingsTheme)
       if model.summaryAssignmentID == entry.id {
@@ -1458,6 +1491,11 @@ struct ProviderSettingsView: View {
       .accessibilityIdentifier("edit-library-model")
       // 删除收进更多菜单，确认对话框仍走既有 pendingDeletionID 流程。
       Menu {
+        Button("检测这个模型") {
+          model.probeLibraryModels(includesPaid: true, profileIDs: [entry.id])
+        }
+        .disabled(model.isModelProbeRunning)
+        .accessibilityIdentifier("probe-library-model")
         Button("删除", role: .destructive) {
           pendingDeletionID = entry.id
         }
@@ -1668,7 +1706,9 @@ struct ProviderSettingsView: View {
       }
 
       // 套餐说明收成一行 caption；Command Code 另给两个链接。
-      Text(model.selectedPreset.documentationHint)
+      Text(model.selectedPreset == .custom && model.apiMode == .anthropicMessages
+        ? "填服务商给 Claude Code 用的那个地址，比如 https://api.anthropic.com、https://api.deepseek.com/anthropic；带不带 /v1 都行。"
+        : model.selectedPreset.documentationHint)
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -1689,6 +1729,23 @@ struct ProviderSettingsView: View {
       Text("连接设置").settingsSectionHeaderStyle()
       VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+          // 推荐服务商都是 OpenAI 兼容，只有「其他服务商」要选（2026-10-09 Syc：像 Magpie 一样多认几种协议）。
+          if model.selectedPreset == .custom || model.selectedPreset == .magpie {
+            GridRow(alignment: .center) {
+              Text("协议")
+                .frame(width: 86, alignment: .leading)
+              Picker("协议", selection: $model.apiMode) {
+                Text("OpenAI 兼容").tag(APIMode.chatCompletions)
+                Text("Anthropic").tag(APIMode.anthropicMessages)
+              }
+              .pickerStyle(.segmented)
+              .labelsHidden()
+              .fixedSize()
+              .help("服务商文档里写 /chat/completions 的选 OpenAI 兼容；写 /v1/messages、或者说「给 Claude Code 用」的选 Anthropic")
+              .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
+              .accessibilityIdentifier("provider-api-mode")
+            }
+          }
           GridRow(alignment: .firstTextBaseline) {
             Text("服务地址")
               .frame(width: 86, alignment: .leading)
@@ -1703,7 +1760,7 @@ struct ProviderSettingsView: View {
             Text("密钥")
               .frame(width: 86, alignment: .leading)
             if model.shouldShowAPIKeyInput {
-              SecureField("", text: $apiKeyInput, prompt: Text("输入密钥"))
+              SecureField("", text: $apiKeyInput, prompt: Text(model.allowsEmptyAPIKey ? "可以不填（本机 Magpie 不校验）" : "输入密钥"))
                 .labelsHidden()
                 .focused($isAPIKeyFieldFocused)
                 .accessibilityLabel("密钥")
@@ -1741,7 +1798,8 @@ struct ProviderSettingsView: View {
                 .buttonStyle(.appNormal)
                 .disabled(
                   !model.canLoadModelCatalog
-                    || (model.shouldShowAPIKeyInput && apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    || (model.shouldShowAPIKeyInput && !model.allowsEmptyAPIKey
+                      && apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 )
                 .accessibilityIdentifier("load-provider-models")
                 if model.isLoadingModels { ProgressView().controlSize(.small) }
@@ -1762,7 +1820,19 @@ struct ProviderSettingsView: View {
 
                 ScrollView {
                   LazyVStack(spacing: 0) {
-                    ForEach(model.healthSortedFilteredModels, id: \.self) { name in
+                    let channelSections = model.catalogChannelSections
+                    ForEach(channelSections, id: \.channel) { section in
+                    if channelSections.count > 1 {
+                      Text(section.channel.components(separatedBy: " · ").dropFirst().joined(separator: " · ")
+                        .nonEmptyOr(section.channel))
+                        .themedFont(.caption, weight: .semibold)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
+                        .padding(.bottom, 2)
+                    }
+                    ForEach(section.models, id: \.self) { name in
                       let alreadyAdded = model.isModelAlreadyInLibrary(name)
                       let health = model.editorHealthBaseURL.map { model.healthBadge(baseURL: $0, model: name) } ?? .unchecked
                       let unusable = model.editorHealthBaseURL.flatMap { model.healthRecord(baseURL: $0, model: name) }?.status.isDefinitelyUnusable == true
@@ -1772,9 +1842,23 @@ struct ProviderSettingsView: View {
                         HStack(spacing: 10) {
                           Image(systemName: alreadyAdded ? "checkmark.circle" : (model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square"))
                             .foregroundStyle(model.selectedCatalogModels.contains(name) ? settingsTheme.accent : .secondary)
-                          Text(name)
-                            .foregroundStyle(alreadyAdded || unusable ? .secondary : .primary)
-                            .lineLimit(1)
+                          let entry = model.catalogEntries[name]
+                          vendorIcon(ownedBy: entry?.ownedBy, modelID: name)
+                          VStack(alignment: .leading, spacing: 2) {
+                            Text(model.catalogLabel(name).title)
+                              .foregroundStyle(alreadyAdded || unusable ? .secondary : .primary)
+                              .lineLimit(1)
+                              .help(name)
+                            // 服务商多给的信息（Magpie 最全）：来源、上下文、最大输出、看图、思考档位、原生协议。
+                            if let entry, entry.hasDetails {
+                              Text(entry.detailLine)
+                                .themedFont(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .help(entry.detailLine)
+                            }
+                          }
                           Spacer()
                           if ProviderSettingsViewModel.isTranscriptionModel(name) {
                             Text("语音转写")
@@ -1798,9 +1882,10 @@ struct ProviderSettingsView: View {
                       .buttonStyle(.plain)
                       .disabled(alreadyAdded)
                       .accessibilityIdentifier("provider-model-option")
-                      if name != model.healthSortedFilteredModels.last {
+                      if name != section.models.last {
                         Divider().padding(.leading, 36)
                       }
+                    }
                     }
                   }
                 }
@@ -1870,7 +1955,7 @@ struct ProviderSettingsView: View {
         }
         // 菜单里放不了彩色标记，用文字写在模型名后面；能用的排前面。
         ForEach(model.healthSortedFilteredModels, id: \.self) { name in
-          Text(pickerLabel(for: name)).tag(name)
+          Text(pickerLabel(for: name)).tag(name).help(name)
         }
       }
       .labelsHidden()
@@ -2830,10 +2915,10 @@ struct ProviderSettingsView: View {
     text: Binding<String>,
     identifier: String
   ) -> some View {
+    let grouped = modelChoiceSections(emptyOptionTitle: emptyOptionTitle, options: options, current: text.wrappedValue)
     SettingsMenuPicker(
-      sections: modelChoiceSections(
-        emptyOptionTitle: emptyOptionTitle, options: options, current: text.wrappedValue
-      ),
+      sections: grouped.map(\.options),
+      sectionTitles: grouped.map(\.title),
       selection: Binding(
         get: { isCustomModelName(text.wrappedValue, in: options) ? Self.customModelTag : text.wrappedValue },
         set: { selected in
@@ -2850,21 +2935,27 @@ struct ProviderSettingsView: View {
     .accessibilityLabel(label)
   }
 
-  /// 下拉的分组：空值语义项、已添加的模型（带服务商副标题），以及以前手填、现在不在模型服务里的旧值。
+  /// 下拉的分组：空值语义项、已添加的模型（按渠道分组，每行「模型名 · 厂商」），以及以前手填、
+  /// 现在不在模型服务里的旧值。原来这里直接列原始 ID（`claude/claude-haiku-5-5`），和「默认模型」
+  /// 那个下拉写法不一样（2026-10-09 Syc 截图）。
   private func modelChoiceSections(
     emptyOptionTitle: String,
     options: [ProviderSettingsViewModel.LibraryEntryDisplay],
     current: String
-  ) -> [[SettingsMenuPicker<String>.Option]] {
+  ) -> [(title: String?, options: [SettingsMenuPicker<String>.Option])] {
     let isCustom = isCustomModelName(current, in: options)
-    var sections: [[SettingsMenuPicker<String>.Option]] = [[.init(value: "", title: emptyOptionTitle)]]
-    if !options.isEmpty {
-      sections.append(options.map { .init(value: $0.modelName, title: $0.modelName, subtitle: $0.title) })
+    var sections: [(title: String?, options: [SettingsMenuPicker<String>.Option])] = [
+      (nil, [.init(value: "", title: emptyOptionTitle)]),
+    ]
+    for channel in assignmentProviderTitles(in: options) {
+      sections.append((channel, options.filter { $0.channel == channel }.map {
+        .init(value: $0.modelName, title: $0.displayName, subtitle: $0.channel, showsSubtitleInList: false)
+      }))
     }
     // 不再提供「自定义…」。以前手填过的名字仍显示成当前值，免得下拉显示成空白。
     let customTitle = current.trimmingCharacters(in: .whitespaces)
     if isCustom, !customTitle.isEmpty {
-      sections.append([.init(value: Self.customModelTag, title: customTitle, subtitle: "不在模型服务里")])
+      sections.append((nil, [.init(value: Self.customModelTag, title: customTitle, subtitle: "不在模型服务里")]))
     }
     return sections
   }
@@ -3023,6 +3114,19 @@ struct ProviderSettingsView: View {
   /// - Parameter fallbackName: 没有官方图标时,首字母取自这个名字。
   ///   传服务商真名(如 opencode.ai)而不是预设显示名——自定义预设的显示名是
   ///   「自定义」,取首字母会得到一个对用户毫无意义的「自」。
+  /// 模型厂商的小图标（不是渠道）；认不出来就留同宽的空位，名字照样对齐。
+  @ViewBuilder private func vendorIcon(ownedBy: String?, modelID: String) -> some View {
+    if let icon = ProviderIconCatalog.makerImage(modelID: modelID) {
+      Image(nsImage: icon)
+        .resizable()
+        .interpolation(.high)
+        .foregroundStyle(.primary)
+        .frame(width: 16, height: 16)
+    } else {
+      Color.clear.frame(width: 16, height: 16)
+    }
+  }
+
   @ViewBuilder private func providerIcon(
     _ preset: ProviderPreset, fallbackName: String? = nil
   ) -> some View {
@@ -3030,6 +3134,7 @@ struct ProviderSettingsView: View {
       Image(nsImage: icon)
         .resizable()
         .interpolation(.high)
+        .foregroundStyle(.primary)  // 单色图标是模板图，跟着文字色走
         .frame(width: 16, height: 16)
     } else {
       // 没有官方图标时画一个中性徽标,不再用「哈希色 + 预设显示名首字母」。
@@ -3266,4 +3371,36 @@ private struct TrailingIconLabelStyle: LabelStyle {
       configuration.icon.imageScale(.small)
     }
   }
+}
+
+
+/// 按渠道分的小节：同一渠道的模型排在一起，保持原有先后。只有一条渠道时不出小节标题。
+struct ModelChannelSection: Identifiable {
+  let id: String
+  let heading: String?
+  let entries: [ProviderSettingsViewModel.LibraryEntryDisplay]
+
+  static func sections(_ entries: [ProviderSettingsViewModel.LibraryEntryDisplay]) -> [ModelChannelSection] {
+    var order: [String] = []
+    var grouped: [String: [ProviderSettingsViewModel.LibraryEntryDisplay]] = [:]
+    for entry in entries {
+      if grouped[entry.channel] == nil { order.append(entry.channel) }
+      grouped[entry.channel, default: []].append(entry)
+    }
+    let showsHeadings = order.count > 1
+    return order.map { channel in
+      // 组头已经写了服务商名，小节只写「 · 」后面那段（Claude Code、Cursor）。
+      let short = channel.components(separatedBy: " · ").dropFirst().joined(separator: " · ")
+      return ModelChannelSection(
+        id: channel,
+        heading: showsHeadings ? (short.isEmpty ? channel : short) : nil,
+        entries: grouped[channel] ?? []
+      )
+    }
+  }
+}
+
+
+private extension String {
+  func nonEmptyOr(_ fallback: String) -> String { isEmpty ? fallback : self }
 }

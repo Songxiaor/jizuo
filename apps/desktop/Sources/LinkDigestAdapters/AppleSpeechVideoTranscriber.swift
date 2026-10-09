@@ -227,7 +227,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
       return phrases
     }
     do {
-      try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
+      try await Self.analyzeToEnd(analyzer, file: audioFile, modules: [transcriber])
       return try await collector.value
     } catch {
       collector.cancel()
@@ -435,7 +435,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     }
     do {
       try await withTaskCancellationHandler {
-        try await analyzer.start(inputAudioFile: file, finishAfterFile: true)
+        try await Self.analyzeToEnd(analyzer, file: file, modules: [transcriber])
         try await collector.value
       } onCancel: {
         collector.cancel()
@@ -624,7 +624,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
       return text
     }
     do {
-      try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
+      try await Self.analyzeToEnd(analyzer, file: audioFile, modules: [transcriber])
       return try await collector.value
     } catch {
       collector.cancel()
@@ -697,9 +697,9 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     }
 
     do {
-      try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
       return try await withTaskCancellationHandler {
-        try await resultsTask.value
+        try await Self.analyzeToEnd(analyzer, file: audioFile, modules: [transcriber])
+        return try await resultsTask.value
       } onCancel: {
         resultsTask.cancel()
         Task { await analyzer.cancelAndFinishNow() }
@@ -713,5 +713,123 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
       await analyzer.cancelAndFinishNow()
       throw LocalVideoTranscriptionError.recognitionFailed
     }
+  }
+
+  /// 把整个音频文件喂给识别器，读到真正的结尾就收尾（2026-10-06）。
+  ///
+  /// 不用 `start(inputAudioFile:finishAfterFile:)`：系统导出的 m4a，文件头写的总长度
+  /// 有时比实际能解出的声音多几百到上千帧（实测 4 小时音频多 1600 帧，约 0.03 秒）。
+  /// 系统会按文件头一直读，读到最后报 eofErr(-39)，整次识别作废——前面几个小时的
+  /// 结果一起丢掉。这里自己按块读，结尾差这一点当作正常结束。
+  @available(macOS 26.0, *)
+  static func analyzeToEnd(
+    _ analyzer: SpeechAnalyzer,
+    file: AVAudioFile,
+    modules: [any SpeechModule]
+  ) async throws {
+    let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules)
+    try await analyzer.start(inputSequence: try AudioFileAnalyzerInput(file: file, targetFormat: format))
+    try await analyzer.finalizeAndFinishThroughEndOfInput()
+  }
+}
+
+/// 按块读音频文件、转成识别器要的格式。识别器每要一块才读一块，几个小时的音频
+/// 也不会一次读进内存。
+@available(macOS 26.0, *)
+final class AudioFileAnalyzerInput: AsyncSequence, AsyncIteratorProtocol, @unchecked Sendable {
+  typealias Element = AnalyzerInput
+
+  /// 文件头比实际多出的长度在这个范围内，就当读到了结尾；再多就是文件真坏了，照常报错。
+  static let tailToleranceSeconds: Double = 1
+
+  private let file: AVAudioFile
+  private let converter: AVAudioConverter?
+  private let targetFormat: AVAudioFormat
+  private let framesPerRead: AVAudioFrameCount
+  private var sourceExhausted = false
+  private var finished = false
+
+  /// 识别器没给出建议格式时用它：16k 单声道整数。不能原样转交文件格式——
+  /// `AnalyzerInput` 遇到非交错的双声道浮点会直接崩溃（2026-10-06 实测）。
+  static let fallbackFormat = AVAudioFormat(
+    commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true
+  )
+
+  init(file: AVAudioFile, targetFormat: AVAudioFormat?) throws {
+    let source = file.processingFormat
+    guard let target = targetFormat ?? Self.fallbackFormat else {
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+    self.file = file
+    self.targetFormat = target
+    if target == source {
+      converter = nil
+    } else if let converter = AVAudioConverter(from: source, to: target) {
+      self.converter = converter
+    } else {
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+    // 每块约 1 秒。
+    framesPerRead = AVAudioFrameCount(Swift.max(1024, source.sampleRate))
+  }
+
+  func makeAsyncIterator() -> AudioFileAnalyzerInput { self }
+
+  func next() async throws -> AnalyzerInput? {
+    guard !finished else { return nil }
+    guard let input = try readSourceBuffer() else {
+      finished = true
+      return try flushConverter()
+    }
+    guard let converter else { return AnalyzerInput(buffer: input) }
+    let ratio = targetFormat.sampleRate / file.processingFormat.sampleRate
+    let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + 1024
+    guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+    var supplied = false
+    var error: NSError?
+    let status = converter.convert(to: output, error: &error) { _, inputStatus in
+      if supplied {
+        inputStatus.pointee = .noDataNow
+        return nil
+      }
+      supplied = true
+      inputStatus.pointee = .haveData
+      return input
+    }
+    if status == .error { throw error ?? LocalVideoTranscriptionError.audioExtractionFailed }
+    return AnalyzerInput(buffer: output)
+  }
+
+  /// 转换器里还压着的最后一点（重采样的尾巴）。
+  private func flushConverter() throws -> AnalyzerInput? {
+    guard let converter,
+          let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: 8192)
+    else { return nil }
+    var error: NSError?
+    let status = converter.convert(to: output, error: &error) { _, inputStatus in
+      inputStatus.pointee = .endOfStream
+      return nil
+    }
+    if status == .error { throw error ?? LocalVideoTranscriptionError.audioExtractionFailed }
+    return output.frameLength > 0 ? AnalyzerInput(buffer: output) : nil
+  }
+
+  private func readSourceBuffer() throws -> AVAudioPCMBuffer? {
+    let remaining = file.length - file.framePosition
+    guard !sourceExhausted, remaining > 0 else { return nil }
+    let count = AVAudioFrameCount(Swift.min(Int64(framesPerRead), remaining))
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else {
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+    do {
+      try file.read(into: buffer, frameCount: count)
+    } catch {
+      let tolerance = AVAudioFramePosition(Self.tailToleranceSeconds * file.processingFormat.sampleRate)
+      guard remaining <= tolerance else { throw error }
+      sourceExhausted = true
+    }
+    return buffer.frameLength > 0 ? buffer : nil
   }
 }

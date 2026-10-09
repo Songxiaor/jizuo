@@ -3908,7 +3908,8 @@ final class HistoryViewModel {
     var message = ""
     if let modelName = pendingBatchSummaryModelName {
       // 花钱的动作要先说清花谁的钱。
-      message += "使用模型「\(modelName)」，会消耗该模型的用量。"
+      let label = ModelNameHintStore.shared.label(baseURL: nil, model: modelName)
+      message += "使用模型「\(label.titleWithChannel)」，会消耗该模型的用量。"
     }
     message += "会按列表顺序逐条发送给模型，一次只发一条。"
     message += "预计输入约 \(Self.tokenScaleText(plan.estimatedInputTokens)) tokens"
@@ -5365,6 +5366,7 @@ final class HistoryViewModel {
         case .applied:
           self.transcriptionState = .completed
           self.refreshDetailAfterTranscription(taskID: context.taskID)
+          self.markRowTranscribed(taskID: context.taskID)
           self.requestTranscribedVideoCleanup()
         case .replay, .stale:
           self.transcriptionState = .failed("这次在线转写已被更新的请求替代，请重试。")
@@ -5710,6 +5712,7 @@ final class HistoryViewModel {
         transcriptionState = .completed
         pendingRemoteTranscriptionContext = nil
         refreshDetailAfterTranscription(taskID: context.taskID)
+        markRowTranscribed(taskID: context.taskID)
         requestTranscribedVideoCleanup()
       case .replay, .stale:
         onDiscardedTranscriptionAttempt()
@@ -5861,6 +5864,7 @@ final class HistoryViewModel {
         handedOffSpeakerSegments = true
       }
       refreshDetailAfterTranscription(taskID: context.taskID)
+      markRowTranscribed(taskID: context.taskID)
       requestTranscribedVideoCleanup()
     } catch is CancellationError {
       guard transcriptionRequestID == requestID else { return }
@@ -8361,6 +8365,7 @@ final class HistoryViewModel {
         self.livePlaybackStopContinuation = nil
         self.transcriptionState = .completed
         self.refreshDetailAfterTranscription(taskID: taskID)
+        self.markRowTranscribed(taskID: taskID)
         self.requestTranscribedVideoCleanup()
       } catch is CancellationError {
         _ = await worker.updateTaskTranscriptionStatus(
@@ -8390,6 +8395,14 @@ final class HistoryViewModel {
   func stopLivePlaybackTranscription() {
     livePlaybackStopContinuation?.finish()
     livePlaybackStopContinuation = nil
+  }
+
+  /// 转写成功后列表那一行也跟着变：原来只重读详情，行上一直挂着「还没转写 · 上次转写没成功」，
+  /// 要切一下列表才更新（2026-10-06 实测）。
+  private func markRowTranscribed(taskID: TaskID) {
+    guard let index = rows.firstIndex(where: { $0.taskID == taskID }) else { return }
+    rows[index] = rows[index].replacingTranscribed()
+    reloadNavigationCounts()
   }
 
   private func refreshDetailAfterTranscription(taskID: TaskID) {

@@ -95,13 +95,20 @@ struct ProcessStepRecord: Equatable, Identifiable {
     for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
       if let latest = detail.runs.reversed().first(where: { $0.run.kind == kind && !($0.artifact?.bodyText.isEmpty ?? true) }),
          let artifact = latest.artifact {
-        records.append(.init(step: step, date: date(artifact.updatedAtMilliseconds), note: latest.run.model))
+        records.append(.init(step: step, date: date(artifact.updatedAtMilliseconds), note: modelNote(baseURL: latest.run.providerBaseURL, model: latest.run.model)))
       }
     }
     if let mindMap, mindMap.taskID == detail.task.id {
-      records.append(.init(step: .mindMap, date: date(mindMap.createdAtMilliseconds), note: mindMap.model))
+      records.append(.init(step: .mindMap, date: date(mindMap.createdAtMilliseconds), note: modelNote(baseURL: nil, model: mindMap.model)))
     }
     return records
+  }
+
+  /// 做这一步用的模型：「Claude Haiku 5.5 · Anthropic（Magpie · Claude Code）」。原来直接印原始 ID
+  /// （`antigravity/gemini-3.8-flash`），翻译好了的提示和印章悬停都是这一句（2026-10-09 Syc）。
+  static func modelNote(baseURL: String?, model: String?) -> String? {
+    guard let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else { return nil }
+    return ModelNameHintStore.shared.label(baseURL: baseURL, model: model).titleWithChannel
   }
 
   /// 转写整理产物的 captureMethod：有它就算「校」过。

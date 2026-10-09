@@ -2830,7 +2830,15 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
       const body = collapseInline(inner);
       return body ? `==${body}==` : "";
     }
-    if (tag === "sup") return toUnicodeScript(collapseInline(inner), SUPERSCRIPTS);
+    if (tag === "sup") {
+      // 相邻两个上标（维基百科连着的两条脚注 [43][44]）转成 Unicode 后会粘成「⁴³⁴⁴」，
+      // 读起来像一个数。中间垫一个窄空格分开（2026-10-07 检查）。
+      const mapped = toUnicodeScript(collapseInline(inner), SUPERSCRIPTS);
+      const siblings = Array.from(el.parentNode?.childNodes ?? []);
+      const previous = siblings[siblings.indexOf(el) - 1] as Element | undefined;
+      const followsSup = (previous?.tagName ?? "").toLowerCase() === "sup";
+      return followsSup && mapped ? `\u2009${mapped}` : mapped;
+    }
     if (tag === "sub") return toUnicodeScript(collapseInline(inner), SUBSCRIPTS);
     if (tag === "a") {
       // 内含图片就不做链接包裹，原样放行。

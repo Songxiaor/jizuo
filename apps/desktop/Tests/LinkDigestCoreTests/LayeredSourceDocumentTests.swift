@@ -101,15 +101,16 @@ final class LayeredSourceDocumentTests: XCTestCase {
     let snapshots = [caption, subtitles]
 
     XCTAssertEqual(LayeredSourceDocument.captionSnapshot(in: snapshots)?.id, caption.id)
-    XCTAssertEqual(LayeredSourceDocument.subtitleSnapshot(in: snapshots)?.id, subtitles.id)
+    // 字幕层已下线（2026-10-07）：旧快照留在库里，但不再作为一层取出。
+    XCTAssertNil(LayeredSourceDocument.subtitleSnapshot(in: snapshots))
     XCTAssertTrue(
       LayeredSourceDocument.derivedKinds.contains(CapturedDocument.Origin.burnedInSubtitles.rawValue),
       "新的派生来源必须登记到 derivedKinds"
     )
   }
 
-  /// 三层同时存在时，顺序固定为 配文 → 画面字幕 → 视频转写。
-  func testThreeLayersAppearInAFixedOrder() {
+  /// 旧记录里还存着画面字幕时，发给模型的只有配文和视频转写（2026-10-07 字幕层下线）。
+  func testLegacySubtitlesStayOutOfModelInput() {
     let taskID = TaskID()
     let snapshots = [
       snapshot(taskID: taskID, sequence: 1,
@@ -123,17 +124,9 @@ final class LayeredSourceDocumentTests: XCTestCase {
                body: "听写正文。")
     ]
     let input = LayeredSourceDocument.modelInput(from: snapshots)
-    let captionAt = input.range(of: LayeredSourceDocument.captionHeading)?.lowerBound
-    let subtitleAt = input.range(of: LayeredSourceDocument.subtitleHeading)?.lowerBound
-    let transcriptAt = input.range(of: LayeredSourceDocument.transcriptHeading)?.lowerBound
-    XCTAssertNotNil(captionAt)
-    XCTAssertNotNil(subtitleAt)
-    XCTAssertNotNil(transcriptAt)
-    XCTAssertLessThan(captionAt!, subtitleAt!)
-    XCTAssertLessThan(subtitleAt!, transcriptAt!)
-    // 听写没有因为字幕的加入而被挤掉——两条来源并存，不互相覆盖。
-    XCTAssertTrue(input.contains("听写正文。"))
-    XCTAssertTrue(input.contains("字幕正文。"))
+    XCTAssertEqual(input, "## 配文\n\n配文正文。\n\n## 视频转写\n\n听写正文。")
+    XCTAssertFalse(input.contains(LayeredSourceDocument.subtitleHeading))
+    XCTAssertFalse(input.contains("字幕正文。"))
   }
 
   /// 只有一层时不加标题。给孤零零一段正文扣顶「## 配文」是纯噪声，
@@ -149,15 +142,6 @@ final class LayeredSourceDocumentTests: XCTestCase {
     let input = LayeredSourceDocument.modelInput(from: [only])
     XCTAssertEqual(input, "就这一段。")
     XCTAssertFalse(input.contains("##"))
-
-    // 只有字幕、没有配文时同样不加标题。
-    let subtitleOnly = snapshot(
-      taskID: taskID,
-      sequence: 2,
-      sourceKind: CapturedDocument.Origin.burnedInSubtitles.rawValue,
-      body: "只有字幕。"
-    )
-    XCTAssertEqual(LayeredSourceDocument.modelInput(from: [subtitleOnly]), "只有字幕。")
   }
 
   // MARK: - split：把 modelInput 拼出去的文档拆回各层

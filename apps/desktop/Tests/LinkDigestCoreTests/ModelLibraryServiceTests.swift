@@ -185,6 +185,34 @@ final class ModelLibraryServiceTests: XCTestCase {
     XCTAssertEqual(secret, "sk-one")
   }
 
+  /// 协议选了 Anthropic 的服务商：保存时记下协议，换密钥、改模型都不能把它悄悄改回 OpenAI 兼容（2026-10-09）。
+  func testAnthropicProtocolIsSavedAndSurvivesUpdates() async throws {
+    let service = ProviderConfigurationService(
+      profileStore: LibraryMemoryProfileStore(),
+      secretStore: LibraryMemorySecretStore(),
+      libraryStore: LibraryMemoryStore()
+    )
+    let added = try await service.addProfile(
+      baseURL: "https://api.deepseek.com/anthropic",
+      model: "deepseek-chat",
+      apiKey: "sk-one",
+      apiMode: .anthropicMessages
+    )
+    XCTAssertEqual(added.apiMode, .anthropicMessages)
+
+    let rotated = try await service.updateProfile(
+      id: added.id, baseURL: "https://api.deepseek.com/anthropic", model: "deepseek-reasoner", apiKey: "sk-two"
+    )
+    XCTAssertEqual(rotated.apiMode, .anthropicMessages)
+    let library = try await service.loadLibrary()
+    XCTAssertEqual(library.profiles.first?.apiMode, .anthropicMessages)
+
+    let switched = try await service.updateProfile(
+      id: added.id, baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat", apiKey: nil, apiMode: .chatCompletions
+    )
+    XCTAssertEqual(switched.apiMode, .chatCompletions)
+  }
+
   func testUpdateProfileWithKeyRotatesSecret() async throws {
     let secretStore = LibraryMemorySecretStore()
     let service = ProviderConfigurationService(

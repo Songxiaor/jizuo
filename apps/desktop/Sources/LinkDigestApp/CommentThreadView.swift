@@ -67,10 +67,10 @@ struct CommentThreadSectionView: View {
       }
     }
     .padding(.top, DesignTokens.Space.xl)
-    .padding(.bottom, DesignTokens.Space.xl)
-    // 整块和正文同一行宽（2026-10-03 走查）：原来标题下那道线和分隔线铺满整栏，
-    // 评论文字却只排到正文行宽，「原评论 ↗」悬在半中间，线和字对不齐。
-    .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+    // 评论总在全文最后，下面紧跟「添加笔记」或「收起」：原来留 24pt，加上外面的间距空出一大段（2026-10-07 检查）。
+    .padding(.bottom, DesignTokens.Space.sm)
+    // 整块铺满阅读列，和正文、标题同一条左右边缘（Syc 2026-10-07）。
+    .frame(maxWidth: .infinity, alignment: .leading)
     .onChange(of: section) { _, _ in
       expandedRoots.removeAll()
       visibleRootLimit = initialRootLimit

@@ -61,7 +61,7 @@ APP_ICON_ASSET_CATALOG = "Assets.car"
 PLATFORM_ICONS_DIRECTORY = "PlatformIcons"
 PLATFORM_ICON_FILES = ("bilibili.svg", "douban.svg", "douyin.svg", "github.svg", "glyph-bilibili.svg", "glyph-discourse.svg", "glyph-douyin.svg", "glyph-github.svg", "glyph-reddit.svg", "glyph-substack.svg", "glyph-wechat.svg", "glyph-x.svg", "glyph-xiaohongshu.svg", "glyph-youtube.svg", "juejin.svg", "medium.svg", "reddit.svg", "toutiao.svg", "wechat.svg", "weibo.svg", "x.com.svg", "xiaohongshu.svg", "youtube.svg", "zhihu.svg")
 PROVIDER_ICONS_DIRECTORY = "ProviderIcons"
-PROVIDER_ICON_FILES = ("bailian.svg", "commandcode.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg", "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg")
+PROVIDER_ICON_FILES = ("anthropic.svg", "antigravity.svg", "bailian.svg", "claudecode.svg", "codebuddy.svg", "codex.svg", "commandcode.svg", "cursor.svg", "deepinfra.svg", "deepseek.svg", "doubao.svg", "factory.svg", "githubcopilot.svg", "google.svg", "grok.svg", "groq.svg", "hunyuan.svg", "kimi.svg", "kiro.svg", "longcat.svg", "magpie.svg", "minimax.svg", "mistral.svg", "ollama.svg", "openai.svg", "opencode.svg", "openrouter.svg", "qwen.svg", "siliconflow.svg", "stepfun.svg", "wenxin.svg", "workbuddy.svg", "xai.svg", "xiaomimimo.svg", "zai.svg", "zhipu.svg")
 BROWSER_EXTENSION_DIRECTORY = "BrowserExtension"
 SPARKLE_VERSION = "2.9.5"
 SPARKLE_FRAMEWORK = "Sparkle.framework"
@@ -75,6 +75,9 @@ THIRD_PARTY_LICENSE_HASHES = {
     "KaTeX-LICENSE.txt": "766ccc1f306c885aa45542a9846bbd0a505b27a0374f146778171c2254ce18e3",
     "Mermaid-LICENSE.txt": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
     "bge-small-zh-LICENSE.txt": "2b1f78b8d0b372c8f02b945e1cf46e16f9b9c273cbfce6db10949c249ff614df",
+    # 2026-10-09 模型服务里的 Magpie 图标（yetone/magpie）和上游厂商图标（lobehub/lobe-icons，经 Magpie 仓库取得）。
+    "Magpie-LICENSE.txt": "79d2c8444715d4bc453ec4f8a0aaf2051a4c1ee5ac08f5bd2e5848aef87c7572",
+    "LobeHub-Icons-LICENSE.txt": "add9d7531d1b21646317a8958e38fc727506fa39d24bdecb44154d943c82753a",
 }
 SPARKLE_FRAMEWORK_SYMLINKS = {
     "Autoupdate": "Versions/Current/Autoupdate",

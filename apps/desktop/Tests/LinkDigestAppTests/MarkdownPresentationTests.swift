@@ -1131,6 +1131,24 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(segments, [.text("<p>\n"), .image(logo), .text("<br>\n" + badges + "\n\n正文")])
   }
 
+  /// 表格单元格里的插图挪到表格下面，表格不被切断（2026-10-07 维基 GIF 页漏出一个「|」）。
+  func testImageInsideTableCellMovesBelowTheTable() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-markdown-table-image.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let remote = "https://upload.wikimedia.org/earth.gif"
+    let digest = SHA256.hash(data: Data(remote.utf8)).map { String(format: "%02x", $0) }.joined()
+    let earth = root.appendingPathComponent(digest)
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try! Data().write(to: earth)
+    let markdown = "前文\n\n| GIF | |\n| --- | --- |\n| ![图像](\(remote)) 地球 | |\n| 扩展名 | `.gif` |\n\n后文"
+    let segments = LocalMarkdownImageLayout.segments(markdown: markdown, localImageURLs: [earth], appendsUnusedLocalImages: false)
+    XCTAssertEqual(segments, [
+      .text("前文\n\n| GIF | |\n| --- | --- |\n|  地球 | |\n| 扩展名 | `.gif` |\n\n"),
+      .image(earth),
+      .text("\n\n\n后文"),
+    ])
+  }
+
   func testQuotedTweetMarkerBecomesACardSegmentEvenWithoutLocalImages() {
     let markdown = """
     主帖正文在这里。

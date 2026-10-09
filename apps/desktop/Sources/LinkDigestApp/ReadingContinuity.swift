@@ -128,6 +128,92 @@ final class ReadingProgressModel: ObservableObject {
   }
 }
 
+/// 长正文「收起」时把按钮留在原处（2026-10-07 Syc：点收起卡一下、跳回视频那一屏）。
+///
+/// 原来收起后带动画滚到这一层开头：正文一下短了几千点，滚动区先被压到页面能滚到的最底，
+/// 动画再从那里起步，看起来就是卡一下再跳走。按钮下面的笔记、页脚收起前后不变，所以只要
+/// 保持「视口底边到页面底边」的距离，按钮就停在鼠标底下、变成「展开全文」。
+/// 页面高度在排版里变的那一刻就校正（frameDidChange 同步回调），不留一帧跳动；
+/// 正文的估算高度随后还会修正几次，短时间内跟着校正。
+@MainActor
+final class ReadingScrollKeeper: NSObject {
+  weak var scrollView: NSScrollView?
+  /// 收起那一刻视口底边到页面底边的距离；nil 表示没在保持。
+  private var distanceFromBottom: CGFloat?
+  private var observedDocument: NSView?
+  private var expiry: DispatchWorkItem?
+  static let holdDuration: TimeInterval = 0.6
+
+  func keepDistanceFromBottom() {
+    guard let scroll = scrollView, let document = scroll.documentView else { return }
+    stop()
+    distanceFromBottom = document.frame.height - scroll.contentView.bounds.minY
+    observedDocument = document
+    document.postsFrameChangedNotifications = true
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(documentFrameChanged(_:)),
+      name: NSView.frameDidChangeNotification, object: document
+    )
+    let work = DispatchWorkItem { [weak self] in
+      self?.apply()
+      self?.stop()
+    }
+    expiry = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDuration, execute: work)
+  }
+
+  @objc private func documentFrameChanged(_: Notification) { apply() }
+
+  private func apply() {
+    guard let distance = distanceFromBottom, let scroll = scrollView, let document = scroll.documentView else { return }
+    let maximum = max(0, document.frame.height - scroll.contentView.bounds.height)
+    let target = min(max(0, document.frame.height - distance), maximum)
+    guard abs(scroll.contentView.bounds.minY - target) > 0.5 else { return }
+    scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
+    scroll.reflectScrolledClipView(scroll.contentView)
+  }
+
+  private func stop() {
+    if let observedDocument {
+      NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: observedDocument)
+    }
+    observedDocument = nil
+    distanceFromBottom = nil
+    expiry?.cancel()
+    expiry = nil
+  }
+}
+
+/// 放在阅读区 ScrollView **里面**，替 `ReadingScrollKeeper` 找到外层 NSScrollView。
+/// 挂在 ScrollView 外面（background）往上找不到它。
+struct ReadingScrollKeeperProbe: NSViewRepresentable {
+  let keeper: ReadingScrollKeeper
+
+  func makeNSView(context: Context) -> ProbeView {
+    let view = ProbeView()
+    view.keeper = keeper
+    return view
+  }
+
+  func updateNSView(_ view: ProbeView, context: Context) {
+    view.keeper = keeper
+    view.bind()
+  }
+
+  final class ProbeView: NSView {
+    weak var keeper: ReadingScrollKeeper?
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      bind()
+    }
+
+    func bind() {
+      guard let keeper, let scroll = enclosingScrollView else { return }
+      if keeper.scrollView !== scroll { keeper.scrollView = scroll }
+    }
+  }
+}
+
 /// 观察 SwiftUI 外层 NSScrollView：离开时持续保存，重新打开同一条时恢复。
 @MainActor
 struct ReadingScrollContinuity: NSViewRepresentable {

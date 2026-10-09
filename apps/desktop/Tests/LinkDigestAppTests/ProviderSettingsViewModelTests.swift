@@ -366,6 +366,111 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(secretWrites, 1)
   }
 
+  /// Magpie（本地）：密钥可以不填，读列表和保存都用占位值；模型信息留在添加窗口里（2026-10-09）。
+  func testMagpiePresetWorksWithoutKeyAndKeepsModelDetails() async throws {
+    let secretStore = ViewModelSecretStore()
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: secretStore,
+      libraryStore: ViewModelLibraryStore()
+    )
+    var haiku = ModelCatalogEntry(id: "anthropic/claude-haiku-5-5")
+    haiku.sourceLabel = "Anthropic"
+    haiku.contextWindow = 1_000_000
+    let loader = MagpieCatalogLoader(entries: [haiku, ModelCatalogEntry(id: "cursor/grok-4.7-fast")])
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: loader
+    )
+    await model.load()
+    model.beginAddModel()
+    model.selectPreset(.magpie)
+    XCTAssertEqual(model.baseURL, "http://127.0.0.1:3425/v1")
+    XCTAssertTrue(model.allowsEmptyAPIKey)
+    model.apiMode = .anthropicMessages
+
+    await model.loadModels(apiKey: "")
+
+    XCTAssertEqual(model.modelCatalogState, .loaded)
+    XCTAssertEqual(loader.calls.first?.key, ProviderSettingsViewModel.magpieLocalKey)
+    XCTAssertEqual(loader.calls.first?.mode, .anthropicMessages)
+    XCTAssertEqual(model.catalogEntries["anthropic/claude-haiku-5-5"]?.contextWindow, 1_000_000)
+
+    model.toggleCatalogModel("anthropic/claude-haiku-5-5")
+    await model.save(apiKey: "")
+
+    let entry = try XCTUnwrap(model.libraryEntryDisplays.first)
+    XCTAssertEqual(entry.preset, .magpie)
+    XCTAssertEqual(entry.modelName, "anthropic/claude-haiku-5-5")
+    let library = try await configuration.loadLibrary()
+    XCTAssertEqual(library.profiles.first?.apiMode, .anthropicMessages)
+    let storedKey = try await secretStore.read(try XCTUnwrap(library.profiles.first).secretReference)
+    XCTAssertEqual(storedKey, ProviderSettingsViewModel.magpieLocalKey)
+  }
+
+  /// 「检测可用」测眼前的那个（2026-10-09 Syc）：勾了测勾的，没勾测列表；本机 Magpie 不算付费，不用确认。
+  func testProbeTargetsFollowSelectionAndLocalIsNotPaid() async throws {
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore()),
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: MagpieCatalogLoader(entries: ["a/one", "b/two", "c/three"].map(ModelCatalogEntry.init(id:)))
+    )
+    await model.load()
+    model.beginAddModel()
+    model.selectPreset(.magpie)
+    await model.loadModels(apiKey: "")
+
+    XCTAssertEqual(Set(model.catalogProbeTargets), ["a/one", "b/two", "c/three"])
+    XCTAssertEqual(model.catalogProbeButtonTitle, "检测可用")
+    XCTAssertTrue(model.catalogProbePlan.paidModels.isEmpty, "本机服务不按次扣钱")
+
+    model.toggleCatalogModel("b/two")
+    XCTAssertEqual(model.catalogProbeTargets, ["b/two"])
+    XCTAssertEqual(model.catalogProbeButtonTitle, "检测选中的 1 个")
+
+    model.baseURL = "https://api.example.test/v1"
+    XCTAssertFalse(ProviderSettingsViewModel.probePlan(for: ["gpt-x"], isLocal: false).paidModels.isEmpty)
+  }
+
+  func testEditingOneModelProbesOnlyThatModel() async throws {
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore(), libraryStore: ViewModelLibraryStore()
+    )
+    let saved = try await configuration.addProfiles(
+      baseURL: "http://127.0.0.1:3425/v1", models: ["claude/claude-haiku-5-5"], apiKey: "magpie-local",
+      allowLoopbackHTTP: true
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: MagpieCatalogLoader(entries: ["claude/claude-haiku-5-5", "cursor/grok-4.7-fast"].map(ModelCatalogEntry.init(id:)))
+    )
+    await model.load()
+    model.beginEditModel(try XCTUnwrap(saved.first).id)
+    await model.loadModels()
+
+    XCTAssertEqual(model.catalogProbeTargets, ["claude/claude-haiku-5-5"])
+    XCTAssertEqual(model.catalogProbeButtonTitle, "检测这个模型")
+    let entry = try XCTUnwrap(model.libraryEntryDisplays.first)
+    XCTAssertEqual(entry.displayName, "Claude Haiku 5.5 · Anthropic")
+    XCTAssertEqual(entry.channel, "Magpie · Claude Code")
+  }
+
+  /// 别的服务商照旧要密钥。
+  func testOtherPresetsStillRequireKey() async throws {
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore()),
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: MagpieCatalogLoader(entries: [])
+    )
+    await model.load()
+    model.selectPreset(.deepSeek)
+    XCTAssertFalse(model.allowsEmptyAPIKey)
+    await model.loadModels(apiKey: "")
+    XCTAssertEqual(model.modelCatalogState, .failed(code: .authInvalid))
+  }
+
   func testFetchingLatestModelsForAddedProviderReusesItsSavedKey() async throws {
     let secretStore = ViewModelSecretStore()
     let configuration = ProviderConfigurationService(
@@ -538,7 +643,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
 
     XCTAssertEqual(
       model.libraryEntryDisplays.map(\.displayName),
-      ["StepAudio 2.5 ASR", "Step 3.7 Flash"]
+      ["StepAudio 2.5 ASR · 阶跃星辰", "Step 3.7 Flash · 阶跃星辰"]
     )
     XCTAssertEqual(model.libraryEntryDisplays.map(\.title), ["阶跃星辰", "阶跃星辰"])
     XCTAssertEqual(model.transcriptionEntryDisplays.map(\.modelName), ["stepaudio-2.5-asr"])
@@ -1507,4 +1612,23 @@ final class EffectiveTranscriptionModelNameTests: XCTestCase {
     XCTAssertNil(model.transcriptionAssignmentID)
     XCTAssertNil(model.effectiveTranscriptionModelName)
   }
+}
+
+private final class MagpieCatalogLoader: ModelCatalogLoading, @unchecked Sendable {
+  private let entries: [ModelCatalogEntry]
+  private let lock = NSLock()
+  private var recorded: [(key: String, mode: APIMode)] = []
+
+  init(entries: [ModelCatalogEntry]) { self.entries = entries }
+
+  func listModels(baseURL _: URL, apiKey: String) async throws -> [String] {
+    try await listModelEntries(baseURL: URL(string: "http://127.0.0.1")!, apiKey: apiKey, apiMode: .chatCompletions).map(\.id)
+  }
+
+  func listModelEntries(baseURL _: URL, apiKey: String, apiMode: APIMode) async throws -> [ModelCatalogEntry] {
+    lock.withLock { recorded.append((apiKey, apiMode)) }
+    return entries
+  }
+
+  var calls: [(key: String, mode: APIMode)] { lock.withLock { recorded } }
 }

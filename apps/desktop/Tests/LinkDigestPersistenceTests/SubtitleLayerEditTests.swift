@@ -35,7 +35,7 @@ final class SubtitleLayerEditTests: XCTestCase {
     ))
 
     let detail = try repository.detail(taskID: accepted.taskID)
-    let subtitle = try XCTUnwrap(LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots))
+    let subtitle = try XCTUnwrap(detail.snapshots.last { $0.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue })
 
     XCTAssertNoThrow(
       try repository.updateSnapshotBodyText(
@@ -47,7 +47,7 @@ final class SubtitleLayerEditTests: XCTestCase {
       "画面字幕层的校对必须能保存"
     )
     let after = try repository.detail(taskID: accepted.taskID)
-    let edited = try XCTUnwrap(LayeredSourceDocument.subtitleSnapshot(in: after.snapshots))
+    let edited = try XCTUnwrap(after.snapshots.last { $0.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue })
     XCTAssertTrue(edited.bodyText.contains("衡量的标准"), "改动没落库")
   }
 }

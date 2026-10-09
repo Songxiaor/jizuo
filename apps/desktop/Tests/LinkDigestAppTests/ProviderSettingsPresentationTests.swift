@@ -6,8 +6,12 @@ import LinkDigestCore
 
 final class ProviderSettingsPresentationTests: XCTestCase {
   private let providerAssets = [
-    "bailian.svg", "commandcode.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg",
-    "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg",
+    "anthropic.svg", "antigravity.svg", "bailian.svg", "claudecode.svg", "codebuddy.svg", "codex.svg",
+    "commandcode.svg", "cursor.svg", "deepinfra.svg", "deepseek.svg", "doubao.svg", "factory.svg",
+    "githubcopilot.svg", "google.svg", "grok.svg", "groq.svg", "hunyuan.svg", "kimi.svg",
+    "kiro.svg", "longcat.svg", "magpie.svg", "minimax.svg", "mistral.svg", "ollama.svg",
+    "openai.svg", "opencode.svg", "openrouter.svg", "qwen.svg", "siliconflow.svg", "stepfun.svg",
+    "wenxin.svg", "workbuddy.svg", "xai.svg", "xiaomimimo.svg", "zai.svg", "zhipu.svg",
   ]
 
   func testProviderCatalogMapsEveryCuratedPresetToAnExactBundledAsset() throws {
@@ -16,6 +20,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       .openRouter: "openrouter", .openCodeGo: "opencode", .openCodeZen: "opencode",
       .groq: "groq", .siliconFlow: "siliconflow",
       .dashScope: "bailian", .commandCode: "commandcode", .zhipu: "zhipu", .stepFun: "stepfun", .ollama: "ollama",
+      .magpie: "magpie",
     ]
     let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
 
@@ -26,6 +31,54 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent(asset + ".svg").path))
     }
     XCTAssertNil(ProviderIconCatalog.assetName(for: .custom))
+  }
+
+  /// Magpie 的模型标上游厂商（2026-10-09）：先认服务商 ID，再认模型 ID 前缀，最后认模型名系列。
+  func testVendorIconsResolveFromOwnerThenPrefixThenFamily() {
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: "anthropic", modelID: "anthropic/claude-haiku-5-5"), "anthropic")
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: "claude", modelID: "claude/claude-opus-5-5"), "claudecode")
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: "cursor", modelID: "cursor/grok-4.7-fast"), "cursor")
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: "grok-plugin", modelID: "grok-plugin/grok-4.7"), "grok")
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: nil, modelID: "workbuddy/glm-5.3"), "workbuddy")
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: nil, modelID: "antigravity/gemini-3-flash"), "antigravity")
+    // 服务商认不出（Mirasim），看模型名属于哪一系。
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: "mirasim", modelID: "mirasim/kimi-k3"), "kimi")
+    XCTAssertEqual(ProviderIconCatalog.vendorAssetName(ownedBy: nil, modelID: "gpt-5.5"), "openai")
+    XCTAssertNil(ProviderIconCatalog.vendorAssetName(ownedBy: "mirasim", modelID: "mirasim/v4.1-flash"))
+    let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
+    for id in ["anthropic/x", "claude/x", "cursor/x", "workbuddy/x", "antigravity/x", "grok-plugin/x", "openai/x", "codex/x",
+               "gemini/x", "deepseek/x", "kimi/x", "zhipu/x", "zai/x", "qwen/x", "minimax/x", "copilot/x", "codebuddy/x",
+               "kiro/x", "mistral/x", "doubao/x", "mimo/x", "longcat/x", "hunyuan/x", "wenxin/x", "factory/x", "xai/x"] {
+      let name = try? XCTUnwrap(ProviderIconCatalog.vendorAssetName(ownedBy: nil, modelID: id))
+      XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent((name ?? "") + ".svg").path), id)
+    }
+  }
+
+  /// 行首图标画厂商，和「模型名 · 厂商」一致；渠道是小节标题。
+  func testRowIconsShowMakerNotChannel() {
+    XCTAssertEqual(ProviderIconCatalog.makerAssetName(modelID: "claude/claude-haiku-5-5"), "anthropic")
+    XCTAssertEqual(ProviderIconCatalog.makerAssetName(modelID: "antigravity/gemini-3.8-flash"), "google")
+    XCTAssertEqual(ProviderIconCatalog.makerAssetName(modelID: "cursor/grok-4.7-fast"), "grok")
+    XCTAssertEqual(ProviderIconCatalog.makerAssetName(modelID: "mirasim/kimi-k3"), "kimi")
+    XCTAssertEqual(ProviderIconCatalog.makerAssetName(modelID: "workbuddy/space-bunny"), "workbuddy", "认不出模型系列时退回渠道图标")
+  }
+
+  func testModelDetailLineFormatsMagpieMetadata() throws {
+    var entry = ModelCatalogEntry(id: "anthropic/claude-haiku-5-5")
+    entry.displayName = "Claude Haiku 5.5"
+    entry.sourceLabel = "Anthropic"
+    entry.contextWindow = 1_000_000
+    entry.maxOutputTokens = 128_000
+    entry.acceptsImages = true
+    entry.supportsReasoning = true
+    entry.reasoningLevels = ["low", "medium", "high", "xhigh", "max"]
+    entry.nativeEndpoints = ["/v1/messages"]
+    // 名字和渠道另有位置（标题「模型名 · 厂商」、按渠道分组），这一行只写规格。
+    XCTAssertEqual(entry.detailLine, "上下文 100万 · 输出 12.8万 · 看图 · 思考 low–max · 原生 Anthropic")
+    XCTAssertEqual(ModelCatalogEntry.tokenCount(8_192), "8192")
+    XCTAssertEqual(ModelCatalogEntry.tokenCount(32_000), "3.2万")
+    XCTAssertEqual(ModelCatalogEntry.tokenCount(200_000), "20万")
+    XCTAssertFalse(ModelCatalogEntry(id: "plain").hasDetails)
   }
 
   func testProviderCatalogRasterizesEveryOfficialSVGAndHasStableFallbacks() throws {
@@ -101,13 +154,14 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertTrue(service.contains("Text(\"密钥\")"))
     XCTAssertFalse(service.contains("Text(\"Base URL\")"))
     XCTAssertFalse(service.contains("Text(\"API Key\")"))
-    XCTAssertTrue(service.contains("SecureField(\"\", text: $apiKeyInput, prompt: Text(\"输入密钥\"))"))
+    XCTAssertTrue(service.contains("SecureField(\"\", text: $apiKeyInput, prompt: Text(model.allowsEmptyAPIKey ? \"可以不填（本机 Magpie 不校验）\" : \"输入密钥\"))"))
     XCTAssertFalse(service.contains("SecureField(\"输入 API Key\""))
     XCTAssertTrue(service.contains("model.toggleCatalogModel(name)"))
     XCTAssertTrue(service.contains("保存 \\(model.selectedCatalogModelCount) 个模型"))
     XCTAssertTrue(service.contains("assignmentPickerPopover(kind)"))
     XCTAssertTrue(service.contains("title: entry.displayName"))
-    XCTAssertTrue(service.contains("detail: entry.modelName"))
+    // 2026-10-09：每项「模型名 · 厂商」，原始 ID 只放悬停提示，不再当一行字显示。
+    XCTAssertTrue(service.contains("help: entry.modelName"))
     XCTAssertTrue(service.contains("model.transcriptionEntryDisplays"))
     XCTAssertTrue(service.contains("model.summaryEntryDisplays"))
     // 模型服务按服务商归拢：组头放图标与服务商名，行里只留模型 ID 与用途徽标。
@@ -117,9 +171,9 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertFalse(service.contains("Text(\"总结与翻译\")"))
     XCTAssertTrue(service.contains("library-model-more"))
     XCTAssertTrue(service.contains("delete-library-model"))
-    // 同上：锁「模型 ID 用 caption 字号」，不锁它走 .font 还是 .themedFont。
-    XCTAssertNotNil(
-      service.range(of: #"Text\(entry\.modelName\)\.\w*[Ff]ont\(\.(caption|subheadline)\)"#, options: .regularExpression))
+    // 原始 ID 不再当一行字显示，只在悬停提示里（2026-10-09 Syc：模型名到处写法不一）。
+    XCTAssertNil(service.range(of: #"Text\(entry\.modelName\)"#, options: .regularExpression))
+    XCTAssertTrue(service.contains(".help(entry.modelName)"))
     XCTAssertFalse(service.contains("Text(\"\\(entry.title) · 在线转写\").tag(entry.id)"))
     XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
   }
@@ -230,7 +284,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let root = repositoryRoot()
     let release = try String(contentsOf: root.appendingPathComponent("scripts/native-host/release_unit.py"), encoding: .utf8)
     let local = try String(contentsOf: root.appendingPathComponent("scripts/native-host/local_test_release.py"), encoding: .utf8)
-    let expectedTuple = "(\"bailian.svg\", \"commandcode.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"opencode.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"stepfun.svg\", \"zhipu.svg\")"
+    let expectedTuple = "(" + providerAssets.map { "\"\($0)\"" }.joined(separator: ", ") + ")"
 
     for source in [release, local] {
       XCTAssertTrue(source.contains("PROVIDER_ICONS_DIRECTORY = \"ProviderIcons\""))

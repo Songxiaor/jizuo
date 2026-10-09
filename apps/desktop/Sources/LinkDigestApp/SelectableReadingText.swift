@@ -456,6 +456,50 @@ enum ReadingTextComposer {
   }
 }
 
+/// 正文从旧版改成新版，最少要替换哪一截。
+enum ReadingTextEdit {
+  struct Tail: Equatable {
+    /// 旧正文里要换掉的范围（到结尾）。
+    let range: NSRange
+    /// 新正文里换进去的那段（到结尾）。
+    let replacement: NSRange
+  }
+
+  /// 字和样式都相同的开头原样保留，从第一处不同所在段落的段首换到结尾。完全相同时为 nil。
+  ///
+  /// 退到段首：段落样式管一整段，半段换掉时前半段还留着旧样式。嵌入块按实例比较，
+  /// 所以前面的图片要是同一个实例才算相同（`ArticleDocumentCache.block` 负责复用）。
+  static func tail(from old: NSAttributedString, to new: NSAttributedString) -> Tail? {
+    let oldText = old.string as NSString
+    let newText = new.string as NSString
+    let shared = min(oldText.length, newText.length)
+    var prefix = (oldText.substring(to: shared) as NSString).commonPrefix(
+      with: newText.substring(to: shared), options: .literal
+    ).utf16.count
+    if prefix == oldText.length, prefix == newText.length, old.isEqual(to: new) { return nil }
+    var location = 0
+    while location < prefix {
+      var oldRun = NSRange(), newRun = NSRange()
+      let limit = NSRange(location: location, length: prefix - location)
+      let oldAttributes = old.attributes(at: location, longestEffectiveRange: &oldRun, in: limit)
+      let newAttributes = new.attributes(at: location, longestEffectiveRange: &newRun, in: limit)
+      guard (oldAttributes as NSDictionary).isEqual(to: newAttributes) else { break }
+      location = min(NSMaxRange(oldRun), NSMaxRange(newRun))
+    }
+    prefix = min(prefix, location)
+    if prefix < newText.length {
+      prefix = newText.paragraphRange(for: NSRange(location: prefix, length: 0)).location
+    } else if prefix > 0 {
+      // 新正文就是旧正文的开头：从最后一段的段首换，删掉后面多出来的。
+      prefix = newText.paragraphRange(for: NSRange(location: prefix - 1, length: 0)).location
+    }
+    return Tail(
+      range: NSRange(location: prefix, length: oldText.length - prefix),
+      replacement: NSRange(location: prefix, length: newText.length - prefix)
+    )
+  }
+}
+
 /// 自适应高度的非编辑 NSTextView：宽度随 SwiftUI 提供，高度按排版实际
 /// 占用回报；整块文本共享同一个选择上下文，实现跨段连续选择。
 struct SelectableReadingTextView: NSViewRepresentable {
@@ -465,16 +509,20 @@ struct SelectableReadingTextView: NSViewRepresentable {
   var revealText: String? = nil
   /// 单击且没有拖出选区时进入编辑。总结、网页原文不传。
   var onRequestEdit: ((String?) -> Void)? = nil
+  /// 文字左右各留多少：整篇文章排进一个视图时，章节折叠的小三角挂在左边这段里。
+  var horizontalInset: CGFloat = 0
+  /// 目录跳转：滚到正文里某个字符位置（整篇文章一个视图时，章节没有各自的 SwiftUI 锚点）。
+  var scrollRequest: ReadingScrollRequest? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(onOpenLink: onOpenLink) }
 
-  func makeNSView(context: Context) -> SelfSizingTextView {
-    let view = SelfSizingTextView(frame: .zero)
-    view.textContainer?.replaceLayoutManager(ReadingLayoutManager())
+  func makeNSView(context: Context) -> ReadingTextHostView {
+    let host = ReadingTextHostView()
+    let view = host.textView
     view.isEditable = false
     view.isSelectable = true
     view.drawsBackground = false
-    view.textContainerInset = .zero
+    view.textContainerInset = NSSize(width: horizontalInset, height: 0)
     view.textContainer?.lineFragmentPadding = 0
     view.textContainer?.widthTracksTextView = true
     view.isAutomaticLinkDetectionEnabled = false
@@ -487,23 +535,39 @@ struct SelectableReadingTextView: NSViewRepresentable {
     view.textStorage?.setAttributedString(attributed)
     view.onRequestEdit = onRequestEdit
     context.coordinator.lastApplied = attributed
-    return view
+    return host
   }
 
-  func updateNSView(_ view: SelfSizingTextView, context: Context) {
+  func updateNSView(_ host: ReadingTextHostView, context: Context) {
+    let view = host.textView
     context.coordinator.onOpenLink = onOpenLink
     view.onRequestEdit = onRequestEdit
     // 渲染缓存命中时传进来的是同一个实例，`===` 直接短路；实例不同再退回
     // 深比较（整篇逐属性比较，长文并不便宜），确实变了才重设存储——
     // setAttributedString 会引发整篇重排版，是这里最贵的一步。
-    if context.coordinator.lastApplied !== attributed {
-      if view.textStorage?.isEqual(to: attributed) != true {
-        view.textStorage?.setAttributedString(attributed)
-        view.invalidateIntrinsicContentSize()
+    if context.coordinator.lastApplied !== attributed, let storage = view.textStorage {
+      // 和上次交进去的那份比，不和存储本身比：存储会自己补字体（中文落到后备字体），
+      // 拿它比第一个汉字就算「变了」，又退回整份替换。
+      let previous = context.coordinator.lastApplied.flatMap { $0.length == storage.length ? $0 : nil } ?? storage
+      if let edit = ReadingTextEdit.tail(from: previous, to: attributed) {
+        // 只换开始不一样的那一截：边翻边看时正文只往后长，上面的字和图原样不动，
+        // 整份替换会让每个嵌入块重建、整页闪一下（2026-10-09）。
+        storage.beginEditing()
+        storage.replaceCharacters(in: edit.range, with: attributed.attributedSubstring(from: edit.replacement))
+        storage.endEditing()
+        host.invalidateIntrinsicContentSize()
       }
       context.coordinator.lastApplied = attributed
     }
     view.linkTextAttributes?[.foregroundColor] = accent
+    if let scrollRequest, context.coordinator.lastScrollToken != scrollRequest.token {
+      context.coordinator.lastScrollToken = scrollRequest.token
+      DispatchQueue.main.async { Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: true) }
+      // 落地后附近的块才建出视图、量出实际高度；再校正一次，误差大于几个点就补滚过去。
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+        Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: false)
+      }
+    }
     if context.coordinator.lastRevealText != revealText,
        let revealText,
        !revealText.isEmpty {
@@ -516,8 +580,50 @@ struct SelectableReadingTextView: NSViewRepresentable {
     }
   }
 
+  /// 把某个字符所在的那一行滚到视口上方约一成处（顶上压着吸顶的「原文 / 总结」栏，贴顶会被盖住）。
+  /// 先把开头到这里排实：新引擎没排到的地方只是估算，直接按估算位置滚会落偏。
+  static func scroll(_ view: NSTextView, toCharacter offset: Int, animated: Bool) {
+    guard let manager = view.textLayoutManager,
+          let content = manager.textContentManager,
+          let target = content.location(content.documentRange.location, offsetBy: max(0, offset)),
+          let scrollView = view.enclosingScrollView,
+          let documentView = scrollView.documentView,
+          let upTo = NSTextRange(location: content.documentRange.location, end: target)
+    else { return }
+    manager.ensureLayout(for: upTo)
+    var lineTop: CGFloat?
+    manager.enumerateTextLayoutFragments(from: target, options: [.ensuresLayout]) { fragment in
+      lineTop = fragment.layoutFragmentFrame.minY
+      return false
+    }
+    guard let lineTop else { return }
+    let inView = NSPoint(x: 0, y: lineTop + view.textContainerOrigin.y)
+    let inDocument = view.convert(inView, to: documentView)
+    let clip = scrollView.contentView
+    let landing = max(0, inDocument.y - clip.bounds.height * 0.12)
+    guard abs(clip.bounds.minY - landing) > 2 else { return }
+    // 程序直接设滚动位置时，TextKit 2 不会自己重排可见区：落地那一屏的图片、折叠小三角
+    // 一直空着，手动滚一下才出来（2026-10-07 检查）。落地后主动排一次。
+    let relayoutViewport: @MainActor @Sendable () -> Void = { [weak view] in
+      view?.textLayoutManager?.textViewportLayoutController.layoutViewport()
+    }
+    if animated {
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0.25
+        clip.animator().setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: landing))
+      } completionHandler: {
+        Task { @MainActor in relayoutViewport() }
+      }
+    } else {
+      clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: landing))
+    }
+    scrollView.reflectScrolledClipView(clip)
+    relayoutViewport()
+  }
+
   final class Coordinator: NSObject, NSTextViewDelegate {
     var onOpenLink: (URL) -> Void
+    var lastScrollToken: UUID?
     var lastRevealText: String?
     /// 上次应用到 textStorage 的实例，用于 `===` 快速跳过（见 updateNSView）。
     var lastApplied: NSAttributedString?
@@ -581,25 +687,26 @@ struct SelectableReadingTextView: NSViewRepresentable {
     ///
     /// 判断要带上「点是否真的落在这个字形里」：只按最近字符索引取属性，点在
     /// 段末空白处也会命中前一个字符，于是明明点的是空白却触发了跳转。
+    /// 不碰 `layoutManager`：TextKit 2 的视图一碰就退回 TextKit 1（见 `ReadingTextHostView`）。
     private func link(at point: NSPoint) -> URL? {
-      guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else {
-        return nil
+      guard let textStorage, textStorage.length > 0 else { return nil }
+      let index = characterIndexForInsertion(at: point)
+      for candidate in [index, index - 1] where candidate >= 0 && candidate < textStorage.length {
+        let url: URL? = switch textStorage.attribute(.link, at: candidate, effectiveRange: nil) {
+        case let url as URL: url
+        case let raw as String: URL(string: raw)
+        default: nil
+        }
+        guard let url, let window else { continue }
+        let screenRect = firstRect(forCharacterRange: NSRange(location: candidate, length: 1), actualRange: nil)
+        let local = convert(window.convertFromScreen(screenRect), from: nil)
+        if local.insetBy(dx: -1, dy: -2).contains(point) { return url }
       }
-      var fraction: CGFloat = 0
-      let glyphIndex = layoutManager.glyphIndex(
-        for: point,
-        in: textContainer,
-        fractionOfDistanceThroughGlyph: &fraction
-      )
-      guard fraction > 0, fraction < 1 else { return nil }
-      let index = layoutManager.characterIndexForGlyph(at: glyphIndex)
-      guard index < textStorage.length else { return nil }
-      switch textStorage.attribute(.link, at: index, effectiveRange: nil) {
-      case let url as URL: return url
-      case let raw as String: return URL(string: raw)
-      default: return nil
-      }
+      return nil
     }
+
+    /// 测试用：走一遍链接命中判断（不发真实点击事件）。
+    func mouseDownPointForTesting(_ point: NSPoint) { _ = link(at: point) }
 
     /// NSTextView 的 mouseDown 会自己把鼠标跟踪到松开，子类的 mouseUp 常常根本收不到。
     /// 可写正文必须在 mouseDown 里进编辑，并且不要再交给 super 去框选。
@@ -647,6 +754,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
     }
 
     override var intrinsicContentSize: NSSize {
+      // TextKit 2（阅读区）的高度由外面的 ReadingTextHostView 管；这里一读 layoutManager 就退回 TextKit 1。
+      if textLayoutManager != nil { return super.intrinsicContentSize }
       guard let container = textContainer, let manager = layoutManager else {
         return super.intrinsicContentSize
       }
@@ -678,6 +787,11 @@ struct StreamingReadingTextView: NSViewRepresentable {
   let font: NSFont
   let color: NSColor
   let lineSpacing: CGFloat
+  /// 实时转写用：行首的 `54:40` 排成和成稿一样的页边时间码（灰色等宽小字，正文缩进
+  /// `TranscriptGutter.textInset`），转完换成正式稿时不再整页一跳（2026-10-06）。
+  var hangsTimecodes = false
+  /// 顶上留出的空白，配合外面的渐隐遮罩：滚上去的那行淡出，而不是被框边切成半行。
+  var topInset: CGFloat = 0
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -694,7 +808,7 @@ struct StreamingReadingTextView: NSViewRepresentable {
     view.isEditable = false
     view.isSelectable = true
     view.drawsBackground = false
-    view.textContainerInset = .zero
+    view.textContainerInset = NSSize(width: 0, height: topInset)
     view.textContainer?.lineFragmentPadding = 0
     view.textContainer?.widthTracksTextView = true
     view.textContainer?.heightTracksTextView = false
@@ -814,6 +928,7 @@ struct StreamingReadingTextView: NSViewRepresentable {
   }
 
   private func styledLine(_ raw: String) -> NSAttributedString {
+    if hangsTimecodes, let hanging = hangingTimecodeLine(raw) { return hanging }
     let trimmed = raw.trimmingCharacters(in: .whitespaces)
     if trimmed.count >= 3, Set(trimmed).isSubset(of: ["-", "*", "_"]) {
       return NSAttributedString(string: "")
@@ -871,13 +986,40 @@ struct StreamingReadingTextView: NSViewRepresentable {
   }
 
   private func attributed(_ value: String) -> NSAttributedString {
-    let paragraph = NSMutableParagraphStyle()
-    paragraph.lineSpacing = lineSpacing
-    return NSAttributedString(string: value, attributes: [
+    NSAttributedString(string: value, attributes: [
       .font: font,
       .foregroundColor: color,
-      .paragraphStyle: paragraph,
+      .paragraphStyle: paragraphStyle,
     ])
+  }
+
+  /// 挂时间码时，折行都缩到正文栏；还在长的那一行也先按这个缩进排，收行时只换时间码的字。
+  private var paragraphStyle: NSParagraphStyle {
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = lineSpacing
+    if hangsTimecodes {
+      let inset = TranscriptGutter.textInset
+      paragraph.tabStops = [NSTextTab(textAlignment: .left, location: inset)]
+      paragraph.defaultTabInterval = inset
+      paragraph.headIndent = inset
+    }
+    return paragraph
+  }
+
+  /// `54:40 呃…` / `1:09:34 …` → 灰色等宽小字的时间码 + 跳到正文栏的正文。
+  private func hangingTimecodeLine(_ raw: String) -> NSAttributedString? {
+    guard let match = raw.range(of: #"^(\d+:)?\d{1,2}:\d{2}\s+"#, options: .regularExpression) else { return nil }
+    let stamp = raw[match].trimmingCharacters(in: .whitespaces)
+    let result = NSMutableAttributedString(string: stamp + "\t" + raw[match.upperBound...], attributes: [
+      .font: font,
+      .foregroundColor: color,
+      .paragraphStyle: paragraphStyle,
+    ])
+    result.addAttributes([
+      .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular).withMonospacedDesign(),
+      .foregroundColor: NSColor.secondaryLabelColor,
+    ], range: NSRange(location: 0, length: (stamp as NSString).length))
+    return result
   }
 }
 
@@ -955,27 +1097,180 @@ extension NSAttributedString.Key {
 ///
 /// 系统的背景色属性按整行高度铺（含行距），15pt 正文上是一块 28pt 高的灰条，
 /// 很笨重。这里按字体的上下沿、上下各留 2pt 画，每行各画一段。
-final class ReadingLayoutManager: NSLayoutManager {
-  override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
-    super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-    guard let textStorage, let container = textContainers.first else { return }
-    let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-    textStorage.enumerateAttribute(.readingInlineCodeChip, in: characters) { value, range, _ in
-      guard value != nil else { return }
-      let font = textStorage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
-        ?? NSFont.systemFont(ofSize: 14)
-      let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-      NSColor.labelColor.withAlphaComponent(0.07).setFill()
-      enumerateLineFragments(forGlyphRange: glyphs) { lineRect, _, _, lineGlyphs, _ in
-        let piece = NSIntersectionRange(glyphs, lineGlyphs)
-        guard piece.length > 0 else { return }
-        var bounds = self.boundingRect(forGlyphRange: piece, in: container)
-        let baseline = lineRect.minY + self.location(forGlyphAt: piece.location).y
-        bounds.origin.y = baseline - font.ascender - 2
-        bounds.size.height = font.ascender - font.descender + 4
-        bounds = bounds.insetBy(dx: -3, dy: 0).offsetBy(dx: origin.x, dy: origin.y)
-        NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
-      }
+/// 阅读区正文的容器（2026-10-06 滑动性能第二批）。
+///
+/// 里面是 TextKit 2 的 NSTextView：只排看得见的那一屏，其余只估高度。原来是 TextKit 1，
+/// 打开时要把全文一次排完才知道高度（10 万字约 0.4s 纯排版，百万字会到好几秒），
+/// 每个文字段又各自登记一堆光标区域。文字视图自己按排版结果长高，容器把高度报给 SwiftUI——
+/// 和转写稿的 `TranscriptTextBlockView` 同一个做法，实测 120 万字也是 120 帧。
+final class ReadingTextHostView: NSView, NSTextLayoutManagerDelegate {
+  let textView: SelectableReadingTextView.SelfSizingTextView
+  private var reportedHeight: CGFloat = 0
+
+  override init(frame: NSRect) {
+    textView = SelectableReadingTextView.SelfSizingTextView(usingTextLayoutManager: true)
+    super.init(frame: frame)
+    textView.textContainerInset = .zero
+    textView.textContainer?.lineFragmentPadding = 0
+    textView.textContainer?.widthTracksTextView = true
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
+    textView.autoresizingMask = [.width]
+    textView.textLayoutManager?.delegate = self
+    addSubview(textView)
+    textView.postsFrameChangedNotifications = true
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(textFrameChanged), name: NSView.frameDidChangeNotification, object: textView
+    )
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  deinit { NotificationCenter.default.removeObserver(self) }
+
+  override var isFlipped: Bool { true }
+
+  /// 外层（阅读区的 SwiftUI 滚动视图）滚动时，主动让 TextKit 2 重排可见区。
+  ///
+  /// 文字视图嵌在别人的滚动视图里，自己不滚：程序直接设滚动位置（目录跳转、换条恢复到上次
+  /// 读到的位置）时，引擎不知道可见区变了，落地那一屏的图片、折叠小三角一直空着，用手滚
+  /// 一下才出来（2026-10-07 检查）。手势滚动本来就会排，这里每次只多做一次轻量的可见区排版。
+  private weak var observedClip: NSClipView?
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    var ancestor = superview
+    while let current = ancestor, !(current is NSScrollView) { ancestor = current.superview }
+    let clip = (ancestor as? NSScrollView)?.contentView
+    guard clip !== observedClip else { return }
+    if let observedClip {
+      NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClip)
     }
+    observedClip = clip
+    guard let clip else { return }
+    clip.postsBoundsChangedNotifications = true
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(outerScrolled), name: NSView.boundsDidChangeNotification, object: clip
+    )
+  }
+
+  private var relayoutScheduled = false
+
+  /// 滚动停下约 0.1s 后补排一次：手势滚动时引擎自己会排，不用每帧多排一遍（每帧都排，GIF 那页
+  /// 滑动中位数从 0.5ms 涨到 1.8ms）；程序直接跳过去的那一下，停下后正好补上。
+  private var scrollSettleWork: DispatchWorkItem?
+
+  @objc private func outerScrolled() {
+    scrollSettleWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in self?.scheduleViewportRelayout() }
+    scrollSettleWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+  }
+
+  /// 文字视图长高了（刚打开时只有估算高度，排着排着变高）：也补排一次可见区。只在滚动时排的话，
+  /// 打开那一刻按很矮的高度排过一次，末尾的评论区一直空着（2026-10-07 检查）。
+  private func scheduleViewportRelayout() {
+    guard !relayoutScheduled else { return }
+    relayoutScheduled = true
+    // 同一拍里合并成一次：这一拍的滚动全部生效后再排。
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.relayoutScheduled = false
+      self.textView.textLayoutManager?.textViewportLayoutController.layoutViewport()
+    }
+  }
+
+  override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: max(1, ceil(textView.frame.height)))
+  }
+
+  override func layout() {
+    super.layout()
+    if abs(textView.frame.width - bounds.width) > 0.5 {
+      textView.setFrameSize(NSSize(width: bounds.width, height: textView.frame.height))
+    }
+  }
+
+  @objc private func textFrameChanged() {
+    let height = ceil(textView.frame.height)
+    guard abs(height - reportedHeight) > 0.5 else { return }
+    reportedHeight = height
+    invalidateIntrinsicContentSize()
+    scheduleViewportRelayout()
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    scheduleViewportRelayout()
+  }
+
+  /// 带行内代码的段落用会画圆角底色的排版片段；其余照常。
+  nonisolated func textLayoutManager(
+    _ textLayoutManager: NSTextLayoutManager,
+    textLayoutFragmentFor location: NSTextLocation,
+    in textElement: NSTextElement
+  ) -> NSTextLayoutFragment {
+    if let paragraph = textElement as? NSTextParagraph,
+       paragraph.attributedString.length > 0,
+       paragraph.attributedString.containsAttribute(.readingInlineCodeChip) {
+      return InlineCodeChipLayoutFragment(textElement: textElement, range: textElement.elementRange)
+    }
+    return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
+  }
+}
+
+/// TextKit 2 版的行内代码底色：每段落在自己那一行画一个圆角浅灰底，再画字。
+/// 等价于原来 `ReadingLayoutManager.drawBackground` 的效果（TextKit 1 专用）。
+final class InlineCodeChipLayoutFragment: NSTextLayoutFragment {
+  override var renderingSurfaceBounds: CGRect {
+    super.renderingSurfaceBounds.insetBy(dx: -4, dy: -3)
+  }
+
+  override func draw(at point: CGPoint, in context: CGContext) {
+    if let paragraph = textElement as? NSTextParagraph {
+      let string = paragraph.attributedString
+      context.saveGState()
+      context.setFillColor(NSColor.labelColor.withAlphaComponent(0.07).cgColor)
+      string.enumerateAttribute(.readingInlineCodeChip, in: NSRange(location: 0, length: string.length)) { value, range, _ in
+        guard value != nil else { return }
+        let font = string.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+          ?? NSFont.systemFont(ofSize: 14)
+        for line in textLineFragments {
+          let piece = NSIntersectionRange(range, line.characterRange)
+          guard piece.length > 0 else { continue }
+          let startX = line.locationForCharacter(at: piece.location).x
+          let endX = line.locationForCharacter(at: NSMaxRange(piece)).x
+          let baseline = line.typographicBounds.minY + line.glyphOrigin.y
+          let rect = CGRect(
+            x: point.x + line.typographicBounds.minX + startX - 3,
+            y: point.y + baseline - font.ascender - 2,
+            width: endX - startX + 6,
+            height: font.ascender - font.descender + 4
+          )
+          context.addPath(CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil))
+          context.fillPath()
+        }
+      }
+      context.restoreGState()
+    }
+    super.draw(at: point, in: context)
+  }
+}
+
+private extension NSAttributedString {
+  func containsAttribute(_ key: NSAttributedString.Key) -> Bool {
+    var found = false
+    enumerateAttribute(key, in: NSRange(location: 0, length: length)) { value, _, stop in
+      if value != nil { found = true; stop.pointee = true }
+    }
+    return found
+  }
+}
+
+private extension NSFont {
+  /// 和 SwiftUI 那边 `.system(size: 11, design: .monospaced)` 同一种等宽字。
+  func withMonospacedDesign() -> NSFont {
+    guard let descriptor = fontDescriptor.withDesign(.monospaced) else { return self }
+    return NSFont(descriptor: descriptor, size: pointSize) ?? self
   }
 }

@@ -38,10 +38,11 @@ final class KnowledgeVaultRendererTests: XCTestCase {
       timeZone: fixtureTimeZone
     ).text
 
-    // 三层都要在，一层都不能少。
+    // 配文和听写两层都要在，一层都不能少。
     XCTAssertTrue(text.contains("原文"), "配文层丢失")
     XCTAssertTrue(text.contains("听写正文"), "听写层丢失")
-    XCTAssertTrue(text.contains("字幕正文"), "画面字幕层丢失")
+    // 画面字幕层 2026-10-07 下线（Syc 定，见 LayeredSourceDocument.subtitleSnapshot）：不显示、不进导出。
+    XCTAssertFalse(text.contains("字幕正文"), "画面字幕层已下线，不该再进导出")
 
     // 元数据取自配文层：platform 不能被派生层的 sourceLabel 顶掉。
     XCTAssertTrue(text.contains("platform: \"网页\""), "platform 被派生层污染")

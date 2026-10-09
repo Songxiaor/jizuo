@@ -21,6 +21,9 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   case zhipu
   case stepFun
   case ollama
+  /// 本机的 Magpie 网关：一个地址接上它管着的所有订阅和服务商（2026-10-09 Syc）。
+  /// 两种协议都认；本机不校验密钥，可以不填。
+  case magpie
   case custom
 
   public var id: String { rawValue }
@@ -39,6 +42,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .zhipu: "智谱 BigModel"
     case .stepFun: "阶跃星辰"
     case .ollama: "Ollama（本地）"
+    case .magpie: "Magpie（本地）"
     case .custom: "其他服务商"
     }
   }
@@ -60,6 +64,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .zhipu: "https://open.bigmodel.cn/api/paas/v4"
     case .stepFun: "https://api.stepfun.com/v1"
     case .ollama: "http://127.0.0.1:11434/v1"
+    case .magpie: "http://127.0.0.1:3425/v1"
     case .custom: ""
     }
   }
@@ -80,6 +85,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .zhipu: "Z"
     case .stepFun: "阶"
     case .ollama: "OL"
+    case .magpie: "MP"
     case .custom: "＋"
     }
   }
@@ -98,6 +104,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .zhipu: 0x2563EB
     case .stepFun: 0x165DFF
     case .ollama: 0x334155
+    case .magpie: 0x1F2937
     case .custom: 0x64748B
     }
   }
@@ -132,6 +139,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   public var endpointHost: String {
     switch self {
     case .ollama: "本机服务（11434 端口）"
+    case .magpie: "本机网关（3425 端口）"
     case .custom: "自己填服务地址"
     default:
       URL(string: baseURLTemplate)?.host ?? baseURLTemplate
@@ -142,6 +150,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     // 对用户说「服务商」「密钥」「服务地址」，不说 Provider / API Key / 端点（2026-10-01）。
     case .commandCode: "支持 GOAT、Pro、Max、Team 套餐额度及按量付费；Go 套餐不支持 API。请在官网 Studio 创建密钥，模型权限与额度以你的套餐为准。不支持在线转写。"
     case .ollama: "本机服务：请确认 Ollama 正在运行。"
+    case .magpie: "本机服务：请确认 Magpie 正在运行。密钥可以不填；协议两种都行，OpenAI 兼容能用上 Magpie 里的全部模型。"
     case .custom: "填服务商文档里给的接口地址，一般以 https:// 开头、以 /v1 结尾。"
     default: "模型名和可用额度，请到 \(displayName) 官网的控制台查看。"
     }

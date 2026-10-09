@@ -331,6 +331,148 @@ final class CommandCodeProviderTests: XCTestCase {
 
   // MARK: - Helpers
 
+  // MARK: - 协议选了 Anthropic 的「其他服务商」（2026-10-09）
+
+  private func anthropicProfile(baseURL: String, model: String = "claude-haiku-5-5") throws -> ProviderProfile {
+    try ProviderProfile(
+      baseURL: baseURL,
+      model: model,
+      apiMode: .anthropicMessages,
+      secretReference: SecretReference(rawValue: "test-reference"),
+      allowLoopbackHTTP: baseURL.hasPrefix("http://127.0.0.1")
+    )
+  }
+
+  private static let anthropicOKStream = """
+  data: {"type":"message_start","message":{"usage":{"input_tokens":9,"output_tokens":0}}}
+
+  data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"译文"}}
+
+  data: {"type":"message_delta","usage":{"output_tokens":2}}
+
+  data: {"type":"message_stop"}
+
+  """
+
+  /// 各家文档给的根地址多不带 /v1（Claude Code 自己补），Anthropic 官方、Magpie 带；两种都拼成 …/v1/messages。
+  func testAnthropicProtocolBuildsMessagesURLWithOrWithoutV1() throws {
+    XCTAssertEqual(
+      try CommandCodeProviderRouting.messagesURL(baseURL: URL(string: "https://api.deepseek.com/anthropic")!).absoluteString,
+      "https://api.deepseek.com/anthropic/v1/messages"
+    )
+    XCTAssertEqual(
+      try CommandCodeProviderRouting.messagesURL(baseURL: URL(string: "https://api.anthropic.com/v1/")!).absoluteString,
+      "https://api.anthropic.com/v1/messages"
+    )
+    XCTAssertEqual(
+      try CommandCodeProviderRouting.messagesURL(baseURL: URL(string: "https://api.anthropic.com")!).absoluteString,
+      "https://api.anthropic.com/v1/messages"
+    )
+    XCTAssertEqual(
+      try CommandCodeProviderRouting.modelsURL(baseURL: URL(string: "http://127.0.0.1:3425/v1")!).absoluteString,
+      "http://127.0.0.1:3425/v1/models?limit=1000"
+    )
+  }
+
+  func testAnthropicProtocolStreamsWithApiKeyHeaderAndLongOutputCap() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    CommandCodeURLProtocol.handler = { request in
+      (Self.httpResponse(request: request, status: 200, contentType: "text/event-stream"), Data(Self.anthropicOKStream.utf8))
+    }
+    // 模型名不以 claude 开头也走 Messages：看的是协议，不是模型名。
+    let profile = try anthropicProfile(baseURL: "https://api.moonshot.cn/anthropic", model: "kimi-k3")
+    let result = await collect(
+      provider: makeProvider(), profile: profile, apiKey: key,
+      intent: .translate(title: "T", text: "body", targetLanguage: "简体中文")
+    )
+
+    XCTAssertNil(result.failure)
+    XCTAssertEqual(result.events.first, .delta("译文"))
+    let request = try XCTUnwrap(CommandCodeURLProtocol.requests.first)
+    XCTAssertEqual(request.url?.absoluteString, "https://api.moonshot.cn/anthropic/v1/messages")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), key)
+    XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+    XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    let body = try jsonObject(request.httpBody)
+    XCTAssertEqual(body["model"] as? String, "kimi-k3")
+    XCTAssertEqual(body["max_tokens"] as? Int, OpenAICompatibleProvider.anthropicLongOutputMaxTokens)
+    XCTAssertNil(body["reasoning_effort"])
+    XCTAssertNotNil(body["system"])
+  }
+
+  /// 服务商嫌 32000 太大（400）就退回 8192 重发一次，不直接报失败。
+  func testAnthropicProtocolStepsDownOutputCapWhenRejected() async throws {
+    CommandCodeURLProtocol.handler = { request in
+      let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any]
+      if (body?["max_tokens"] as? Int) == OpenAICompatibleProvider.anthropicLongOutputMaxTokens {
+        return (
+          Self.httpResponse(request: request, status: 400, contentType: "application/json"),
+          Data(#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 32000 > 8192"}}"#.utf8)
+        )
+      }
+      return (Self.httpResponse(request: request, status: 200, contentType: "text/event-stream"), Data(Self.anthropicOKStream.utf8))
+    }
+    let profile = try anthropicProfile(baseURL: "https://api.deepseek.com/anthropic", model: "deepseek-chat")
+    let result = await collect(
+      provider: makeProvider(), profile: profile, apiKey: "not-a-real-key",
+      intent: .summarize(title: "T", text: "正文", prompt: "总结")
+    )
+
+    XCTAssertNil(result.failure)
+    XCTAssertEqual(result.events.first, .delta("译文"))
+    let caps = CommandCodeURLProtocol.requests.compactMap {
+      ((try? JSONSerialization.jsonObject(with: $0.httpBody ?? Data())) as? [String: Any])?["max_tokens"] as? Int
+    }
+    XCTAssertEqual(caps, [OpenAICompatibleProvider.anthropicLongOutputMaxTokens, CommandCodeMessagesCodec.defaultMaxTokens])
+  }
+
+  func testAnthropicProtocolNonStreamingAndTagsUseApiKeyHeader() async throws {
+    CommandCodeURLProtocol.handler = { request in
+      (Self.httpResponse(request: request, status: 200, contentType: "application/json"),
+       Data(#"{"content":[{"type":"text","text":"AI 工具"}],"usage":{"input_tokens":5,"output_tokens":3}}"#.utf8))
+    }
+    let profile = try anthropicProfile(baseURL: "https://api.anthropic.com/v1")
+    let tidy = try await makeProvider().tidyTranscriptChunk(
+      profile: profile, apiKey: "not-a-real-key", model: "claude-haiku-5-5", text: "原文", systemPrompt: "整理")
+    XCTAssertEqual(tidy.text, "AI 工具")
+    let tags = try await makeProvider().generateSummaryTags(profile: profile, apiKey: "not-a-real-key", summary: "摘要")
+    XCTAssertEqual(tags, "AI 工具")
+    XCTAssertEqual(CommandCodeURLProtocol.requests.count, 2)
+    for request in CommandCodeURLProtocol.requests {
+      XCTAssertEqual(request.url?.absoluteString, "https://api.anthropic.com/v1/messages")
+      XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "not-a-real-key")
+      XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+  }
+
+  func testAnthropicProtocolListsModelsWithApiKeyHeader() async throws {
+    CommandCodeURLProtocol.handler = { request in
+      (Self.httpResponse(request: request, status: 200, contentType: "application/json"),
+       Data(#"{"data":[{"id":"claude-haiku-5-5","type":"model"},{"id":"claude-opus-5-5","type":"model"}],"has_more":false}"#.utf8))
+    }
+    let models = try await makeProvider().listModels(
+      baseURL: URL(string: "https://api.anthropic.com")!, apiKey: "not-a-real-key", apiMode: .anthropicMessages)
+    XCTAssertEqual(models, ["claude-haiku-5-5", "claude-opus-5-5"])
+    let request = try XCTUnwrap(CommandCodeURLProtocol.requests.first)
+    XCTAssertEqual(request.url?.absoluteString, "https://api.anthropic.com/v1/models?limit=1000")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "not-a-real-key")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+    XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+  }
+
+  /// 默认协议的老配置一个字节都不变：仍是 /chat/completions + Bearer。
+  func testDefaultProtocolStaysOnChatCompletionsWithBearer() async throws {
+    CommandCodeURLProtocol.handler = { request in
+      (Self.httpResponse(request: request, status: 200, contentType: "application/json"),
+       Data(#"{"data":[{"id":"gpt-x"}]}"#.utf8))
+    }
+    _ = try await makeProvider().listModels(baseURL: URL(string: "https://api.example.com/v1")!, apiKey: "k")
+    let request = try XCTUnwrap(CommandCodeURLProtocol.requests.first)
+    XCTAssertEqual(request.url?.absoluteString, "https://api.example.com/v1/models")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer k")
+    XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
+  }
+
   private func makeProvider() -> OpenAICompatibleProvider {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [CommandCodeURLProtocol.self]

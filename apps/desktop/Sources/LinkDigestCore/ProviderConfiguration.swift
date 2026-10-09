@@ -1,7 +1,12 @@
 import Foundation
 
-public enum APIMode: String, Codable, Sendable, Equatable {
+/// 服务商说的接口协议。
+public enum APIMode: String, Codable, Sendable, Equatable, CaseIterable {
+  /// OpenAI 兼容：`/chat/completions`、`Authorization: Bearer`。绝大多数服务商和 Magpie 都认这个。
   case chatCompletions = "chat_completions"
+  /// Anthropic Messages：`/v1/messages`、`x-api-key`。Claude 官方，以及 Kimi、GLM、DeepSeek、MiniMax
+  /// 这类给 Claude Code 用的兼容地址（2026-10-09 Syc：像 Magpie 一样多认几种协议）。
+  case anthropicMessages = "anthropic_messages"
 }
 
 public struct SecretReference: RawRepresentable, Codable, Hashable, Sendable {
@@ -402,6 +407,7 @@ public actor ProviderConfigurationService {
     baseURL: String,
     model: String,
     apiKey: String,
+    apiMode: APIMode = .chatCompletions,
     allowLoopbackHTTP: Bool = false
   ) async throws -> ProviderProfile {
     let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -413,6 +419,7 @@ public actor ProviderConfigurationService {
     let newProfile = try ProviderProfile(
       baseURL: baseURL,
       model: model,
+      apiMode: apiMode,
       secretReference: newReference,
       allowLoopbackHTTP: allowLoopbackHTTP
     )
@@ -500,12 +507,14 @@ public actor ProviderConfigurationService {
     baseURL: String,
     model: String,
     apiKey: String,
+    apiMode: APIMode = .chatCompletions,
     allowLoopbackHTTP: Bool = false
   ) async throws -> ProviderProfile {
     guard let profile = try await addProfiles(
       baseURL: baseURL,
       models: [model],
       apiKey: apiKey,
+      apiMode: apiMode,
       allowLoopbackHTTP: allowLoopbackHTTP
     ).first else {
       throw ProviderConfigurationError.modelRequired
@@ -521,6 +530,7 @@ public actor ProviderConfigurationService {
     baseURL: String,
     models: [String],
     apiKey: String,
+    apiMode: APIMode = .chatCompletions,
     allowLoopbackHTTP: Bool = false
   ) async throws -> [ProviderProfile] {
     let normalizedModels = models.reduce(into: [String]()) { result, value in
@@ -540,6 +550,7 @@ public actor ProviderConfigurationService {
         baseURL: baseURL,
         model: normalizedModels[0],
         apiKey: apiKey,
+        apiMode: apiMode,
         allowLoopbackHTTP: allowLoopbackHTTP
       )]
     }
@@ -553,6 +564,7 @@ public actor ProviderConfigurationService {
         id: UUID().uuidString,
         baseURL: baseURL,
         model: model,
+        apiMode: apiMode,
         secretReference: reference,
         allowLoopbackHTTP: allowLoopbackHTTP
       )
@@ -648,11 +660,13 @@ public actor ProviderConfigurationService {
   /// Updates an existing entry in place. Passing `apiKey: nil` keeps the
   /// stored secret; passing a key rotates it exactly like the single-slot
   /// replacement flow.
+  /// `apiMode: nil` 保留原来的协议：原来这里不传协议，改一下密钥协议就悄悄回到默认值。
   public func updateProfile(
     id: String,
     baseURL: String,
     model: String,
     apiKey: String?,
+    apiMode: APIMode? = nil,
     allowLoopbackHTTP: Bool = false
   ) async throws -> ProviderProfile {
     guard libraryStore != nil else {
@@ -661,6 +675,7 @@ public actor ProviderConfigurationService {
           baseURL: baseURL,
           model: model,
           apiKey: apiKey,
+          apiMode: apiMode ?? .chatCompletions,
           allowLoopbackHTTP: allowLoopbackHTTP
         )
       }
@@ -683,6 +698,7 @@ public actor ProviderConfigurationService {
       id: existing.id,
       baseURL: baseURL,
       model: model,
+      apiMode: apiMode ?? existing.apiMode,
       secretReference: reference,
       allowLoopbackHTTP: allowLoopbackHTTP
     )

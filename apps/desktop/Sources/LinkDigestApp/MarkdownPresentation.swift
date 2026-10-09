@@ -257,11 +257,15 @@ enum LocalMarkdownImageLayout {
     }
     guard !localImageURLs.isEmpty else { return [.text(markdown)] }
     guard let expression = imageMarkupExpression else { return [.text(markdown)] }
+    // 表格单元格里的插图（维基信息框）先挪到表格下面：按图切段会把表格从中间切开，
+    // 前半张表只剩表头，单元格的竖线「|」漏成正文（2026-10-07 GIF 页）。
+    let body = hoistingLocalImagesOutOfTables(markdown, expression: expression, byHash: byHash)
+
 
     var segments: [Segment] = []
-    var cursor = markdown.startIndex
-    let nsRange = NSRange(markdown.startIndex..., in: markdown)
-    let matches = expression.matches(in: markdown, range: nsRange)
+    var cursor = body.startIndex
+    let nsRange = NSRange(body.startIndex..., in: body)
+    let matches = expression.matches(in: body, range: nsRange)
     var used = Set<String>()
     // 没有本地文件的图片标记留在文字里，和前后文字连成同一段，只在真正插图处断开。
     // 原来每个标记前后都断一次：README 开头 `<a><img alt="Latest Release"></a>` 一类
@@ -273,16 +277,16 @@ enum LocalMarkdownImageLayout {
     }
 
     for match in matches {
-      guard let full = Range(match.range, in: markdown) else { continue }
+      guard let full = Range(match.range, in: body) else { continue }
       if cursor < full.lowerBound {
-        pendingText += markdown[cursor..<full.lowerBound]
+        pendingText += body[cursor..<full.lowerBound]
       }
       let rawURL: String? = {
-        if match.numberOfRanges > 2, let r = Range(match.range(at: 2), in: markdown), !r.isEmpty {
-          return String(markdown[r])
+        if match.numberOfRanges > 2, let r = Range(match.range(at: 2), in: body), !r.isEmpty {
+          return String(body[r])
         }
-        if match.numberOfRanges > 3, let r = Range(match.range(at: 3), in: markdown), !r.isEmpty {
-          return String(markdown[r])
+        if match.numberOfRanges > 3, let r = Range(match.range(at: 3), in: body), !r.isEmpty {
+          return String(body[r])
         }
         return nil
       }()
@@ -294,12 +298,12 @@ enum LocalMarkdownImageLayout {
         used.insert(local.path)
       } else {
         // Keep the original marker as text when no local file is available.
-        pendingText += markdown[full]
+        pendingText += body[full]
       }
       cursor = full.upperBound
     }
-    if cursor < markdown.endIndex {
-      pendingText += markdown[cursor...]
+    if cursor < body.endIndex {
+      pendingText += body[cursor...]
     }
     flushText()
 
@@ -311,6 +315,51 @@ enum LocalMarkdownImageLayout {
       }
     }
     return segments.isEmpty ? [.text(markdown)] : segments
+  }
+
+  /// 把表格行里能在本地找到文件的图片标记挪到这张表的下面，各占一段；表格本身保持完整。
+  /// 代码块里的竖线行不算表格。没存到本地的标记留在原处，和改动前一样。
+  static func hoistingLocalImagesOutOfTables(
+    _ markdown: String,
+    expression: NSRegularExpression,
+    byHash: [String: URL]
+  ) -> String {
+    guard markdown.contains("|") else { return markdown }
+    var output: [String] = []
+    var hoisted: [String] = []
+    var inFence = false
+    func flushHoisted() {
+      guard !hoisted.isEmpty else { return }
+      output.append("")
+      for marker in hoisted { output.append(marker); output.append("") }
+      hoisted = []
+    }
+    for line in markdown.components(separatedBy: "\n") {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle() }
+      guard !inFence, trimmed.hasPrefix("|") else {
+        flushHoisted()
+        output.append(line)
+        continue
+      }
+      let row = NSMutableString(string: line)
+      var rowMarkers: [String] = []
+      let matches = expression.matches(in: line, range: NSRange(line.startIndex..., in: line))
+      for match in matches.reversed() {
+        let rawURL: String? = [2, 3].lazy.compactMap { index -> String? in
+          guard match.numberOfRanges > index, match.range(at: index).location != NSNotFound,
+                match.range(at: index).length > 0 else { return nil }
+          return row.substring(with: match.range(at: index))
+        }.first
+        guard let rawURL, resolveLocal(rawURL: rawURL, byHash: byHash) != nil else { continue }
+        rowMarkers.insert(row.substring(with: match.range), at: 0)
+        row.replaceCharacters(in: match.range, with: "")
+      }
+      hoisted.append(contentsOf: rowMarkers)
+      output.append(row as String)
+    }
+    flushHoisted()
+    return output.joined(separator: "\n")
   }
 
   private static func referencedLocalImagePaths(
@@ -478,11 +527,117 @@ enum MarkdownPresentation {
   static let bodyLineSpacing: CGFloat = 7
 
   static func sanitized(_ source: String) -> String {
-    var value = replacingHTMLLikeTokensPreservingCode(in: source)
+    var value = droppingWikiEditLinks(source)
+    value = fencingTextDiagrams(value)
+    value = replacingHTMLLikeTokensPreservingCode(in: value)
     value = replacing(#"(?:（此处内容无法显示）\s*){2,}"#, in: value, with: omittedHTML + "\n")
     value = collapsingCJKAdjacentSpaces(value)
     value = strippingLightboxFileInfo(value)
     return value
+  }
+
+  /// 维基百科每节标题后的「[ [edit](…action=edit…) ]」：抓取时连着编辑按钮一起存了下来，
+  /// 读的时候是一行行「[ edit ]」（2026-10-07 检查）。只认维基的编辑链接，整行去掉。
+  static func droppingWikiEditLinks(_ text: String) -> String {
+    guard text.contains("action=edit") else { return text }
+    let pattern = #"(?m)^[ \t]*\[[ \t]*\[edit\]\([^)\s]*action=edit[^)\s]*\)[ \t]*\][ \t]*\n?"#
+    return text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+  }
+
+  /// 用方框线条字符画的图（流程图、目录树）不在代码块里时，包成代码块按等宽排（2026-10-07 检查）。
+  ///
+  /// X 长文、公众号常把这种图直接贴成正文或引用（每行「> 」开头）；当普通段落排时，
+  /// 宋体比例字宽把竖线、箭头全打散。判据：连续几行里至少三行带线条字符（│ ├ ─ ┌ ▶ ▼…），
+  /// 中间允许空行和大段缩进的说明文字。已经在代码块里的不动。
+  static func fencingTextDiagrams(_ text: String) -> String {
+    guard text.unicodeScalars.contains(where: isDiagramScalar) else { return text }
+    let lines = text.components(separatedBy: "\n")
+    var output: [String] = []
+    var inFence = false
+    var index = 0
+    func unquoted(_ line: String) -> String {
+      guard line.hasPrefix(">") else { return line }
+      let rest = line.dropFirst()
+      return String(rest.hasPrefix(" ") ? rest.dropFirst() : rest)
+    }
+    func hasDiagramGlyph(_ line: String) -> Bool { line.unicodeScalars.contains(where: isDiagramScalar) }
+    func canContinue(_ line: String) -> Bool {
+      let body = unquoted(line)
+      return hasDiagramGlyph(body) || body.trimmingCharacters(in: .whitespaces).isEmpty || body.hasPrefix("    ")
+    }
+    while index < lines.count {
+      let line = lines[index]
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if !inFence, trimmed == "```" || trimmed == "~~~",
+         let close = lines[(index + 1)...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == trimmed }) {
+        // 没写语言的代码块里装的是线条图（备忘录导出常见）：标成图示，按等宽排；不标的话中文多，
+        // 会被当成「文字型代码块」按宋体排。备忘录每行夹的空行也去掉。
+        var body = Array(lines[(index + 1)..<close])
+        if body.filter(hasDiagramGlyph).count >= 3 {
+          let blanks = body.filter { $0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+          if blanks > 0, blanks * 2 >= body.count - 1 {
+            body = body.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+          }
+          output.append("```diagram")
+          output.append(contentsOf: body)
+          output.append(lines[close])
+          index = close + 1
+          continue
+        }
+      }
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        inFence.toggle()
+        output.append(line)
+        index += 1
+        continue
+      }
+      guard !inFence, hasDiagramGlyph(unquoted(line)) else {
+        output.append(line)
+        index += 1
+        continue
+      }
+      // 从这一行往下收：同一种引用状态、每行都能接上。
+      let quoted = line.hasPrefix(">")
+      var end = index
+      while end + 1 < lines.count {
+        let next = lines[end + 1]
+        guard next.hasPrefix(">") == quoted, canContinue(next) else { break }
+        // 空行只在后面还接着图时才算图的一部分，否则就是图和下文之间的分段。
+        if unquoted(next).trimmingCharacters(in: .whitespaces).isEmpty,
+           !(end + 2 < lines.count && hasDiagramGlyph(unquoted(lines[end + 2]))) { break }
+        end += 1
+      }
+      var run = Array(lines[index...end]).map(unquoted)
+      while let last = run.last, last.trimmingCharacters(in: .whitespaces).isEmpty { run.removeLast() }
+      // 备忘录导出常在每行之间夹一个空行：图里一半是空行时就是这种，去掉，不然目录树行距翻倍。
+      let blankLines = run.filter { $0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+      if blankLines * 2 >= run.count - 1, blankLines > 0 {
+        run = run.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+      }
+      let glyphLines = run.filter(hasDiagramGlyph).count
+      if glyphLines >= 3 {
+        // 不能写 text：那是「文字型代码块」，会按宋体排（见 ReadingSpecialCode.isProse）。
+        output.append("```diagram")
+        output.append(contentsOf: run)
+        output.append("```")
+        index = end + 1
+      } else {
+        output.append(line)
+        index += 1
+      }
+    }
+    return output.joined(separator: "\n")
+  }
+
+  private static func isDiagramScalar(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar.value {
+    case 0x2500...0x257F, // 方框线条 ─│┌┐└┘├┤┬┴┼
+         0x25B2, 0x25B6, 0x25BC, 0x25C0, // ▲ ▶ ▼ ◀
+         0x2190...0x2193: // ← ↑ → ↓
+      return true
+    default:
+      return false
+    }
   }
 
   /// 中文字旁边连着的两个以上空格压成一个（2026-09-25 走查：译文里「谈  tokenization」）。
@@ -2372,11 +2527,10 @@ struct MarkdownContentView: View {
   /// 提示块按主题状态色着色（`calloutColor`）。
   @Environment(\.appTheme) private var appTheme
 
-  /// 文字版心：约 36 字宽。正文、代码块、引用推文共用，右边缘对齐成一条线。
-  private var readingTextMeasure: CGFloat {
-    readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm
-  }
   var showsInlinePlainTextToggle: Bool = true
+  /// 边翻边看时不放「目录 · N 节」：译到第三个标题它才冒出来，整页往下挤一行（2026-10-09 Syc 录屏）。
+  /// 翻完换成定稿时再出现，和那一下换页并成一次。
+  var hidesOutlineEntry = false
   /// 正文下方的模块（脑图 / 图片 / 标注 / 标签…）。由详情页按实际存在的模块传入——
   /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
   var navigationModules: [ReadingModuleLink] = []
@@ -2406,10 +2560,15 @@ struct MarkdownContentView: View {
   @State private var outlineEntries: [MarkdownOutline.Entry] = []
   /// 收起的章节（按全文标题序号）。只改显示，不写回正文；换条目清空。
   @State private var collapsedHeadings: Set<Int> = []
+  /// 整篇文章拼成的富文本（见 `articleDocumentView`）：输入没变就拿回同一份。
+  @State private var articleCache = ArticleDocumentCache()
+  @State private var articleScrollRequest: ReadingScrollRequest?
+  /// 嵌入块拿不到 SwiftUI 自动往下传的环境，原样转交。
+  @Environment(\.self) private var environmentValues
 
   /// 少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
   private var showsOutlineEntry: Bool {
-    guard !showsPlainText else { return false }
+    guard !showsPlainText, !hidesOutlineEntry else { return false }
     if MarkdownOutline.shouldPresent(outlineEntries) { return true }
     // 只有模块、没有章节时，正文得长到需要跳转才值得占一行；一段 60 字的配文上
     // 摆个「目录 · 3 个模块」是噪音。
@@ -2542,6 +2701,7 @@ struct MarkdownContentView: View {
     accentColor: Color = .accentColor,
     showsPlainText: Binding<Bool> = .constant(false),
     showsInlinePlainTextToggle: Bool = true,
+    hidesOutlineEntry: Bool = false,
     navigationModules: [ReadingModuleLink] = [],
     anchorScope: String = "",
     revealText: String? = nil,
@@ -2561,6 +2721,7 @@ struct MarkdownContentView: View {
     self.accentColor = accentColor
     self._showsPlainText = showsPlainText
     self.showsInlinePlainTextToggle = showsInlinePlainTextToggle
+    self.hidesOutlineEntry = hidesOutlineEntry
     self.navigationModules = navigationModules
     self.anchorScope = anchorScope
     self.revealText = revealText
@@ -2604,71 +2765,10 @@ struct MarkdownContentView: View {
           onRequestEdit: onRequestEdit
         )
         .frame(maxWidth: .infinity, alignment: .leading)
-      } else if localImageURLs.isEmpty
-                  && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil
-                  && LocalMarkdownImageLayout.firstVideoMarkerRange(in: source) == nil {
-        structuredMarkdown(source)
-          .accessibilityIdentifier("history-content-markdown")
       } else {
-        // 切段走备忘缓存：整篇正则扫描 + 图集合并只随正文与图片清单变化，
-        // 巨型 ViewModel 引发的无关重绘不再重付这一遍。
-        let segments = ReadingRenderCache.gallerySegments(
-          markdown: source, localImageURLs: localImageURLs,
-          appendsUnusedLocalImages: appendsUnusedLocalImages,
-          groupsConsecutiveImages: groupsConsecutiveImages
-        )
-        // 标题前缀和一趟算完：旧写法把 `segments.prefix(i).reduce` 放在 ForEach 里，
-        // 26 段的正文每帧要重扫约 350 次前缀切片并重查 blocks 缓存。循环里现在只查表。
-        let headingOffsets = LocalMarkdownImageLayout.headingOffsets(of: segments)
-        ForEach(
-          Array(segments.enumerated()),
-          // 不能只用 offset：换条目后同位置常仍是「第一张图」，SwiftUI 会复用
-          // 子视图。把图片路径编进 id，强制按文件身份重建。
-          id: \.offset
-        ) { segmentIndex, segment in
-          let folding = SectionFolding(entries: outlineEntries, collapsed: collapsedHeadings)
-          // 图片、视频这些段夹在章节里：所在章节收起时一起藏。文字段自己按章节处理。
-          let isMedia: Bool = { if case .text = segment { return false } else { return true } }()
-          if isMedia, folding.isContentHidden(after: headingOffsets[segmentIndex] - 1) {
-            EmptyView()
-          } else {
-          switch segment {
-          case let .text(chunk):
-            if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-              structuredMarkdown(
-                chunk,
-                headingOffset: headingOffsets[segmentIndex],
-                segmentIndex: segmentIndex
-              )
-            }
-          case let .image(url):
-            // 白底/描边由 InlineArticleImageView 控制；本文件不改其 chrome。
-            // 比例、双击放大、菜单动作仍走原组件。
-            InlineArticleImageView(url: url)
-              .id(url.path)
-          case let .gallery(urls):
-            InlineArticleGalleryView(urls: urls)
-              .id(urls.map(\.path).joined(separator: "|"))
-          case let .quotedTweet(quote):
-            QuotedTweetCardView(
-              quote: quote,
-              readingFont: readingFont,
-              accentColor: accentColor,
-              onOpenURL: { _ = openValidated($0) }
-            )
-            .frame(maxWidth: readingTextMeasure, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          case let .video(video):
-            ArticleInlineVideoCard(
-              video: video,
-              localFileURL: localFile(forVideoAt: segmentIndex, in: segments),
-              pageURL: sourceURL,
-              onOpenURL: { _ = openValidated($0) }
-            )
-          }
-          }
-        }
-        .accessibilityIdentifier("history-content-markdown")
+        // 整篇文章排进一个 TextKit 2 文字视图；图片、表格、代码这些块嵌在文字里（见 ArticleDocument）。
+        articleDocumentView
+          .accessibilityIdentifier("history-content-markdown")
       }
     }
     .environment(\.openURL, OpenURLAction { url in
@@ -2682,12 +2782,23 @@ struct MarkdownContentView: View {
     // 换条目就重算一次目录；同一条正文内的重绘不再解析。
     .task(id: source) {
       collapsedHeadings = []
-      outlineEntries = MarkdownOutline.entries(
-        from: ReadingRenderCache.blocks(from: MarkdownPresentation.sanitized(source))
-      )
+      // 整篇清洗 + 解析放到后台线程（2026-10-06）：10 万字的长文在这里要 0.2s 以上，
+      // 原来在主线程上做，打开长文时界面先卡一下。和缓存版同一个解析，块序号一致。
+      let text = source
+      let entries = await Task.detached(priority: .userInitiated) {
+        MarkdownOutline.entries(from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(text)))
+      }.value
+      guard !Task.isCancelled else { return }
+      outlineEntries = entries
     }
       .onChange(of: scrollTarget) { _, target in
         guard let target else { return }
+        // 章节在整篇文字视图里：滚到它的字符位置。模块锚点（标签、脑图…）在详情页，照旧。
+        if case let .block(index) = target, let offset = articleCache.current?.anchors[index] {
+          articleScrollRequest = ReadingScrollRequest(characterOffset: offset, token: UUID())
+          scrollTarget = nil
+          return
+        }
         // 命名空间后的落点：模块锚点（tags 等）只在详情页注册一份，保持原值；
         // 章节锚点按面板隔离，避免撞到保活的隐藏面板。
         let resolved: AnyHashable = switch target {
@@ -2707,6 +2818,349 @@ struct MarkdownContentView: View {
         }
         scrollTarget = nil
       }
+    }
+  }
+
+  /// 折叠小三角挂在文字左边这段页边里（原来 `SectionFoldToggle` 也是往左偏 20）。
+  private static let foldGutter: CGFloat = 20
+
+  private var articleDocumentView: some View {
+    let document = articleCache.document(for: articleKey, reuseScope: blockReuseScope) { buildArticleDocument() }
+    return SelectableReadingTextView(
+      attributed: document.text,
+      accent: NSColor(accentColor),
+      onOpenLink: { url in _ = openValidated(url) },
+      revealText: revealText,
+      onRequestEdit: onRequestEdit,
+      scrollRequest: articleScrollRequest
+    )
+    // 往左多伸出一段页边：正文、卡片都用段落缩进退回原位，折叠小三角放在这段页边里。
+    // 不用负 padding（2026-10-07）：它让外层以为这块比可用宽度多 20pt，整组内容被重新居中、
+    // 往右挪了约 6pt，随字号和窗口宽度时对时不对——「缩放时宽度对不齐」。
+    .modifier(LeadingBleed(amount: Self.foldGutter))
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private struct ArticleKey: Hashable {
+    let source: String
+    let localImageURLs: [URL]
+    let localMediaFileURL: URL?
+    let appendsUnusedLocalImages: Bool
+    let groupsConsecutiveImages: Bool
+    let readingFont: ResolvedReadingFont
+    let palette: [CGFloat]
+    let appearance: String
+    let outline: [Int]
+    let collapsed: [Int]
+    let toggledCode: [String]
+    let rendererGeneration: Int
+    let anchorScope: String
+  }
+
+  private var articleKey: AnyHashable {
+    AnyHashable(ArticleKey(
+      source: source,
+      localImageURLs: localImageURLs,
+      localMediaFileURL: localMediaFileURL,
+      appendsUnusedLocalImages: appendsUnusedLocalImages,
+      groupsConsecutiveImages: groupsConsecutiveImages,
+      readingFont: readingFont,
+      palette: articlePalette.fingerprint,
+      appearance: NSApp.effectiveAppearance.name.rawValue,
+      outline: outlineEntries.map(\.blockIndex),
+      collapsed: collapsedHeadings.sorted(),
+      toggledCode: toggledCodeBlocks.sorted(),
+      rendererGeneration: webRenderer.generation,
+      anchorScope: anchorScope
+    ))
+  }
+
+  /// 嵌入块的样子取决于的条件：正文、目录、折叠以外的那些。这些没变时，重拼正文可以沿用旧块。
+  private var blockReuseScope: AnyHashable {
+    AnyHashable([
+      AnyHashable(localImageURLs), AnyHashable(localMediaFileURL), AnyHashable(sourceURL),
+      AnyHashable(readingFont), AnyHashable(articlePalette.fingerprint),
+      AnyHashable(NSApp.effectiveAppearance.name.rawValue), AnyHashable(toggledCodeBlocks),
+      AnyHashable(webRenderer.generation), AnyHashable(anchorScope),
+    ])
+  }
+
+  private var articlePalette: ReadingTextComposer.Palette {
+    .init(primary: NSColor(primaryTextColor), secondary: NSColor(secondaryTextColor), accent: NSColor(accentColor))
+  }
+
+  /// 把整篇拼成一份富文本。切段、章节、折叠、导语、卡片前后的空白，规则和原来逐段排
+  /// SwiftUI 视图时一样（`structuredMarkdown` 仍给提示框里的正文用）。
+  ///
+  /// 所有块（图片、视频、表格、提示框、评论）和正文共用一个版心宽（2026-10-07 Syc：
+  /// 原来正文收在约 36 字、图片表格撑满整栏，右边缘对不齐，阅读区越宽差得越多）。
+  /// 阅读区比版心窄时，文字和块一起跟着变窄。
+  private func buildArticleDocument() -> ArticleDocument {
+    let segments: [LocalMarkdownImageLayout.Segment] = localImageURLs.isEmpty
+      && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil
+      && LocalMarkdownImageLayout.firstVideoMarkerRange(in: source) == nil
+      ? [.text(source)]
+      : ReadingRenderCache.gallerySegments(
+        markdown: source, localImageURLs: localImageURLs,
+        appendsUnusedLocalImages: appendsUnusedLocalImages,
+        groupsConsecutiveImages: groupsConsecutiveImages
+      )
+    let headingOffsets = LocalMarkdownImageLayout.headingOffsets(of: segments)
+    let folding = SectionFolding(entries: outlineEntries, collapsed: collapsedHeadings)
+    let palette = articlePalette
+    let environment = environmentValues
+    let cache = articleCache
+    let output = NSMutableAttributedString()
+    var anchors: [Int: Int] = [:]
+
+    func endParagraph() {
+      if output.length > 0, !output.string.hasSuffix("\n") {
+        output.append(NSAttributedString(string: "\n"))
+      }
+    }
+
+    /// `reuse`：块的内容。重拼时内容相同的块拿回上一份那一个（见 `ArticleDocumentCache.block`）。
+    func appendBlock(
+      _ width: HostedBlockAttachment.Width, top: CGFloat, bottom: CGFloat, anchor: Int?, reuse: String,
+      view: @escaping @MainActor () -> AnyView
+    ) {
+      endParagraph()
+      if let anchor { anchors[anchor] = output.length }
+      let attachment = cache.block(reuseKey: reuse) {
+        HostedBlockAttachment(width: width) {
+          // 先挂链接校验，再整份转交环境：里面那层覆盖外面，openURL 留的是校验版。
+          AnyView(
+            view()
+              .environment(\.openURL, OpenURLAction { url in self.openValidated(url) })
+              .environment(\.self, environment)
+          )
+        }
+      }
+      let style = NSMutableParagraphStyle()
+      style.paragraphSpacingBefore = output.length == 0 ? 0 : top
+      style.paragraphSpacing = bottom
+      style.firstLineHeadIndent = Self.foldGutter
+      style.headIndent = Self.foldGutter
+      let piece = NSMutableAttributedString(attachment: attachment)
+      piece.append(NSAttributedString(string: "\n"))
+      piece.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: piece.length))
+      output.append(piece)
+    }
+
+    func appendText(
+      _ composed: NSAttributedString, foldToggle: (heading: Int, collapsed: Bool)?, spacingBefore: CGFloat, anchor: Int?
+    ) {
+      guard composed.length > 0 else { return }
+      endParagraph()
+      if let anchor { anchors[anchor] = output.length }
+      let text = NSMutableAttributedString(attributedString: composed)
+      let whole = NSRange(location: 0, length: text.length)
+      var styles: [(NSRange, NSParagraphStyle)] = []
+      text.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
+        let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        // 整体往右让出页边；列表、引用原有的缩进叠在上面。版心从行首算，也加上页边。
+        style.firstLineHeadIndent += Self.foldGutter
+        style.headIndent += Self.foldGutter
+        styles.append((range, style))
+      }
+      for (range, style) in styles { text.addAttribute(.paragraphStyle, value: style, range: range) }
+      if spacingBefore > 0, output.length > 0,
+         let first = text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle,
+         let style = first.mutableCopy() as? NSMutableParagraphStyle {
+        style.paragraphSpacingBefore += spacingBefore
+        let firstParagraph = (text.string as NSString).paragraphRange(for: NSRange(location: 0, length: 0))
+        text.addAttribute(.paragraphStyle, value: style, range: firstParagraph)
+      }
+      if let foldToggle {
+        // 小三角占住页边那 20pt：标题首行不缩进，三角的位子正好 20pt 宽，标题文字落回正文那条线。
+        // （文字引擎不理会嵌入块上的字距，所以不能用「16pt + 4pt 字距」凑。）
+        let font = text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont ?? NSFont.systemFont(ofSize: 18)
+        let collapsed = foldToggle.collapsed
+        let heading = foldToggle.heading
+        let headingLine = (text.string as NSString).paragraphRange(for: NSRange(location: 0, length: 0))
+        if let current = text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle,
+           let style = current.mutableCopy() as? NSMutableParagraphStyle {
+          style.firstLineHeadIndent -= Self.foldGutter
+          text.addAttribute(.paragraphStyle, value: style, range: headingLine)
+        }
+        let offset = CGPoint(x: 0, y: font.capHeight / 2 - 8)
+        let toggle = cache.block(reuseKey: "fold|\(heading)|\(collapsed)|\(offset.y)") {
+          HostedBlockAttachment(width: .fixed(CGSize(width: Self.foldGutter, height: 16), offset: offset)) {
+            AnyView(InlineFoldToggle(isCollapsed: collapsed, tint: self.secondaryTextColor) {
+              if self.collapsedHeadings.contains(heading) {
+                self.collapsedHeadings.remove(heading)
+              } else {
+                self.collapsedHeadings.insert(heading)
+              }
+            })
+          }
+        }
+        let mark = NSMutableAttributedString(attachment: toggle)
+        let attributes = text.attributes(at: 0, effectiveRange: nil).filter { $0.key != .link }
+        mark.addAttributes(attributes, range: NSRange(location: 0, length: mark.length))
+        text.insert(mark, at: 0)
+      }
+      output.append(text)
+    }
+
+    var previousWasBlock = false
+    for (segmentIndex, segment) in segments.enumerated() {
+      let isMedia: Bool = { if case .text = segment { return false } else { return true } }()
+      if isMedia, folding.isContentHidden(after: headingOffsets[segmentIndex] - 1) { continue }
+      switch segment {
+      case let .text(chunk):
+        guard !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+        appendStructuredText(
+          chunk, headingOffset: headingOffsets[segmentIndex], segmentIndex: segmentIndex,
+          folding: folding, palette: palette,
+          leadingSpace: previousWasBlock ? 10 : 0,
+          appendText: appendText, appendBlock: appendBlock
+        )
+        previousWasBlock = false
+      case let .image(url):
+        appendBlock(.full, top: 10, bottom: 0, anchor: nil, reuse: "image|\(url.absoluteString)") {
+          AnyView(InlineArticleImageView(url: url).id(url.path))
+        }
+        previousWasBlock = true
+      case let .gallery(urls):
+        appendBlock(.full, top: 10, bottom: 0, anchor: nil, reuse: "gallery|\(urls.map(\.absoluteString))") {
+          AnyView(InlineArticleGalleryView(urls: urls).id(urls.map(\.path).joined(separator: "|")))
+        }
+        previousWasBlock = true
+      case let .quotedTweet(quote):
+        appendBlock(.full, top: 10, bottom: 0, anchor: nil, reuse: "quote|\(String(describing: quote))") {
+          AnyView(QuotedTweetCardView(
+            quote: quote, readingFont: self.readingFont, accentColor: self.accentColor,
+            onOpenURL: { _ = self.openValidated($0) }
+          ))
+        }
+        previousWasBlock = true
+      case let .video(video):
+        let localFile = localFile(forVideoAt: segmentIndex, in: segments)
+        let videoKey = "video|\(String(describing: video))|\(localFile?.path ?? "")"
+        appendBlock(.full, top: 10, bottom: 0, anchor: nil, reuse: videoKey) {
+          AnyView(ArticleInlineVideoCard(
+            video: video, localFileURL: localFile, pageURL: self.sourceURL,
+            onOpenURL: { _ = self.openValidated($0) }
+          ))
+        }
+        previousWasBlock = true
+      }
+    }
+    if output.string.hasSuffix("\n") {
+      output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
+    }
+    return ArticleDocument(text: output, anchors: anchors)
+  }
+
+  /// 一段文字（两张图之间的那段）：切成文字段和卡片，章节处另起、可折叠。
+  // swiftlint:disable:next function_parameter_count
+  private func appendStructuredText(
+    _ value: String,
+    headingOffset: Int,
+    segmentIndex: Int,
+    folding: SectionFolding,
+    palette: ReadingTextComposer.Palette,
+    leadingSpace: CGFloat,
+    appendText: (NSAttributedString, (heading: Int, collapsed: Bool)?, CGFloat, Int?) -> Void,
+    appendBlock: (HostedBlockAttachment.Width, CGFloat, CGFloat, Int?, String, @escaping @MainActor () -> AnyView) -> Void
+  ) {
+    let blocks = ReadingRenderCache.blocks(from: value)
+    let localHeadings = MarkdownOutline.entries(from: blocks)
+    let anchorable = MarkdownOutline.shouldPresent(outlineEntries)
+    func resolvedBlockIndex(_ localIndex: Int) -> Int {
+      if let ordinal = localHeadings.firstIndex(where: { $0.blockIndex == localIndex }),
+         outlineEntries.indices.contains(headingOffset + ordinal) {
+        return outlineEntries[headingOffset + ordinal].blockIndex
+      }
+      return -((segmentIndex + 1) * 1_000_000 + localIndex + 1)
+    }
+    var runs: [(anchor: Int, run: StructuredRun)] = []
+    for (index, block) in blocks.enumerated() {
+      let startsSection: Bool = {
+        guard anchorable, case .heading = block else { return false }
+        return true
+      }()
+      if case let .code(language, content) = block {
+        runs.append((index, .code(language: language, content: content)))
+      } else if case let .table(headers, rows, alignments) = block {
+        runs.append((index, .table(headers: headers, rows: rows, alignments: alignments)))
+      } else if case let .comments(section) = block {
+        runs.append((index, .comments(section)))
+      } else if case let .callout(kind, title, text, fold) = block {
+        runs.append((index, .callout(kind: kind, title: title, text: text, fold: fold)))
+      } else if !startsSection, case var .text(accumulated) = runs.last?.run {
+        accumulated.append(block)
+        runs[runs.count - 1].run = .text(accumulated)
+      } else {
+        runs.append((index, .text([block])))
+      }
+    }
+    func owningHeading(_ localIndex: Int) -> Int? {
+      let count = localHeadings.filter { $0.blockIndex <= localIndex }.count
+      if count > 0 { return headingOffset + count - 1 }
+      return headingOffset > 0 ? headingOffset - 1 : nil
+    }
+    var pendingSpace = leadingSpace
+    for (position, entry) in runs.enumerated() {
+      let owner = owningHeading(entry.anchor)
+      let nextIsCard = position + 1 < runs.count && !runs[position + 1].run.isText
+      let followsText = position > 0 && runs[position - 1].run.isText
+      let isHeading = anchorable && localHeadings.contains { $0.blockIndex == entry.anchor }
+      var run = entry.run
+      var foldToggle: (heading: Int, collapsed: Bool)?
+      if isHeading, let heading = owner {
+        if folding.isHeadingHidden(heading) { continue }
+        let collapsed = folding.isCollapsed(heading)
+        if collapsed { run = run.headingOnly }
+        foldToggle = (heading, collapsed)
+      } else if folding.isContentHidden(after: owner ?? -1) {
+        continue
+      }
+      // 章节锚点落在这一段的第一个字上。
+      let anchor = resolvedBlockIndex(entry.anchor)
+      switch run {
+      case let .text(textBlocks):
+        let composed = ReadingRenderCache.attributed(
+          blocks: textBlocks, readingFont: readingFont, palette: palette,
+          emphasizesLede: segmentIndex == 0 && entry.anchor == 0
+        )
+        let trims = nextIsCard && foldToggle?.collapsed != true
+        appendText(trims ? ReadingRenderCache.trimmingTrailingNewline(composed) : composed, foldToggle, pendingSpace, anchor)
+      case let .code(language, content):
+        appendBlock(.full, followsText ? 10 : 0, 20, anchor, "code|\(language ?? "")|\(content)") {
+          AnyView(self.specialCodeBlock(language: language, content: content))
+        }
+      case let .table(headers, rows, alignments):
+        appendBlock(.full, followsText ? 10 : 0, 20, anchor, "table|\(headers)|\(rows)|\(String(describing: alignments))") {
+          AnyView(self.markdownTable(headers: headers, rows: rows, alignments: alignments))
+        }
+      case let .comments(section):
+        appendBlock(.full, followsText ? 10 : 0, 0, anchor, "comments|\(String(describing: section))") {
+          AnyView(CommentThreadSectionView(
+            section: section,
+            localImageURLs: self.localImageURLs,
+            readingFont: self.readingFont,
+            primaryTextColor: self.primaryTextColor,
+            secondaryTextColor: self.secondaryTextColor,
+            accentColor: self.accentColor,
+            onOpenURL: { _ = self.openValidated($0) }
+          ))
+        }
+      case let .callout(kind, title, text, fold):
+        let calloutKey = "callout|\(String(describing: kind))|\(title)|\(String(describing: fold))|\(text)"
+        appendBlock(.full, followsText ? 10 : 0, 20, anchor, calloutKey) {
+          AnyView(ReadingCalloutCard(
+            kind: kind, title: title, fold: fold,
+            accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor
+          ) {
+            if !text.isEmpty {
+              AnyView(self.structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
+            }
+          })
+        }
+      }
+      pendingSpace = 0
     }
   }
 
@@ -2842,9 +3296,7 @@ struct MarkdownContentView: View {
         revealText: revealText,
         onRequestEdit: onRequestEdit
       )
-      // 文字收在约 36 字的版心里；代码块、引用推文跟文字同一版心（2026-09-29 走查：
-      // 正文早早换行、代码卡却撑满整栏，右边缘参差）。图片、视频、表格仍用整栏宽。
-      .frame(maxWidth: readingTextMeasure, alignment: .leading)
+      // 文字、代码块、图片都铺满阅读列，左右边缘和标题、页签同一条线（Syc 2026-10-07）。
       .frame(maxWidth: .infinity, alignment: .leading)
     case let .callout(kind, title, text, fold):
       ReadingCalloutCard(
@@ -2863,7 +3315,6 @@ struct MarkdownContentView: View {
       .padding(.bottom, 20)
     case let .code(language, content):
       specialCodeBlock(language: language, content: content)
-        .frame(maxWidth: readingTextMeasure, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 20)
     case let .table(headers, rows, alignments):
@@ -3191,7 +3642,7 @@ struct MarkdownContentView: View {
     let lineCount = content.reduce(into: 1) { count, character in if character == "\n" { count += 1 } }
     return VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
-        Text(language?.isEmpty == false ? language! : "代码")
+        Text(language == "diagram" ? "图示" : (language?.isEmpty == false ? language! : "代码"))
           .font(.system(.subheadline, design: .monospaced).weight(.semibold))
           .foregroundStyle(secondaryTextColor)
         Spacer(minLength: 0)
@@ -3216,7 +3667,9 @@ struct MarkdownContentView: View {
             .padding(.trailing, 10)
             .accessibilityHidden(true)
         }
-        ScrollView(.horizontal, showsIndicators: true) {
+        // 不显示横向滚动条（2026-10-07 检查）：代码块嵌进整篇文字视图后，系统的叠加滚动条会在
+        // 块中间画出一块灰色的影子。宽的代码照样能用触控板左右滑。
+        ScrollView(.horizontal, showsIndicators: false) {
           Text(CodeSyntaxHighlighter.highlighted(content, language: language))
             .font(.system(size: readingFont.bodySize - 2, design: .monospaced))
             .lineSpacing(4)
@@ -3224,6 +3677,8 @@ struct MarkdownContentView: View {
             .fixedSize()
             .padding(12)
         }
+        // macOS 26 的滚动边缘效果在嵌入块里会画出一块玻璃状的灰影（2026-10-07 检查：宽的目录树中间）。
+        .modifier(HidesScrollEdgeEffect())
         .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -3688,6 +4143,29 @@ struct SectionFolding {
 }
 
 /// 标题左侧的收起 / 展开按钮。平时淡，悬停到这一节才明显，不给正文添噪点。
+/// 整篇文章一个文字视图时的章节折叠小三角：位置由嵌入块定（挂在标题左边的页边），这里只画按钮。
+struct InlineFoldToggle: View {
+  let isCollapsed: Bool
+  let tint: Color
+  let action: () -> Void
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "chevron.right")
+        .font(.system(size: 10, weight: .semibold))
+        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+        .frame(width: 16, height: 16)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(tint.opacity(isCollapsed || isHovering ? 0.9 : 0.35))
+    .onHover { isHovering = $0 }
+    .help(isCollapsed ? "展开这一节" : "收起这一节")
+    .accessibilityLabel(isCollapsed ? "展开这一节" : "收起这一节")
+  }
+}
+
 struct SectionFoldToggle: View {
   let isCollapsed: Bool
   let level: Int
@@ -3861,3 +4339,14 @@ enum InlineMath {
   }
 }
 
+
+/// macOS 26 起才有的「隐藏滚动边缘效果」；更早的系统没有这个效果，原样返回。
+struct HidesScrollEdgeEffect: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      content.scrollEdgeEffectHidden(true, for: .all)
+    } else {
+      content
+    }
+  }
+}

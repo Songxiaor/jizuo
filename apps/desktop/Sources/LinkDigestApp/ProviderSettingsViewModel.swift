@@ -49,8 +49,19 @@ final class ProviderSettingsViewModel {
     didSet { handleDraftEdit(from: oldValue, to: modelName, invalidatesModelCatalog: false) }
   }
   private(set) var selectedPreset: ProviderPreset = .custom
+  /// 「其他服务商」说的接口协议。推荐服务商都是 OpenAI 兼容，选它们时跟着回到默认。
+  var apiMode: APIMode = .chatCompletions {
+    didSet {
+      guard oldValue != apiMode else { return }
+      draftGeneration &+= 1
+      clearModelCatalog()
+      connectionTestState = hasUnsavedIdentityChanges ? .blockedUnsavedChanges : .idle
+    }
+  }
   var modelSearchQuery = ""
   private(set) var availableModels: [String] = []
+  /// 读列表时服务商多给的模型信息（来源、上下文、思考档位…），按模型 ID 查。只在添加窗口里用，不落库。
+  private(set) var catalogEntries: [String: ModelCatalogEntry] = [:]
   private(set) var selectedCatalogModels: Set<String> = []
   private(set) var modelCatalogState: ModelCatalogState = .idle
   private(set) var state: ProviderSettingsState = .unconfigured
@@ -192,6 +203,22 @@ final class ProviderSettingsViewModel {
     return validatedCatalogBaseURL == borrowedProviderKey.baseURL
   }
 
+  /// 本机 Magpie 不校验密钥：没填就存这个占位值（汲作要求每个服务商都有一条密钥记录）。
+  /// 给 Magpie 设了网关密钥的，照常填真的。
+  static let magpieLocalKey = "magpie-local"
+
+  /// 正在配的是本机 Magpie（选了它的卡片，或者地址就是它的默认地址）。
+  var isMagpieDraft: Bool {
+    selectedPreset == .magpie || baseURL == ProviderPreset.magpie.baseURLTemplate
+  }
+
+  /// 密钥可以不填的情况：Magpie。
+  var allowsEmptyAPIKey: Bool { isMagpieDraft }
+
+  private func effectiveAPIKey(_ apiKey: String) -> String {
+    allowsEmptyAPIKey && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.magpieLocalKey : apiKey
+  }
+
   var canSaveConfiguration: Bool {
     let hasModelSelection = isAddingModelBatch
       ? !selectedCatalogModels.isEmpty
@@ -308,7 +335,7 @@ final class ProviderSettingsViewModel {
     if let entry = libraryEntryDisplays.first(where: { $0.modelName == identity.model }) {
       return (entry.title, entry.displayName)
     }
-    return (identity.host, Self.friendlyModelName(identity.model))
+    return (identity.host, ModelNameHintStore.shared.label(baseURL: nil, model: identity.model).title)
   }
   var isLocalEndpoint: Bool { dataDestinationCard?.isLocalEndpoint == true }
   var isLoadingModels: Bool { activeModelCatalogRequest != nil }
@@ -452,6 +479,7 @@ final class ProviderSettingsViewModel {
       baseURL = profile.baseURL.absoluteString
       modelName = profile.model
       selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
+      apiMode = profile.apiMode
       savedIdentity = DataDestinationIdentity(profile: profile)
       connectionTestState = .idle
       state = .configured
@@ -497,7 +525,10 @@ final class ProviderSettingsViewModel {
     let baseURL: String
     let title: String
     let modelName: String
+    /// 「模型名 · 厂商」（`ModelNaming`）。原始 ID 在 `modelName`，只放悬停提示。
     let displayName: String
+    /// 渠道：服务商，网关再细到里面那条订阅（「Magpie · Claude Code」）。分组用。
+    let channel: String
     let preset: ProviderPreset
     let supportsOnlineTranscription: Bool
   }
@@ -505,13 +536,15 @@ final class ProviderSettingsViewModel {
   var libraryEntryDisplays: [LibraryEntryDisplay] {
     libraryProfiles.map { profile in
       let preset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
+      let label = ModelNameHintStore.shared.label(baseURL: profile.baseURL.absoluteString, model: profile.model)
       let title = preset == .custom ? (profile.baseURL.host ?? "其他服务商") : preset.displayName
       return LibraryEntryDisplay(
         id: profile.id,
         baseURL: profile.baseURL.absoluteString,
         title: title,
         modelName: profile.model,
-        displayName: Self.friendlyModelName(profile.model),
+        displayName: label.title,
+        channel: label.channel.isEmpty ? title : label.channel,
         preset: preset,
         supportsOnlineTranscription: Self.isTranscriptionModel(profile.model)
       )
@@ -526,51 +559,9 @@ final class ProviderSettingsViewModel {
     libraryEntryDisplays.filter { !$0.supportsOnlineTranscription }
   }
 
+  /// 只剩旧调用点和测试在用；界面显示一律走 `ModelNameHintStore.label`。
   static func friendlyModelName(_ modelName: String) -> String {
-    let leaf = modelName
-      .split(separator: "/")
-      .last
-      .map(String.init)?
-      .trimmingCharacters(in: CharacterSet(charactersIn: "~"))
-      ?? modelName
-    let replacements: [String: String] = [
-      "asr": "ASR",
-      "tts": "TTS",
-      "gpt": "GPT",
-      "glm": "GLM",
-      "llm": "LLM",
-      "ocr": "OCR",
-      "api": "API",
-      "deepseek": "DeepSeek",
-      "stepaudio": "StepAudio",
-      "step": "Step",
-      "whisper": "Whisper",
-      "qwen": "Qwen",
-      "llama": "Llama",
-      "gemini": "Gemini",
-      "claude": "Claude",
-      "flash": "Flash",
-      "turbo": "Turbo",
-      "mini": "Mini",
-      "nano": "Nano",
-      "pro": "Pro",
-      "chat": "Chat",
-      "realtime": "Realtime",
-      "latest": "Latest",
-    ]
-    let words = leaf
-      .split(whereSeparator: { $0 == "-" || $0 == "_" })
-      .map(String.init)
-      .map { word -> String in
-        let lowercased = word.lowercased()
-        if let replacement = replacements[lowercased] { return replacement }
-        if lowercased.hasPrefix("v"), lowercased.dropFirst().first?.isNumber == true {
-          return "V" + lowercased.dropFirst()
-        }
-        guard let first = word.first else { return word }
-        return String(first).uppercased() + word.dropFirst()
-      }
-    return words.isEmpty ? modelName : words.joined(separator: " ")
+    ModelNaming.prettify(modelName.split(separator: "/").last.map(String.init) ?? modelName)
   }
 
   /// 按模型名认语音转写模型。服务商的模型列表不说模型能干什么，只能靠名字。
@@ -648,8 +639,12 @@ final class ProviderSettingsViewModel {
     var anyListed = false
     for profile in libraryProfiles where seen.insert(profile.baseURL).inserted {
       guard let credentials = try? await configurationService.loadCredentials(profileID: profile.id),
-            let models = try? await modelCatalogLoader.listModels(baseURL: profile.baseURL, apiKey: credentials.apiKey)
+            let entries = try? await modelCatalogLoader.listModelEntries(
+              baseURL: profile.baseURL, apiKey: credentials.apiKey, apiMode: profile.apiMode
+            )
       else { continue }
+      ModelNameHintStore.shared.record(baseURL: profile.baseURL.absoluteString, entries: entries)
+      let models = entries.map(\.id)
       searched += 1
       anyListed = true
       let preset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
@@ -709,6 +704,7 @@ final class ProviderSettingsViewModel {
     baseURL = ""
     modelName = ""
     selectedPreset = .custom
+    apiMode = .chatCompletions
     savedIdentity = nil
     isReplacingAPIKey = false
     connectionTestState = .idle
@@ -728,6 +724,7 @@ final class ProviderSettingsViewModel {
     beginAddModel()
     baseURL = profile.baseURL.absoluteString
     selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
+    apiMode = profile.apiMode
     borrowedProviderKey = BorrowedProviderKey(profileID: profile.id, baseURL: profile.baseURL)
     await loadModels()
   }
@@ -742,6 +739,7 @@ final class ProviderSettingsViewModel {
     baseURL = profile.baseURL.absoluteString
     modelName = profile.model
     selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
+    apiMode = profile.apiMode
     savedIdentity = DataDestinationIdentity(profile: profile)
     isReplacingAPIKey = false
     connectionTestState = .idle
@@ -984,6 +982,7 @@ final class ProviderSettingsViewModel {
   func selectPreset(_ preset: ProviderPreset) {
     guard !isConfigurationLoading, !isSaving, !isTestingConnection, !isLoadingModels else { return }
     selectedPreset = preset
+    if preset != .custom { apiMode = .chatCompletions }
     if !preset.baseURLTemplate.isEmpty {
       baseURL = preset.baseURLTemplate
     }
@@ -1043,6 +1042,7 @@ final class ProviderSettingsViewModel {
     guard canSaveConfiguration else {
       return
     }
+    let apiKey = effectiveAPIKey(apiKey)
     connectionTestState = .idle
     duplicateSkipNotice = nil
     state = .saving
@@ -1069,6 +1069,7 @@ final class ProviderSettingsViewModel {
           baseURL: submittedBaseURL,
           model: submittedModels[0],
           apiKey: submittedKey,
+          apiMode: apiMode,
           allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
         )]
       } else if freshModels.isEmpty,
@@ -1091,6 +1092,7 @@ final class ProviderSettingsViewModel {
           baseURL: submittedBaseURL,
           models: freshModels,
           apiKey: apiKey,
+          apiMode: apiMode,
           allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
         )
       }
@@ -1190,6 +1192,7 @@ final class ProviderSettingsViewModel {
   }
 
   func loadModels(apiKey: String) async {
+    let apiKey = effectiveAPIKey(apiKey)
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       modelCatalogState = .failed(code: .authInvalid)
       availableModels = []
@@ -1238,9 +1241,12 @@ final class ProviderSettingsViewModel {
         }
         key = credentials.apiKey
       }
-      let models = try await modelCatalogLoader.listModels(baseURL: request.baseURL, apiKey: key)
+      let entries = try await modelCatalogLoader.listModelEntries(baseURL: request.baseURL, apiKey: key, apiMode: apiMode)
+      let models = entries.map(\.id)
       guard canApplyCatalogResult(for: request) else { return }
       availableModels = Array(models.prefix(Self.modelCatalogLimit))
+      catalogEntries = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      ModelNameHintStore.shared.record(baseURL: request.baseURL.absoluteString, entries: entries)
       modelHealth.applyCatalog(
         baseURL: request.baseURL.absoluteString,
         catalog: models,
@@ -1289,6 +1295,23 @@ final class ProviderSettingsViewModel {
   var editorHealthBaseURL: String? { validatedCatalogBaseURL?.absoluteString }
 
   /// 下拉列表的顺序：能用的在前，确定用不了的沉底；同档保持服务商原顺序。
+  /// 添加窗口里一个模型的名字（「模型名 · 厂商」和渠道），用读列表时记下的显示名。
+  func catalogLabel(_ name: String) -> ModelLabel {
+    ModelNameHintStore.shared.label(baseURL: validatedCatalogBaseURL?.absoluteString ?? baseURL, model: name)
+  }
+
+  /// 勾选列表按渠道分小节（Magpie 的 Claude Code、Cursor…），小节内保持「能用的排前面」。
+  var catalogChannelSections: [(channel: String, models: [String])] {
+    var order: [String] = []
+    var grouped: [String: [String]] = [:]
+    for name in healthSortedFilteredModels {
+      let channel = catalogLabel(name).channel
+      if grouped[channel] == nil { order.append(channel) }
+      grouped[channel, default: []].append(name)
+    }
+    return order.map { ($0, grouped[$0] ?? []) }
+  }
+
   var healthSortedFilteredModels: [String] {
     guard let base = editorHealthBaseURL else { return filteredModels }
     return filteredModels.enumerated().sorted { lhs, rhs in
@@ -1317,19 +1340,40 @@ final class ProviderSettingsViewModel {
   }
 
   private(set) var modelProbeState: ModelProbeState = .idle
+  var isModelProbeRunning: Bool {
+    if case .running = modelProbeState { return true }
+    return false
+  }
   @ObservationIgnored private var modelProbeTask: Task<Void, Never>?
   /// 每次检测一个编号：旧任务收尾时先确认「还是我这一次」，不去清掉或覆盖新一次的状态。
   @ObservationIgnored private var modelProbeRunID = UUID()
   /// 一次检测最多这么多个，免得一口气对上百个模型发请求。
   static let modelProbeLimit = 40
 
-  /// 编辑窗口里读到的模型列表（受过滤词影响）。
-  var catalogProbePlan: ModelProbePlan {
-    Self.probePlan(for: Array(filteredModels.prefix(Self.modelProbeLimit)))
+  /// 添加/编辑窗口里「检测可用」测哪些：测眼前的那个（2026-10-09 Syc：为什么非要一次测全部）。
+  /// 编辑一个模型 → 只测它；勾了模型 → 测勾的；都没有 → 列表里的（受过滤词影响，最多 40 个）。
+  var catalogProbeTargets: [String] {
+    if editingProfileID != nil, !isAddingModelBatch, !modelName.isEmpty { return [modelName] }
+    let selected = healthSortedFilteredModels.filter { selectedCatalogModels.contains($0) }
+    if !selected.isEmpty { return Array(selected.prefix(Self.modelProbeLimit)) }
+    return Array(filteredModels.prefix(Self.modelProbeLimit))
   }
 
-  static func probePlan(for models: [String]) -> ModelProbePlan {
-    ModelProbePlan(
+  /// 按钮上的说法，和 `catalogProbeTargets` 对应。
+  var catalogProbeButtonTitle: String {
+    if editingProfileID != nil, !isAddingModelBatch, !modelName.isEmpty { return "检测这个模型" }
+    if !selectedCatalogModels.isEmpty { return "检测选中的 \(min(selectedCatalogModels.count, Self.modelProbeLimit)) 个" }
+    return "检测可用"
+  }
+
+  var catalogProbePlan: ModelProbePlan {
+    Self.probePlan(for: catalogProbeTargets, isLocal: validatedCatalogBaseURL.map { Self.isExactLoopbackHTTP($0.absoluteString) } ?? false)
+  }
+
+  /// 本机服务（Magpie、Ollama）不按次扣钱：Magpie 走的是你自己的订阅额度。不再按模型名猜成「付费」。
+  static func probePlan(for models: [String], isLocal: Bool = false) -> ModelProbePlan {
+    if isLocal { return ModelProbePlan(freeModels: models, paidModels: []) }
+    return ModelProbePlan(
       freeModels: models.filter(ModelHealthKey.looksFree),
       paidModels: models.filter { !ModelHealthKey.looksFree($0) }
     )
@@ -1339,7 +1383,9 @@ final class ProviderSettingsViewModel {
   func probeCatalogModels(includesPaid: Bool, submittedAPIKey: String?) {
     guard modelProbeTask == nil, let baseURL = validatedCatalogBaseURL else { return }
     let plan = catalogProbePlan
-    let models = plan.freeModels + (includesPaid ? plan.paidModels : [])
+    // 保持眼前列表的先后，只按「含不含付费」筛。
+    let chosen = Set(plan.freeModels + (includesPaid ? plan.paidModels : []))
+    let models = catalogProbeTargets.filter(chosen.contains)
     guard !models.isEmpty else { return }
     let allowLoopback = Self.isExactLoopbackHTTP(baseURL.absoluteString)
     let runID = UUID()
@@ -1370,10 +1416,13 @@ final class ProviderSettingsViewModel {
     }
   }
 
-  /// 检测已经添加到模型库里的全部模型（各自用自己的密钥）。
-  func probeLibraryModels(includesPaid: Bool) {
+  /// 检测模型库里的模型（各自用自己的密钥）。`profileIDs` 给了就只测这几个：一行的「检测」、组头的「检测这一家」。
+  func probeLibraryModels(includesPaid: Bool, profileIDs: Set<String>? = nil) {
     guard modelProbeTask == nil else { return }
-    let profiles = libraryProfiles.filter { includesPaid || ModelHealthKey.looksFree($0.model) }
+    let profiles = libraryProfiles.filter {
+      (profileIDs?.contains($0.id) ?? true)
+        && (includesPaid || ModelHealthKey.looksFree($0.model) || Self.isExactLoopbackHTTP($0.baseURL.absoluteString))
+    }
     guard !profiles.isEmpty else { return }
     let runID = UUID()
     modelProbeRunID = runID
@@ -1384,8 +1433,8 @@ final class ProviderSettingsViewModel {
       var done = 0
       var available = 0
       self.modelProbeState = .running(done: 0, total: total)
-      // 先对照一次模型列表（不收费），已下架的直接标出来。
-      await self.checkSavedModelsAgainstCatalogs()
+      // 先对照一次模型列表（不收费），已下架的直接标出来。只测一行、一组时不做：那要读每家的密钥。
+      if profileIDs == nil { await self.checkSavedModelsAgainstCatalogs() }
       for profile in profiles {
         guard !Task.isCancelled, self.modelProbeRunID == runID else { return }
         if let credentials = try? await self.configurationService.loadCredentials(profileID: profile.id) {
@@ -1402,7 +1451,14 @@ final class ProviderSettingsViewModel {
   }
 
   var libraryProbePlan: ModelProbePlan {
-    Self.probePlan(for: libraryProfiles.map(\.model))
+    libraryProbePlan(for: nil)
+  }
+
+  func libraryProbePlan(for profileIDs: Set<String>?) -> ModelProbePlan {
+    let profiles = libraryProfiles.filter { profileIDs?.contains($0.id) ?? true }
+    let local = profiles.filter { Self.isExactLoopbackHTTP($0.baseURL.absoluteString) }.map(\.model)
+    let remote = Self.probePlan(for: profiles.filter { !Self.isExactLoopbackHTTP($0.baseURL.absoluteString) }.map(\.model))
+    return ModelProbePlan(freeModels: local + remote.freeModels, paidModels: remote.paidModels)
   }
 
   /// 已经测过几个、其中几个可用。停止时用它显示真实的结果。
@@ -1485,8 +1541,12 @@ final class ProviderSettingsViewModel {
     var seen = Set<URL>()
     for profile in libraryProfiles where seen.insert(profile.baseURL).inserted {
       guard let credentials = try? await configurationService.loadCredentials(profileID: profile.id),
-            let models = try? await modelCatalogLoader.listModels(baseURL: profile.baseURL, apiKey: credentials.apiKey)
+            let entries = try? await modelCatalogLoader.listModelEntries(
+              baseURL: profile.baseURL, apiKey: credentials.apiKey, apiMode: profile.apiMode
+            )
       else { continue }
+      ModelNameHintStore.shared.record(baseURL: profile.baseURL.absoluteString, entries: entries)
+      let models = entries.map(\.id)
       modelHealth.applyCatalog(
         baseURL: profile.baseURL.absoluteString,
         catalog: models,
@@ -1510,6 +1570,7 @@ final class ProviderSettingsViewModel {
     try? DataDestinationIdentity(
       baseURL: baseURL,
       model: modelName,
+      apiMode: apiMode,
       allowLoopbackHTTP: Self.isExactLoopbackHTTP(baseURL)
     )
   }
@@ -1543,6 +1604,7 @@ final class ProviderSettingsViewModel {
     activeModelCatalogRequest = nil
     modelCatalogState = .idle
     availableModels = []
+    catalogEntries = [:]
     selectedCatalogModels = []
     isManualModelEntryEnabled = false
   }
@@ -1563,7 +1625,11 @@ final class ProviderSettingsViewModel {
   }
 
   private func modelCatalogFailureText(_ code: ModelProviderErrorCode) -> String {
-    switch code {
+    // 本机 Magpie 没开时，连接直接被拒，报的是「网络中断」——对一个本机服务说网络有问题会误导人。
+    if isMagpieDraft, code == .networkInterrupted {
+      return "连不上本机的 Magpie：先打开 Magpie（菜单栏里能看到它的图标），再点「读取列表」。"
+    }
+    return switch code {
     case .authInvalid:
       "密钥不对，或没有读取模型列表的权限。已存的配置没变；请核对密钥再点「读取列表」，或点「手动填写」。"
     case .endpointNotFound:

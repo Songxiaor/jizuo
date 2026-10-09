@@ -35,10 +35,38 @@ enum InlineImageMemoryCache {
   /// 解码过的图有多大。位图会被 NSCache 驱逐，尺寸不会：再滚回来时先按它占好
   /// 位置，图片到了不再「180pt 灰块 → 实际高度」地跳一下（2026-10-01 体检）。
   /// 一条只有两个数，几千张图也不到 100KB，不设上限。
+  ///
+  /// 还没解码过的图，读一下文件头拿宽高（不解码像素，本地文件一张不到 1ms）。整篇文章排进
+  /// 一个文字视图后，没滑到的图原来一律按 180pt 灰块算高度，图片加载后才变成真实高度：目录
+  /// 跳转按旧高度算落点、跳过去停偏几节，滑动时下面的内容也会一跳（2026-10-07 检查）。
   static func knownSize(for url: URL, maxPixelSize: CGFloat = 1600) -> CGSize? {
+    let key = cacheKey(url, maxPixelSize) as String
     sizeLock.lock()
-    defer { sizeLock.unlock() }
-    return knownSizes[cacheKey(url, maxPixelSize) as String]
+    if let known = knownSizes[key] {
+      sizeLock.unlock()
+      return known
+    }
+    sizeLock.unlock()
+    guard url.isFileURL, let size = headerPixelSize(of: url) else { return nil }
+    let longest = max(size.width, size.height)
+    let scale = longest > maxPixelSize ? maxPixelSize / longest : 1
+    let fitted = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+    sizeLock.lock()
+    knownSizes[key] = fitted
+    sizeLock.unlock()
+    return fitted
+  }
+
+  /// 文件头里的像素宽高（按 EXIF 方向转正）。
+  private static func headerPixelSize(of url: URL) -> CGSize? {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+          let height = properties[kCGImagePropertyPixelHeight] as? CGFloat,
+          width > 0, height > 0
+    else { return nil }
+    let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
+    return (5...8).contains(orientation) ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
   }
 
   private static let sizeLock = NSLock()
@@ -239,9 +267,9 @@ struct InlineArticleImageView: View {
           .overlay(ProgressView().controlSize(.small))
       }
     }
-    // 比正文窄的独立插图（竖图、小图）居中：原来靠左，和撑满整栏的横图排在一起
-    // 一左一满、看着没有章法（2026-10-03 Syc 走查）。画廊格子仍靠左填满。
-    .frame(maxWidth: .infinity, alignment: layout == .gallery ? .leading : .center)
+    // 比正文窄的独立插图（竖图、小图）左缘贴正文那条线，不居中（2026-10-07 Syc：阅读列里
+    // 标题、正文、卡片、图片共用左右边缘）。10-03 走查时改成过居中，被这次取代。
+    .frame(maxWidth: .infinity, alignment: .leading)
     // 画廊的行距由网格 spacing 统一给，格子自己不再加尾距。
     .padding(.bottom, layout == .gallery ? 0 : 18)
     .accessibilityIdentifier("history-content-inline-image")

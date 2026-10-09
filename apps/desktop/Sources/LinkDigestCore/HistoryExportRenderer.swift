@@ -155,7 +155,7 @@ public enum HistoryExportRenderer {
     if projection.runs.isEmpty { lines += ["", "（没有运行记录）"] }
     for (index, detail) in projection.runs.enumerated() {
       let run = detail.run
-      lines += ["", "### \(index + 1). \(action(run.kind)) · \(status(run.status))", "", "- 动作：\(action(run.kind))", "- 状态：\(status(run.status))", "- 时间（UTC）：\(runTime(run))", "- 模型：\(run.model?.nonBlank ?? "—")", "- Token：\(tokens(run.usageCost))", "- 费用：\(cost(run.usageCost))"]
+      lines += ["", "### \(index + 1). \(action(run.kind)) · \(status(run.status))", "", "- 动作：\(action(run.kind))", "- 状态：\(status(run.status))", "- 时间（UTC）：\(runTime(run))", "- 模型：\(exportModel(run))", "- Token：\(tokens(run.usageCost))", "- 费用：\(cost(run.usageCost))"]
       if let artifact = detail.artifact {
         let resultBody = MarkdownNoteFrontmatter.parse(artifact.bodyText).body
         lines += ["- 结果完整性：\(artifact.completeness == .complete ? "完整" : "部分结果")", "- 结果格式：\(artifact.contentFormat == .markdown ? "Markdown" : "纯文本")", "", "#### 结果", "", resultBody.isEmpty ? "（结果为空）" : resultBody]
@@ -189,7 +189,7 @@ public enum HistoryExportRenderer {
     if projection.runs.isEmpty { lines.append("（没有运行记录）") }
     for (index, detail) in projection.runs.enumerated() {
       let run = detail.run
-      lines += ["", "[\(index + 1)] 动作: \(action(run.kind))", "状态: \(status(run.status))", "时间（UTC）: \(runTime(run))", "模型: \(run.model?.nonBlank ?? "—")", "Token: \(tokens(run.usageCost))", "费用: \(cost(run.usageCost))"]
+      lines += ["", "[\(index + 1)] 动作: \(action(run.kind))", "状态: \(status(run.status))", "时间（UTC）: \(runTime(run))", "模型: \(exportModel(run))", "Token: \(tokens(run.usageCost))", "费用: \(cost(run.usageCost))"]
       if let artifact = detail.artifact {
         lines += ["结果完整性: \(artifact.completeness == .complete ? "完整" : "部分结果")", "结果格式: \(artifact.contentFormat == .markdown ? "Markdown" : "纯文本")", "结果:", artifact.bodyText.isEmpty ? "（结果为空）" : artifact.bodyText]
       } else { lines.append("结果: 无可导出的结果") }
@@ -219,6 +219,13 @@ public enum HistoryExportRenderer {
     timestamp(run.finishedAtMilliseconds ?? run.startedAtMilliseconds ?? run.createdAtMilliseconds)
   }
   private static func action(_ kind: RunKind) -> String { kind == .summarize ? "总结" : "翻译" }
+  /// 导出里的模型：「Claude Haiku 5.5 · Anthropic（claude/claude-haiku-5-5）」。名字给人看，原始 ID 留着对账
+  /// （2026-10-09 Syc：模型名到处写法不一）。
+  private static func exportModel(_ run: HistoryRun) -> String {
+    guard let model = run.model?.nonBlank else { return "—" }
+    return ModelNaming.label(baseURL: run.providerBaseURL, model: model).exportText
+  }
+
   private static func status(_ value: RunStatus) -> String {
     switch value {
     case .queued: "等待中"; case .running: "处理中"; case .completed: "已完成"

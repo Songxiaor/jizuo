@@ -179,6 +179,20 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  /// Anthropic 官方要的版本头。各家兼容地址也认这一个值。
+  static let anthropicVersion = "2023-06-01"
+
+  /// 鉴权头。协议选了 Anthropic 时用 `x-api-key` + 版本头：这是 Anthropic 官方和 Claude Code 发 API Key 的方式，各家兼容地址照这个做。
+  /// Command Code 上的 Claude 虽然也走 Messages，但它要的是 `Bearer`，照旧（看的是协议，不是走不走 Messages）。
+  private func authorize(_ request: inout URLRequest, apiKey: String, anthropicAuth: Bool) {
+    if anthropicAuth {
+      request.setValue(sanitizedKey(apiKey), forHTTPHeaderField: "x-api-key")
+      request.setValue(Self.anthropicVersion, forHTTPHeaderField: "anthropic-version")
+    } else {
+      request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
+    }
+  }
+
   public func cancelActiveStreams() {
     let tasks = activeTaskLock.withLock {
       Array(activeStreamTasks.values)
@@ -191,6 +205,14 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   }
 
   public func listModels(baseURL: URL, apiKey: String) async throws -> [String] {
+    try await listModels(baseURL: baseURL, apiKey: apiKey, apiMode: .chatCompletions)
+  }
+
+  public func listModels(baseURL: URL, apiKey: String, apiMode: APIMode) async throws -> [String] {
+    try await listModelEntries(baseURL: baseURL, apiKey: apiKey, apiMode: apiMode).map(\.id)
+  }
+
+  public func listModelEntries(baseURL: URL, apiKey: String, apiMode: APIMode) async throws -> [ModelCatalogEntry] {
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
@@ -203,10 +225,13 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     } catch {
       throw ModelProviderFailure(code: .baseURLInvalid, retryable: false, hadOutput: false)
     }
-    let url = try OpenAICompatibleEndpoint.modelsURL(baseURL: validatedBaseURL)
+    let anthropic = apiMode == .anthropicMessages
+    let url = anthropic
+      ? try CommandCodeProviderRouting.modelsURL(baseURL: validatedBaseURL)
+      : try OpenAICompatibleEndpoint.modelsURL(baseURL: validatedBaseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
-    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
+    authorize(&request, apiKey: apiKey, anthropicAuth: anthropic)
     request.setValue("application/json", forHTTPHeaderField: "Accept")
 
     let redirectGuard = CatalogRedirectGuard(origin: url)
@@ -223,22 +248,18 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
       }
       let data = try await Self.collectBody(bytes, response: response, limit: Self.modelCatalogByteLimit)
-      guard let responseBody = try? JSONDecoder().decode(ModelCatalogResponse.self, from: data) else {
+      guard let entries = ModelCatalogEntry.parseCatalog(data) else {
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
       }
-      guard responseBody.data.count <= Self.modelCatalogLimit else {
+      guard entries.count <= Self.modelCatalogLimit else {
         throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: false)
       }
-      var unique = Set<String>()
-      for entry in responseBody.data {
-        let id = entry.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { continue }
-        unique.insert(id)
-      }
+      var unique: [String: ModelCatalogEntry] = [:]
+      for entry in entries where unique[entry.id] == nil { unique[entry.id] = entry }
       guard !unique.isEmpty else {
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
       }
-      return unique.sorted()
+      return unique.values.sorted { $0.id < $1.id }
     } catch let failure as ModelProviderFailure {
       throw failure
     } catch is CancellationError {
@@ -251,6 +272,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   }
 
   public static let transcriptTidyResponseByteLimit = 4 * 1_024 * 1_024
+
+  /// 协议选了 Anthropic 时，总结 / 翻译的输出上限。见 `perform`。
+  static let anthropicLongOutputMaxTokens = 32_000
 
   /// One tidy pass over one transcript chunk. Non-streaming on purpose: the
   /// result replaces nothing until it is complete and persisted.
@@ -333,10 +357,6 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
-    guard profile.apiMode == .chatCompletions else {
-      throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
-    }
-    let url = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
 
     // 非流式这条路也要带 `reasoning_effort`。
     //
@@ -345,14 +365,11 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     // 而失败的恰好是乱码最密、最需要校对的那几片。流式那边（总结、翻译）早就在
     // 传了，只有这里漏着，连诊断日志都不写，慢了都查不出来。
     //
-    // Command Code Claude 走 Anthropic Messages：不带 reasoning_effort，也无降级链。
-    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
-      baseURL: profile.baseURL,
-      model: model
-    )
+    // 走 Anthropic Messages（协议选了 Anthropic，或 Command Code 上的 Claude）：不带 reasoning_effort，也无降级链。
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(profile: profile, model: model)
     let requestURL = usesAnthropicMessages
       ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)
-      : url
+      : try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
     // 降级链和重试记忆完全复用流式那套：`none` 被拒就降 `low`，再被拒就不发。
     var effort = usesAnthropicMessages ? StreamReasoningEffort.omitted : preferredReasoningEffort(profile)
     // 「关闭思考」开关：`reasoning_effort` 之外，DeepSeek/GLM/MiMo 一类认 `thinking`，
@@ -367,6 +384,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           url: requestURL, apiKey: apiKey, model: model,
           systemPrompt: systemPrompt, userContent: userContent, effort: effort,
           usesAnthropicMessages: usesAnthropicMessages,
+          anthropicAuth: profile.apiMode == .anthropicMessages,
           thinkingOff: sendsThinkingOff,
           streaming: streaming
         )
@@ -398,6 +416,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     userContent: String,
     effort: StreamReasoningEffort,
     usesAnthropicMessages: Bool,
+    anthropicAuth: Bool = false,
     thinkingOff: Bool = false,
     streaming: Bool = false
   ) async throws -> NonStreamingChatResult {
@@ -405,7 +424,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     request.httpMethod = "POST"
     // 流式时这是「两次收到数据之间」的最长间隔，不是整次请求的上限：思考在一直往回流就不会超时。
     request.timeoutInterval = streaming ? 90 : 180
-    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
+    authorize(&request, apiKey: apiKey, anthropicAuth: anthropicAuth)
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
     if usesAnthropicMessages {
@@ -526,21 +545,15 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
-    guard profile.apiMode == .chatCompletions else {
-      throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
-    }
     let tagSystemPrompt = "为以下摘要输出 1-5 个中文主题标签，逗号分隔，不要输出其他内容。标签必须是可用于归类多篇文章的领域名或实体名（如：AI 工具、折叠屏、Claude Code），严禁输出文中章节标题或“概述/建议/要点”这类结构词。"
-    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
-      baseURL: profile.baseURL,
-      model: profile.model
-    )
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(profile: profile, model: profile.model)
     let url = usesAnthropicMessages
       ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)
       : try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 15
-    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
+    authorize(&request, apiKey: apiKey, anthropicAuth: profile.apiMode == .anthropicMessages)
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     if usesAnthropicMessages {
@@ -618,11 +631,13 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   ) async throws {
     // 总结/翻译要转述，不要推理。优先发 `none`；不认识就降到 `low`，再不行去掉。
     // 目的地此前拒绝过的话，按记住的档位起，不必每片重新试。
-    // Command Code Claude 走 Messages，不发 reasoning_effort。
-    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
-      baseURL: profile.baseURL,
-      model: profile.model
-    )
+    // 走 Messages（协议选了 Anthropic，或 Command Code 上的 Claude），不发 reasoning_effort。
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(profile: profile, model: profile.model)
+    // 输出上限：Messages 必须写死一个数。长文翻译一次要一万多 token（2026-10-09 一篇 SEO 长文 1.5 万），
+    // 8192 会被截断；协议选了 Anthropic 的先给 32000，服务商嫌大就退回 8192 重发。
+    var anthropicMaxTokens = profile.apiMode == .anthropicMessages
+      ? Self.anthropicLongOutputMaxTokens
+      : CommandCodeMessagesCodec.defaultMaxTokens
     var effort = usesAnthropicMessages ? StreamReasoningEffort.omitted : preferredReasoningEffort(profile)
     // 「关闭思考」开关，和校对（非流式）那条路同一套：MiMo/DeepSeek/GLM 认 `thinking`，
     // 通义/SiliconFlow 认 `enable_thinking`，只发 reasoning_effort 它们照样先想半天。
@@ -632,7 +647,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     var thinkingDropPending = false
     var request = try makeRequest(
       profile: profile, apiKey: apiKey, intent: intent,
-      reasoningEffort: effort, thinkingOff: sendsThinkingOff
+      reasoningEffort: effort, thinkingOff: sendsThinkingOff,
+      anthropicMaxTokens: anthropicMaxTokens
     )
     var retryCount = 0
     var didRetryThinkingStall = false
@@ -776,10 +792,21 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         effort = .none
         request = try makeRequest(
           profile: profile, apiKey: apiKey, intent: intent,
-          reasoningEffort: effort, thinkingOff: sendsThinkingOff
+          reasoningEffort: effort, thinkingOff: sendsThinkingOff,
+          anthropicMaxTokens: anthropicMaxTokens
         )
         continue
       } catch let failure as ModelProviderFailure {
+        if usesAnthropicMessages, anthropicMaxTokens > CommandCodeMessagesCodec.defaultMaxTokens,
+           !failure.hadOutput, Self.mayRejectUnknownParameter(failure) {
+          anthropicMaxTokens = CommandCodeMessagesCodec.defaultMaxTokens
+          request = try makeRequest(
+            profile: profile, apiKey: apiKey, intent: intent,
+            reasoningEffort: effort, thinkingOff: sendsThinkingOff,
+            anthropicMaxTokens: anthropicMaxTokens
+          )
+          continue
+        }
         // 服务端在还没吐出任何内容时就拒了请求，且我们确实多发了那个键——先怀疑
         // 是它不被接受，降一档重来。只沿梯子走，避免和下面的重试互相叠加。
         if !usesAnthropicMessages,
@@ -789,7 +816,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           effort = next
           request = try makeRequest(
             profile: profile, apiKey: apiKey, intent: intent,
-            reasoningEffort: effort, thinkingOff: sendsThinkingOff
+            reasoningEffort: effort, thinkingOff: sendsThinkingOff,
+            anthropicMaxTokens: anthropicMaxTokens
           )
           continue
         }
@@ -804,7 +832,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           thinkingDropPending = true
           request = try makeRequest(
             profile: profile, apiKey: apiKey, intent: intent,
-            reasoningEffort: effort, thinkingOff: false
+            reasoningEffort: effort, thinkingOff: false,
+            anthropicMaxTokens: anthropicMaxTokens
           )
           continue
         }
@@ -846,7 +875,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     apiKey: String,
     intent: RunIntent,
     reasoningEffort: StreamReasoningEffort = .none,
-    thinkingOff: Bool = false
+    thinkingOff: Bool = false,
+    anthropicMaxTokens: Int = CommandCodeMessagesCodec.defaultMaxTokens
   ) throws -> URLRequest {
     // 仪表：只记长度和模型名，绝不记 Key 本身。
     //
@@ -856,20 +886,13 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     guard !apiKey.isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
-    guard profile.apiMode == .chatCompletions else {
-      throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
-    }
-
-    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
-      baseURL: profile.baseURL,
-      model: profile.model
-    )
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(profile: profile, model: profile.model)
     let url = usesAnthropicMessages
       ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)
       : try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
+    authorize(&request, apiKey: apiKey, anthropicAuth: profile.apiMode == .anthropicMessages)
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
@@ -932,7 +955,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         .map { CommandCodeMessagesCodec.TextMessage(role: $0.role, content: $0.content) }
       let maxTokens: Int = switch intent {
       case .connectionTest: 64
-      case .summarize, .translate: CommandCodeMessagesCodec.defaultMaxTokens
+      case .summarize, .translate: anthropicMaxTokens
       }
       request.httpBody = try CommandCodeMessagesCodec.encodeRequest(
         model: profile.model,
@@ -1266,13 +1289,6 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     }
     let choices: [Choice]
     let usage: Usage?
-  }
-
-  private struct ModelCatalogResponse: Decodable {
-    let data: [ModelCatalogEntry]
-  }
-  private struct ModelCatalogEntry: Decodable {
-    let id: String
   }
 
   private struct Message: Encodable {

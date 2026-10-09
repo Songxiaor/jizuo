@@ -37,7 +37,7 @@ final class HistoryExportRendererTests: XCTestCase {
     - 动作：总结
     - 状态：已完成
     - 时间（UTC）：1970-01-01T00:00:04.000Z
-    - 模型：fixture-model
+    - 模型：Fixture Model（fixture-model）
     - Token：输入 12 / 输出 30 / 总计 42
     - 费用：USD 0.000123
     - 结果完整性：完整
@@ -69,7 +69,7 @@ final class HistoryExportRendererTests: XCTestCase {
     [1] 动作: 总结
     状态: 已完成
     时间（UTC）: 1970-01-01T00:00:04.000Z
-    模型: fixture-model
+    模型: Fixture Model（fixture-model）
     Token: 输入 12 / 输出 30 / 总计 42
     费用: USD 0.000123
     结果完整性: 完整

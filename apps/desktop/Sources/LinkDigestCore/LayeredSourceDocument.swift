@@ -43,11 +43,11 @@ public enum LayeredSourceDocument {
     }
   }
 
+  /// 画面字幕层已下线（2026-10-07 Syc 定）：读字幕的入口 09-06 就没了，只剩两条旧记录
+  /// 还挂着「字幕」页签。这里一律不认字幕层——不显示、不进总结 / 翻译 / 脑图。
+  /// 库里的字幕快照原样留着；它仍登记在 `derivedKinds`，不会被当成配文。
   public static func subtitleSnapshot(in snapshots: [ContentSnapshot]) -> ContentSnapshot? {
-    snapshots.reversed().first {
-      $0.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue
-        && !body(of: $0).isEmpty
-    }
+    nil
   }
 
   public static func body(of snapshot: ContentSnapshot) -> String {

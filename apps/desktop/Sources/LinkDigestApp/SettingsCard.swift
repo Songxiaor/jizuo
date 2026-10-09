@@ -773,11 +773,15 @@ struct SettingsMenuPicker<Value: Hashable>: View {
     let value: Value
     let title: String
     var subtitle: String? = nil
+    /// 列表行里也显示副标题。分组标题已经写了同样的话（模型的渠道）时关掉，只在收起的按钮上显示。
+    var showsSubtitleInList = true
     var id: Value { value }
   }
 
   /// 每组之间画一条分隔线。
   let sections: [[Option]]
+  /// 每组的小标题（可选，和 `sections` 一一对应）：模型按渠道分组时用。
+  var sectionTitles: [String?] = []
   @Binding var selection: Value
   var identifier: String? = nil
   @State private var isPresented = false
@@ -799,6 +803,14 @@ struct SettingsMenuPicker<Value: Hashable>: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           ForEach(Array(sections.enumerated()), id: \.offset) { index, group in
+            if index < sectionTitles.count, let heading = sectionTitles[index] {
+              Text(heading)
+                .themedFont(.caption, weight: .semibold)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, DesignTokens.Space.lg)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+            }
             ForEach(group) { option in
               Button {
                 selection = option.value
@@ -810,7 +822,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                       .themedFont(.body)
                       .foregroundStyle(.primary)
                       .lineLimit(1)
-                    if let subtitle = option.subtitle, !subtitle.isEmpty {
+                    if option.showsSubtitleInList, let subtitle = option.subtitle, !subtitle.isEmpty {
                       Text(subtitle)
                         .themedFont(.subheadline)
                         .foregroundStyle(.secondary)

@@ -154,6 +154,49 @@ final class AppleSpeechVideoTranscriberTests: XCTestCase {
     XCTAssertTrue(silence.contains(bounds[1]), "切点 \(bounds[1]) 应落在静音 \(silence) 里")
   }
 
+  /// 自己按块喂识别器：48k 双声道转成 16k 单声道，整段一帧不少地喂完，之后不再出块。
+  func testAnalyzerInputConvertsTheWholeFileAndThenEnds() async throws {
+    guard #available(macOS 26.0, *) else { throw XCTSkip("本机语音识别需要 macOS 26") }
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-analyzer-input-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("tone.caf")
+    let sourceRate = 48_000.0
+    let sourceFrames = AVAudioFrameCount(sourceRate * 2.5)
+    let sourceFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sourceRate, channels: 2))
+    do {
+      let file = try AVAudioFile(forWriting: url, settings: sourceFormat.settings)
+      let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: sourceFrames))
+      buffer.frameLength = sourceFrames
+      for channel in 0..<2 {
+        let samples = try XCTUnwrap(buffer.floatChannelData?[channel])
+        for index in 0..<Int(sourceFrames) { samples[index] = Float(0.3 * sin(2 * .pi * 220 * Double(index) / sourceRate)) }
+      }
+      try file.write(from: buffer)
+    }
+
+    let target = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true))
+    let input = try AudioFileAnalyzerInput(file: try AVAudioFile(forReading: url), targetFormat: target)
+    var frames = 0
+    while let chunk = try await input.next() {
+      XCTAssertEqual(chunk.buffer.format, target)
+      frames += Int(chunk.buffer.frameLength)
+    }
+    XCTAssertEqual(frames, 40_000, accuracy: 64)
+    let afterEnd = try await input.next()
+    XCTAssertNil(afterEnd)
+
+    // 识别器没给建议格式时，也转成单声道再喂，不把双声道浮点原样交出去。
+    let fallback = try AudioFileAnalyzerInput(file: try AVAudioFile(forReading: url), targetFormat: nil)
+    var fallbackFrames = 0
+    while let chunk = try await fallback.next() {
+      XCTAssertEqual(chunk.buffer.format.channelCount, 1)
+      fallbackFrames += Int(chunk.buffer.frameLength)
+    }
+    XCTAssertEqual(fallbackFrames, 40_000, accuracy: 64)
+  }
+
   /// 真音频上跑一遍完整转写，确认分段并行的结果能用、时间轴是整段的。
   ///   LINKDIGEST_SPEECH_PARALLEL_SAMPLE=/path/to/speech.mp4 \
   ///   LINKDIGEST_SPEECH_PARALLEL_LOCALE=zh_CN swift test --filter AppleSpeechVideoTranscriberTests

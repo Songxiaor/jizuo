@@ -59,6 +59,20 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   }
 
   /// 只换标题的副本：自动译标题后原地更新列表里那一行，不必整页重载。
+  /// 刚转写成功的一行：不必重读整页，就地标成已转写、去掉「上次转写没成功」。
+  public func replacingTranscribed() -> HistoryRowProjection {
+    HistoryRowProjection(
+      taskID: taskID, title: title, canonicalURL: canonicalURL, host: host, sourceLabel: sourceLabel,
+      latestRunKind: latestRunKind, latestRunStatus: latestRunStatus, latestModel: latestModel,
+      updatedAtMilliseconds: updatedAtMilliseconds, createdAtMilliseconds: createdAtMilliseconds,
+      latestRunAtMilliseconds: latestRunAtMilliseconds, usageCost: usageCost, artifactPreview: artifactPreview,
+      sourcePreview: sourcePreview, author: author, published: published, hasTranscript: true,
+      hasMedia: hasMedia, transcriptionFailed: nil, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite,
+      coverURL: coverURL, likes: likes, comments: comments, shares: shares, collects: collects,
+      views: views, tagNames: tagNames
+    )
+  }
+
   public func replacingTitle(_ newTitle: String) -> HistoryRowProjection {
     HistoryRowProjection(
       taskID: taskID, title: newTitle, canonicalURL: canonicalURL, host: host, sourceLabel: sourceLabel,

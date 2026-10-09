@@ -2530,6 +2530,15 @@ describe("inline and block formats that change meaning when flattened", () => {
     expect(body).toContain("H\u2082O");
   });
 
+  it("keeps adjacent footnote superscripts apart", () => {
+    const root = el("article", [
+      el("h1", [text("脚注")]),
+      el("p", [text("(LZW)."), el("sup", [text("43")]), el("sup", [text("44")]), text(" Further")]),
+    ]);
+    // 粘在一起的「⁴³⁴⁴」像一个数。
+    expect(bodyOf(root)).toContain("(LZW).\u2074\u00B3\u2009\u2074\u2074 Further");
+  });
+
   it("leaves a superscript alone when it cannot be fully mapped", () => {
     const root = el("article", [
       el("h1", [text("脚注")]),

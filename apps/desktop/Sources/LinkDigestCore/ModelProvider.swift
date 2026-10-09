@@ -45,6 +45,20 @@ public enum ModelStreamEvent: Sendable, Equatable {
 /// Callers receive ids only; provider response fields never cross this boundary.
 public protocol ModelCatalogLoading: Sendable {
   func listModels(baseURL: URL, apiKey: String) async throws -> [String]
+  /// 按服务商的接口协议读模型列表（Anthropic 的鉴权头和地址都不一样）。
+  func listModels(baseURL: URL, apiKey: String, apiMode: APIMode) async throws -> [String]
+  /// 连同服务商给的模型信息一起读（来源、上下文、思考档位…）。只给 ID 的服务商，信息全空。
+  func listModelEntries(baseURL: URL, apiKey: String, apiMode: APIMode) async throws -> [ModelCatalogEntry]
+}
+
+public extension ModelCatalogLoading {
+  func listModels(baseURL: URL, apiKey: String, apiMode: APIMode) async throws -> [String] {
+    try await listModels(baseURL: baseURL, apiKey: apiKey)
+  }
+
+  func listModelEntries(baseURL: URL, apiKey: String, apiMode: APIMode) async throws -> [ModelCatalogEntry] {
+    try await listModels(baseURL: baseURL, apiKey: apiKey, apiMode: apiMode).map(ModelCatalogEntry.init(id:))
+  }
 }
 
 /// A deliberately narrow, non-streaming companion port used only for the

@@ -4,6 +4,48 @@ import LinkDigestCore
 @testable import LinkDigestApp
 
 final class HistoryContentViewTests: XCTestCase {
+  /// 阅读区外面要有尺寸隔离，并且拦住对齐参考线：否则窗口每帧算最小尺寸时，会把整页正文
+  /// 用接近 0 的宽度重排一遍（2026-10-06 实测，带脑图的页面滑动掉帧过半）。
+  func testReadingAreaIsIsolatedFromWindowSizing() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("ReadingSizeIsolation { scrollBody }"))
+    let isolation = try XCTUnwrap(source.range(of: "struct ReadingSizeIsolation: Layout"))
+    let body = source[isolation.lowerBound...].prefix(2_500)
+    XCTAssertEqual(body.components(separatedBy: "-> CGFloat? { nil }").count - 1, 2, "横竖两种对齐参考线都要拦住")
+  }
+
+  /// 转写稿三种视图都不用懒加载列表：阅读区先量整份高度，懒加载的估算高度一直变，
+  /// 4 小时分说话人稿点「展开全文」会把主线程卡死（2026-10-06 实测，只能强杀）。
+  func testTranscriptViewsDoNotUseLazyStacks() throws {
+    let sources = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp")
+    for file in ["TranscriptTimelineView.swift", "TranscriptManuscriptView.swift"] {
+      let source = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+      XCTAssertFalse(source.contains("LazyVStack("), "\(file) 又用回了 LazyVStack")
+    }
+  }
+
+  /// 菜单「生成总结 / 翻译」和 ⇧⌘S / ⇧⌘E 要作用在眼前这条上：key 不同的动作不能算相等，
+  /// 否则 SwiftUI 一直留着第一次注册的闭包（2026-10-06 实测 ⇧⌘E 对着启动时那条中文内容静默退出）。
+  func testRunCurrentActionChangesWhenTheDetailChanges() throws {
+    XCTAssertEqual(RunCurrentAction(key: "a") {}, RunCurrentAction(key: "a") {})
+    XCTAssertNotEqual(RunCurrentAction(key: "a") {}, RunCurrentAction(key: "b") {})
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("RunCurrentAction(key: runActionKey) { startRun(.summarize) }"))
+    XCTAssertTrue(source.contains("RunCurrentAction(key: runActionKey) { startRun(.translate) }"))
+  }
+
   func testFirstCaptureOnboardingKeepsBrowserSupportOptional() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
@@ -2516,8 +2558,12 @@ final class HistoryContentViewTests: XCTestCase {
       "顶部重复的展开/收起应已删除"
     )
     XCTAssertTrue(
-      chrome.contains("sourceCollapseScrollTarget"),
-      "收起后应滚回该层顶部，避免滚动位置迷失"
+      chrome.contains("readingScrollKeeper.keepDistanceFromBottom()"),
+      "收起时按钮应留在原处，不再滚回该层顶部"
+    )
+    XCTAssertTrue(
+      chrome.contains("sourceSnapshotReader(snapshot, bodyOverride: collapsed ? sourcePreview(body) : nil)"),
+      "预览和全文必须共用一处正文：分在 if / else 两边会重建文字块，滚动位置被压回页面开头"
     )
   }
 

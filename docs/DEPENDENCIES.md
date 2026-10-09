@@ -32,6 +32,8 @@ WXT、TypeScript、ESLint 与 Vitest 只服务于构建和测试。扩展使用 
 | KaTeX | 0.18.9（`dist/katex.min.js`、`katex.min.css`、20 个 woff2 字体） | 2026-09-24 起阅读区数学公式排版（离屏排成图片，对齐 Tolaria） | MIT，文件与 notice 在 `LinkDigestCore/Resources/reading-web/`，副本在 `licenses/KaTeX-LICENSE.txt`；只本地加载，页面 CSP 禁止联网 |
 | Mermaid | 12.0.0（`dist/mermaid.min.js`，5.5MB） | 2026-09-24 起阅读区流程图排版（同上） | MIT，同上，`licenses/Mermaid-LICENSE.txt`；`securityLevel: strict` |
 | BAAI bge-small-zh-v1.5 | 修订 7999e1d（`vocab.txt`、`model.safetensors`，约 91MB） | 2026-09-29 起「按意思搜」的本机文本向量模型；用户在设置里打开时才从 Hugging Face（失败走 hf-mirror.com）下载并核对 SHA-256，不打包进 App；推理由 `BGETextEmbedder`（Accelerate）完成，无新增代码依赖 | MIT，`licenses/bge-small-zh-LICENSE.txt` |
+| Magpie 图标 | yetone/magpie `build/icon/magpie-small.svg` | 2026-10-09 起「模型服务」里 Magpie（本地）服务商的图标，`apps/desktop/Assets/ProviderIcons/magpie.svg` | MIT，`licenses/Magpie-LICENSE.txt` |
+| LobeHub Icons（经 Magpie 仓库取得） | yetone/magpie `internal/gui/assets/icons/` | 2026-10-09 起模型列表里上游厂商的图标（Anthropic、Cursor、WorkBuddy 等 24 个），`apps/desktop/Assets/ProviderIcons/`；图形为各厂商商标，只用来标明模型来源 | MIT，`licenses/LobeHub-Icons-LICENSE.txt` |
 
 当前第三方 Swift Package 为 GRDB 7.11.1 与 Sparkle 2.9.5，均使用 exact pin；`Package.resolved` 分别锁定 revision `b83108d10f42680d78f23fe4d4d80fc88dab3212` 与 `79bc9e872948e47877e76f194cb0c8e0412b0b90`。本机 resolved graph 没有其它传递 package。`bash scripts/check-swift-licenses` 独立检查两项 pin、revision、零传递 package 与 MIT notice，不能用 pnpm license check 替代。
 

@@ -4501,8 +4501,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var speakerNameDraft = ""
   @State private var isOnlineDiarizationConfirmPresented = false
   @State private var isSubtitleExpanded = false
-  /// 收起长文后滚回该层顶部，避免停在空白处。
-  @State private var sourceCollapseScrollTarget: String?
+  /// 收起长文时把按钮留在原处（见 `ReadingScrollKeeper`）。
+  @State private var readingScrollKeeper = ReadingScrollKeeper()
   /// 选中的原文层。nil 表示还没手动切过，按 `defaultSourceLayer` 走。
   @State private var selectedSourceLayer: SourceLayer?
   /// 选中的译文层。
@@ -5335,9 +5335,18 @@ private struct HistoryDetailView: View, Equatable {
 
   var body: some View {
     // 菜单栏「内容」里的生成总结 / 翻译：原来这两个核心动作只能用鼠标点（2026-10-02 键盘走查）。
-    scrollBody
-      .focusedSceneValue(\.summarizeCurrent, isOwnWriting ? nil : RunCurrentAction { startRun(.summarize) })
-      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction { startRun(.translate) })
+    // 阅读区外面套一层隔离：量尺寸时不往里量（见 `ReadingSizeIsolation`）。
+    ReadingSizeIsolation { scrollBody }
+      .focusedSceneValue(\.summarizeCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
+      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate) })
+  }
+
+  /// `startRun` 读的是这一份 `detail`：换了条目、多了一版正文或生成记录变了，菜单里的闭包都要跟着换。
+  private var runActionKey: AnyHashable {
+    var parts: [AnyHashable] = [detail.task.id]
+    parts += detail.snapshots.map { AnyHashable($0.id) }
+    parts += detail.runs.map { AnyHashable([AnyHashable($0.run.id), AnyHashable($0.run.status)]) }
+    return AnyHashable(parts)
   }
 
   private static let detailTopAnchor = "history-detail-top"
@@ -5351,37 +5360,13 @@ private struct HistoryDetailView: View, Equatable {
         // 详情视图不随条目重建，原来上一条的滚动偏移会带过来，没读过的条目也停在
         // 中间、标题被卷走（2026-10-03 Syc 走查）。
         Color.clear.frame(height: 0).id(Self.detailTopAnchor)
+          .background(ReadingScrollKeeperProbe(keeper: readingScrollKeeper))
         if model.isReadOnly {
           ReadOnlyHistoryCallout(
             reason: model.historyReadOnlyReason,
             recoveryHint: model.historyReadOnlyRecoveryHint
           )
             .padding(.bottom, 16)
-        }
-        if let stampingStep {
-          // 工序做完那一刻：对应的章盖下来（2026-09-28 工序印）。
-          HStack(spacing: 12) {
-            SealStampView(glyph: stampingStep.glyph, size: 32, color: theme.seal, rotation: stampingStep.rotation)
-            VStack(alignment: .leading, spacing: 2) {
-              Text(stampingStep.completionMessage)
-                .themedFont(.callout, weight: .medium)
-                .foregroundStyle(theme.primaryText)
-              if let note = completedStepRecords.first(where: { $0.step == stampingStep })?.note, !note.isEmpty {
-                Text(note).themedFont(.caption).foregroundStyle(theme.secondaryText)
-              }
-            }
-          }
-          .padding(.bottom, 12)
-          .accessibilityElement(children: .combine)
-          .accessibilityIdentifier("history-step-stamp-banner")
-          .transition(historyBannerTransition(reduceMotion: reduceMotion))
-        } else if let completionBanner {
-          Label(completionBanner, systemImage: "checkmark.circle.fill")
-            .themedFont(.callout, weight: .medium)
-            .foregroundStyle(theme.success)
-            .padding(.bottom, 10)
-            .accessibilityIdentifier("history-run-completion-banner")
-            .transition(historyBannerTransition(reduceMotion: reduceMotion))
         }
         // 成功有横幅，失败和中断原来什么都不显示——状态只落在详情下方一个被动的
         // 元数据字段上。关 App 时被打断的那次翻译，表现就是「点了没反应」。
@@ -5741,8 +5726,11 @@ private struct HistoryDetailView: View, Equatable {
     ) { regeneratePopover }
     .coordinateSpace(name: HistoryDetailView.readingScrollSpace)
     .overlay(alignment: .top) {
-      if isReadingHeaderPinned, !isOwnWriting, showsReadingSurface {
-        pinnedReadingHeader
+      VStack(spacing: DesignTokens.Space.sm) {
+        if isReadingHeaderPinned, !isOwnWriting, showsReadingSurface {
+          pinnedReadingHeader
+        }
+        completionNotice
       }
     }
     // 视频滚出视野还在播：右下角小窗接着放。放右上角时盖住正在读的那几行的行尾
@@ -6055,13 +6043,6 @@ private struct HistoryDetailView: View, Equatable {
       Button("上传并区分") { model.diarizeSpeakers(detail: detail, mode: .online) }
     } message: {
       Text("会把这段录音上传到你在「设置 → 模型」里配置的在线服务（模型名带 diarize 的那个），按录音时长计费。在线结果会替换当前的转写文字。")
-    }
-    .onChange(of: sourceCollapseScrollTarget) { _, target in
-      guard let target else { return }
-      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-        scrollProxy.scrollTo(target, anchor: .top)
-      }
-      sourceCollapseScrollTarget = nil
     }
     .onChange(of: moduleScrollTarget) { _, target in
       guard let target else { return }
@@ -6484,9 +6465,8 @@ private struct HistoryDetailView: View, Equatable {
         Button { openSettings() } label: { Label("设置模型", systemImage: MenuIcon.settings) }
           .accessibilityIdentifier("history-open-model-settings")
       } else if !showsVisibleRun {
-        let modelName = providerSettings.activeSummaryModelName.isEmpty
-          ? "模型未命名"
-          : "模型：\(providerSettings.activeSummaryModelName)"
+        let modelName = modelLabel(providerSettings.activeSummaryModelName).map { "模型：" + $0.titleWithChannel }
+          ?? "模型未命名"
         Button(modelName) {}
           .disabled(true)
       }
@@ -6630,6 +6610,46 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// 滚过表头之后吸在正文区顶端的那份。只有页签和按钮，不带状态行和运行详情。
+  /// 工序做完那一刻的提示：浮在阅读区顶上，不占正文的位置。
+  ///
+  /// 原来排在标题上面，弹出时整页往下顶、两三秒后收起又整页往上挪，翻译一做完正文就跳两下，
+  /// 和「翻完换成定稿」那一下叠在一起像闪屏（2026-10-09 Syc 录屏）。
+  @ViewBuilder private var completionNotice: some View {
+    Group {
+      if let stampingStep {
+        // 工序做完那一刻：对应的章盖下来（2026-09-28 工序印）。
+        HStack(spacing: 12) {
+          SealStampView(glyph: stampingStep.glyph, size: 32, color: theme.seal, rotation: stampingStep.rotation)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(stampingStep.completionMessage)
+              .themedFont(.callout, weight: .medium)
+              .foregroundStyle(theme.primaryText)
+            if let note = completedStepRecords.first(where: { $0.step == stampingStep })?.note, !note.isEmpty {
+              Text(note).themedFont(.caption).foregroundStyle(theme.secondaryText)
+            }
+          }
+        }
+        .padding(.vertical, 8).padding(.leading, 10).padding(.trailing, 16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("history-step-stamp-banner")
+        .transition(historyBannerTransition(reduceMotion: reduceMotion))
+      } else if let completionBanner {
+        Label(completionBanner, systemImage: "checkmark.circle.fill")
+          .themedFont(.callout, weight: .medium)
+          .foregroundStyle(theme.success)
+          .padding(.vertical, 8).padding(.horizontal, 16)
+          .background(.regularMaterial, in: Capsule())
+          .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
+          .accessibilityIdentifier("history-run-completion-banner")
+          .transition(historyBannerTransition(reduceMotion: reduceMotion))
+      }
+    }
+    .padding(.top, DesignTokens.Space.sm)
+    .allowsHitTesting(false)
+  }
+
   private var pinnedReadingHeader: some View {
     readingHeaderRow(pinned: true)
       .padding(.vertical, DesignTokens.Space.xs)
@@ -7225,8 +7245,15 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 面板里每一步写上它实际用的模型名（只写最后一段，「antigravity/gemini-3.8-flash」→「gemini-3.8-flash」）。
   private func processModelSubtitle(_ name: String?) -> String? {
+    modelLabel(name).map { "模型：" + $0.titleWithChannel }
+  }
+
+  /// 设置里只存了模型 ID 的地方（默认、翻译、校对模型）：到模型服务里找它的服务地址，再统一起名。
+  /// 「Claude Haiku 5.5 · Anthropic」+ 渠道「Magpie · Claude Code」（2026-10-09 Syc：模型名到处写法不一）。
+  private func modelLabel(_ name: String?) -> ModelLabel? {
     guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
-    return "模型：" + (name.split(separator: "/").last.map(String.init) ?? name)
+    let baseURL = providerSettings.libraryEntryDisplays.first { $0.modelName == name }?.baseURL
+    return ModelNameHintStore.shared.label(baseURL: baseURL, model: name)
   }
 
   /// 这一条能做的工序，按「录 校 评 摘 译 图」排。做不了的（没有视频、没有评论源）不列。
@@ -7983,6 +8010,7 @@ private struct HistoryDetailView: View, Equatable {
       accentColor: theme.accent,
       showsPlainText: $showsPlainText,
       showsInlinePlainTextToggle: false,
+      hidesOutlineEntry: true,
       navigationModules: [],
       anchorScope: anchorScope(for: .translation),
       onFollowWikiLink: { title in model.followWikiLink(toTitle: title) }
@@ -8217,7 +8245,12 @@ private struct HistoryDetailView: View, Equatable {
       VStack(alignment: .leading, spacing: 6) {
         metadataRow {
           MetadataItem(symbol: "wand.and.stars", title: "操作", value: historyAction(run.run.kind))
-          MetadataItem(symbol: "cpu", title: "模型", value: run.run.model?.trimmedNonEmpty ?? "—")
+          MetadataItem(
+            symbol: "cpu", title: "模型",
+            value: run.run.model?.trimmedNonEmpty.map {
+              ModelNameHintStore.shared.label(baseURL: run.run.providerBaseURL, model: $0).titleWithChannel
+            } ?? "—"
+          )
         }
         metadataRow {
           MetadataItem(
@@ -8565,6 +8598,9 @@ private struct HistoryDetailView: View, Equatable {
       readingPaneContent(pane)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    // 生成中的正文换成落库定稿：直接换。这一拍常和盖章提示的动画落在同一次更新里，
+    // 新旧两版正文被顺带做成淡入淡出、上下错开叠在一起，翻完那一下整页重影（2026-10-09 Syc 录屏）。
+    .animation(nil, value: showsLiveRunInReadingPane)
   }
 
   @ViewBuilder
@@ -8749,8 +8785,13 @@ private struct HistoryDetailView: View, Equatable {
 
   private static let sourceCollapseCharacterLimit = 800
 
+  /// 只按评论之前的正文算长短（2026-10-07 检查）：评论有自己的「还有 N 条 · 展开」。原来连评论一起算，
+  /// 一句话的抖音配文带 20 条评论就被折叠，预览又刚好截在评论中间，显示「还有 7 条」，实际还有 17 条。
   private func isLongSource(_ snapshot: ContentSnapshot) -> Bool {
-    LayeredSourceDocument.body(of: snapshot).count > Self.sourceCollapseCharacterLimit
+    let body = LayeredSourceDocument.body(of: snapshot)
+    let beforeComments = body.range(of: #"(?m)^#{1,6}\s*评论"#, options: .regularExpression)
+      .map { String(body[..<$0.lowerBound]) } ?? body
+    return beforeComments.count > Self.sourceCollapseCharacterLimit
   }
 
   private func sourcePreview(_ text: String) -> String {
@@ -8763,7 +8804,7 @@ private struct HistoryDetailView: View, Equatable {
     return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  /// 转写稿的时间码挂在左页边（44pt 宽 + 14pt 间距），「展开全文 / 收起」跟正文栏对齐，
+  /// 转写稿的时间码挂在左页边（见 `TranscriptGutter`），「展开全文 / 收起」跟正文栏对齐，
   /// 不要缩在页边的时间码底下。
   private func sourceGutterInset(_ snapshot: ContentSnapshot) -> CGFloat {
     guard !showsPlainText, showsTranscriptTimecodes,
@@ -8771,7 +8812,7 @@ private struct HistoryDetailView: View, Equatable {
     // 没有时间码的转写走普通阅读区，没有页边。
     let body = displayedSourceMarkdown(snapshot, bodyOverride: nil)
     guard TranscriptManuscript.looksLikeTranscript(body) || !SpeakerTranscript.turns(in: body).isEmpty else { return 0 }
-    return 58
+    return TranscriptGutter.textInset
   }
 
   @ViewBuilder
@@ -8788,9 +8829,11 @@ private struct HistoryDetailView: View, Equatable {
     // 底下再来一行同样的字只是多占一行高度。没有控件的路径（只有一层、
     // 或者非分层来源）仍然要这个标题，否则那段正文就没有名字了。
     // 页签已经叫「转写稿 / 校对稿」时，再印一行「视频转写」也是同一件事说两遍（2026-10-04）。
-    let showsHeading = !showsSourceLayerPicker && singlePaneTranscriptSnapshot?.id != snapshot.id
+    // 只有一层、页签上已经写着这一层的名字（抖音只有配文时页签就叫「配文」）：也不再印一遍
+    //（2026-10-07 检查：页签「配文」下面又一行小字「配文」）。
+    let tabNamesThisLayer = !showsSourceLayerPicker && readingTabTitle(.source(nil)) == heading
+    let showsHeading = !showsSourceLayerPicker && singlePaneTranscriptSnapshot?.id != snapshot.id && !tabNamesThisLayer
     let showsExpandControl = long && !isEditingTranscription
-    let collapseAnchor = "source-collapse-\(heading)"
     VStack(alignment: .leading, spacing: 8) {
       if showsHeading {
         sourceLayerHeading(heading)
@@ -8799,8 +8842,11 @@ private struct HistoryDetailView: View, Equatable {
       if showsSpeakerBar {
         speakerBar(transcript: snapshot)
       }
+      // 预览和全文共用这一处正文，只换字数（2026-10-07）：原来分在 if / else 两边，展开、收起
+      // 都会拆掉原生文字块再新建一块，新块刚建好时只有 1 点高，整页一下变短，滚动位置被压回
+      // 视频那一屏，排完版也回不去了。
+      sourceSnapshotReader(snapshot, bodyOverride: collapsed ? sourcePreview(body) : nil)
       if collapsed {
-        sourceSnapshotReader(snapshot, bodyOverride: sourcePreview(body))
         Button("展开全文") { isExpanded.wrappedValue = true }
           .buttonStyle(.plain)
           .themedFont(.callout, weight: .medium)
@@ -8809,25 +8855,21 @@ private struct HistoryDetailView: View, Equatable {
           .padding(.top, 4)
           .padding(.leading, sourceGutterInset(snapshot))
           .accessibilityIdentifier("history-source-expand-inline")
-      } else {
-        sourceSnapshotReader(snapshot)
-        if showsExpandControl {
-          Button("收起") {
-            isExpanded.wrappedValue = false
-            sourceCollapseScrollTarget = collapseAnchor
-          }
-          .buttonStyle(.plain)
-          .themedFont(.callout, weight: .medium)
-          // 可点的文字统一用靛青（2026-09-29 走查：原来是正文色粗体，看不出能点）。
-          .foregroundStyle(theme.accent)
-          .padding(.top, 4)
-          .padding(.leading, sourceGutterInset(snapshot))
-          .accessibilityIdentifier("history-source-collapse-inline")
+      } else if showsExpandControl {
+        Button("收起") {
+          readingScrollKeeper.keepDistanceFromBottom()
+          isExpanded.wrappedValue = false
         }
+        .buttonStyle(.plain)
+        .themedFont(.callout, weight: .medium)
+        // 可点的文字统一用靛青（2026-09-29 走查：原来是正文色粗体，看不出能点）。
+        .foregroundStyle(theme.accent)
+        .padding(.top, 4)
+        .padding(.leading, sourceGutterInset(snapshot))
+        .accessibilityIdentifier("history-source-collapse-inline")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .id(collapseAnchor)
   }
 
   private func sourceLayerHeading(_ title: String) -> some View {
@@ -8899,14 +8941,11 @@ private struct HistoryDetailView: View, Equatable {
         primaryTextColor: mode == .original ? theme.primaryText.opacity(0.8) : theme.primaryText,
         secondaryTextColor: theme.secondaryText,
         sealColor: theme.seal,
-        onSeek: hasSeekableMedia ? { seconds in model.requestMediaSeek(toSeconds: seconds) } : nil
-      )
-      .simultaneousGesture(
-        TapGesture().onEnded {
-          // 只有看的就是这份正文时才进编辑：朱批和原稿里点一下不该改到校对稿。
-          guard mode == .revised, canEditSource(snapshot), !model.isReadOnly else { return }
-          beginSourceEditing(snapshot, displayedSnippet: nil)
-        }
+        onSeek: hasSeekableMedia ? { seconds in model.requestMediaSeek(toSeconds: seconds) } : nil,
+        // 只有看的就是这份正文时才进编辑：朱批和原稿里点一下不该改到校对稿。
+        onTapText: mode == .revised && canEditSource(snapshot) && !model.isReadOnly
+          ? { beginSourceEditing(snapshot, displayedSnippet: nil) }
+          : nil
       )
       // 评论单独成一节，用评论组件排；折叠预览时不露（它在全文最后）。
       if previewLimit == nil, mode != .original, let comments = split.comments {
@@ -8923,7 +8962,7 @@ private struct HistoryDetailView: View, Equatable {
           showsInlinePlainTextToggle: false,
           anchorScope: anchorScope(for: .source) + ".comments"
         )
-        .padding(.leading, showsTranscriptTimecodes ? 58 : 0)
+        .padding(.leading, showsTranscriptTimecodes ? TranscriptGutter.textInset : 0)
         .accessibilityIdentifier("transcript-comments")
       }
     }
@@ -8934,17 +8973,22 @@ private struct HistoryDetailView: View, Equatable {
   /// 朱批是同一篇校对稿加上批改记号，不单独成一页：平时读干净的，想核对时点开。
   private func manuscriptModePicker(current: TranscriptManuscript.Mode, revision: TranscriptRevision.Result?) -> some View {
     let showsOriginal = current == .original
-    return HStack(spacing: DesignTokens.Space.lg) {
+    // 二级切换，用小胶囊（2026-10-06 排版对齐）。原来是「文字 + 下划线」，和上面一排
+    // 「配文 / 转写」页签一模一样，看不出谁管谁。
+    // 前面的「版本」小字 2026-10-09 撤掉：胶囊上写着「校对稿」「原稿」，一看就是切版本（Syc 走查）。
+    return HStack(spacing: DesignTokens.Space.sm) {
       ForEach([TranscriptManuscript.Mode.revised, .original]) { mode in
         let selected = (mode == .original) == showsOriginal
         Button { manuscriptMode = mode } label: {
           Text(mode.title)
-            .themedFont(.callout, weight: selected ? .medium : .regular)
-            .foregroundStyle(selected ? theme.primaryText : theme.secondaryText)
-            .padding(.bottom, 5)
-            .overlay(alignment: .bottom) {
-              Rectangle().fill(selected ? theme.accent : Color.clear).frame(height: 1.5)
-            }
+            .themedFont(.caption, weight: selected ? .semibold : .regular)
+            .foregroundStyle(selected ? theme.selectionText : theme.secondaryText)
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(
+              selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
+              in: Capsule()
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -9043,6 +9087,9 @@ private struct HistoryDetailView: View, Equatable {
     if showsCaptionTitleAbove, snapshot.id == latestSourceSnapshot?.id {
       body = CapturedSourceBodyPresentation.strippingLeadingLine(body, equalTo: readingPrimaryTitle)
     }
+    // 线条画的图要在「按行分段」之前包成代码块：X 配文每行之间会插空行，插完图就散成一行一行、
+    // 再也认不出来（2026-10-07 检查：流程图按宋体一行行印出来）。
+    body = MarkdownPresentation.fencingTextDiagrams(body)
     return CapturedSourceBodyPresentation.preservingCaptionParagraphs(body, platform: snapshot.platform)
   }
 
@@ -9165,7 +9212,7 @@ private struct HistoryDetailView: View, Equatable {
             onRequestEdit: nil
           )
         } else if !showsPlainText,
-                  case let turns = SpeakerTranscript.turns(in: displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride)),
+                  case let turns = speakerTurns(displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride), snapshot: snapshot),
                   !turns.isEmpty {
           // 分过说话人：按一轮轮发言排，名字和时间单独一行（时间码开关照常生效）。
           SpeakerTranscriptView(
@@ -9424,8 +9471,18 @@ private struct HistoryDetailView: View, Equatable {
   /// 分过就列出说话人，点名字改名。只在有本机音频的条目上出现——分离要读录音本身。
   /// 还没分说话人时不占正文上方一行：入口在「处理」面板里（2026-10-04 详情页精简）。
   /// 分过（列出说话人、点名字改名）、正在分、分失败时才出现。
+  /// 分说话人的解析按正文内容备忘：4 小时的稿子 6 万字，原来界面每刷新一次就从头解析一遍
+  /// （2026-10-06 卡死时的调用栈里一直有它）。键里带正文的哈希，改名后正文一变自然重算。
+  private func speakerTurns(_ markdown: String, snapshot: ContentSnapshot) -> [SpeakerTurn] {
+    derivedMemo.value("speakerTurns|\(markdown.hashValue)", snapshot: snapshot) {
+      SpeakerTranscript.turns(in: markdown)
+    }
+  }
+
   @ViewBuilder private func speakerBar(transcript: ContentSnapshot) -> some View {
-    let speakers = SpeakerTranscript.speakers(in: transcript.bodyText)
+    let speakers = derivedMemo.value("speakers|\(transcript.bodyText.hashValue)", snapshot: transcript) {
+      SpeakerTranscript.speakers(in: transcript.bodyText)
+    }
     let state = model.speakerDiarizationState(for: detail.task.id)
     if localMediaFileURL != nil, !speakers.isEmpty || state != .idle {
       VStack(alignment: .leading, spacing: 6) {
@@ -9646,12 +9703,13 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private func settingsModelButton(_ modelName: String) -> some View {
-    Button(modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未选择模型" : modelName) {
+    let label = modelLabel(modelName)
+    return Button(label?.titleWithChannel ?? "未选择模型") {
       openSettings()
     }
     .buttonStyle(.link)
     .themedFont(.caption)
-    .help("打开模型设置")
+    .help(label.map { "打开模型设置（\($0.id)）" } ?? "打开模型设置")
   }
 
   private var regeneratePopover: some View {
@@ -9667,7 +9725,7 @@ private struct HistoryDetailView: View, Equatable {
         if !options.isEmpty {
           Divider()
           ForEach(options) { option in
-            Text("\(option.modelName)（\(option.title)）").tag(option.modelName)
+            Text("\(option.displayName)（\(option.channel)）").tag(option.modelName)
           }
         }
       }
@@ -10120,10 +10178,15 @@ private struct DataDestinationDisclosureView: View {
     // 本机端点必须如实标出——`http://127.0.0.1` 发出去的正文没有离开这台机器，
     // 和发往第三方服务是两件事，不标会让人以为一样。
     let suffix = disclosure.identity.isLocalEndpoint ? Text("（本机服务）").foregroundStyle(.secondary) : Text("")
+    // 渠道和「模型名 · 厂商」统一起名（2026-10-09）；域名照样写出来——发到哪台机器是同意与否的依据。
+    let label = ModelNameHintStore.shared.label(baseURL: disclosure.identity.normalizedBaseURL, model: disclosure.identity.model)
+    let channel = label.channel.isEmpty ? disclosure.identity.host : label.channel
+    let hostNote = channel == disclosure.identity.host ? Text("") : Text("（\(disclosure.identity.host)）").foregroundStyle(.secondary)
     return Text("\(verb)正文将发送到 ")
-      + Text(disclosure.identity.host).bold()
+      + Text(channel).bold()
+      + hostNote
       + Text(" 的 ")
-      + Text(disclosure.identity.model).bold()
+      + Text(label.title).bold()
       + suffix
   }
 }
@@ -10229,9 +10292,44 @@ struct GoBackAction: Equatable {
 
 struct GoBackKey: FocusedValueKey { typealias Value = GoBackAction }
 
+/// 阅读区的尺寸隔离（2026-10-06 滑动性能）。
+///
+/// 窗口是 `.windowResizability(.contentMinSize)`：每次更新约束，NSHostingView 都要算整窗的
+/// 最小尺寸，一路量进阅读区的 ScrollView——用接近 0 的宽度把整页正文排一遍（每个字一行）。
+/// 滑动时这件事每帧发生，带脑图、标签、评论的页面主线程一半时间耗在这里（实测 936 个采样里
+/// 488 个），掉帧过半。窗口的最小尺寸由根部的 `.frame(minWidth:minHeight:)` 和分栏最小宽度
+/// 管，用不着阅读区报。这里像一块色块：给多大占多大，摆放时照常把空间交给里面。
+struct ReadingSizeIsolation: Layout {
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    proposal.replacingUnspecifiedDimensions()
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    for subview in subviews {
+      subview.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+    }
+  }
+
+  // 对齐参考线也到此为止：外层的 VStack(alignment: .leading) 会问「你的左边线在哪」，
+  // 默认实现把问题转给里面的 ScrollView，再一路问到正文的每一行 HStack——为答这一句把
+  // 整页摆一遍（隔离只拦尺寸时，这条路仍占 553/857 个采样）。阅读区没有自定义对齐线。
+  func explicitAlignment(
+    of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) -> CGFloat? { nil }
+
+  func explicitAlignment(
+    of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) -> CGFloat? { nil }
+}
+
 struct RunCurrentAction: Equatable {
-  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  /// 只比它：key 不变就当没变，不让菜单注册表白刷；key 变了才换成新闭包。
+  /// 原来 `==` 恒为真，SwiftUI 于是一直留着第一次注册的闭包——「生成总结」「翻译」
+  /// 的菜单和 ⇧⌘S / ⇧⌘E 作用在启动后打开的第一条上，而不是眼前这条（2026-10-06 实测）。
+  /// 闭包只读实时 model 的（上一条 / 下一条）用默认 key 即可。
+  var key: AnyHashable = 0
   let run: () -> Void
+  static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
 }
 struct SummarizeCurrentKey: FocusedValueKey { typealias Value = RunCurrentAction }
 struct SelectPreviousItemKey: FocusedValueKey { typealias Value = RunCurrentAction }
@@ -10506,6 +10604,7 @@ private struct LiveTranscriptionReadingBody: View {
   let font: NSFont
   let color: NSColor
   let lineSpacing: CGFloat
+  private static let topFade: CGFloat = 20
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -10515,14 +10614,25 @@ private struct LiveTranscriptionReadingBody: View {
           Text("正在准备转写内容…").foregroundStyle(.secondary)
         }
       } else {
+        // 这一块定高、自己滚着跟最新的字：顶上原来被框边硬切出半行（2026-10-06 Syc 截图）。
+        // 顶部留一截空白再盖一道渐隐，没滚动时第一行完整，滚上去的行淡出。
         StreamingReadingTextView(
           text: live.text,
           font: font,
           color: color,
-          lineSpacing: lineSpacing
+          lineSpacing: lineSpacing,
+          hangsTimecodes: true,
+          topInset: Self.topFade
         )
         .frame(minHeight: StreamingViewport.minHeight, maxHeight: .infinity)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .mask {
+          VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+              .frame(height: Self.topFade)
+            Color.black
+          }
+        }
         .accessibilityIdentifier("history-reading-source-live-transcription")
       }
     }
