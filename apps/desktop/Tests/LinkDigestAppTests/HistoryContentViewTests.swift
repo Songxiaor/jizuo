@@ -302,6 +302,32 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 博主页用的是同一条侧栏。展开必须换掉分组本身：组内 Group 的 id 会被 List 摊平，
+  /// 新建出来、当时是空的那一组，后来插入的行画不出来。
+  func testCreatorPageSectionIdentityFollowsExpansion() {
+    let source = historyContentViewSource()
+    let gallery = section(
+      in: source,
+      from: "HistoryGallerySplitView(sidebarWidth:",
+      to: "} detail:"
+    )
+    XCTAssertTrue(
+      gallery.contains("navigationRail"),
+      "全部博主页必须用同一条侧栏"
+    )
+    let views = section(
+      in: source,
+      from: "navigationSectionHeader(\"视图\"",
+      to: "collectionsNavigationSection"
+    )
+    XCTAssertTrue(
+      views.contains(".id(\"views-\\(navigationViewsExpanded)-\\(navigationStepStatusExpanded)\")"),
+      "「视图」的 id 要挂在分组上，展开时这一组重新生出来，行才能出现"
+    )
+    XCTAssertFalse(source.contains(".id(navigationSectionsLayoutKey)"))
+    XCTAssertFalse(SidebarScrollRestore.shouldRestore(.sectionToggle))
+  }
+
   /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。
   func testStopControlIsTiedToAnActiveRunNotToTextLength() {
     let source = historyContentViewSource()

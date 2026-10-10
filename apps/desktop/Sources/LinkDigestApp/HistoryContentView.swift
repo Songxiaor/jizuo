@@ -1526,7 +1526,6 @@ struct HistoryContentView: View {
   /// 每个合集一行（名称 + 条数），标题右侧「＋」新建，右键改名、删除。
   @ViewBuilder private var collectionsNavigationSection: some View {
     Section {
-      Group {
       if navigationCollectionsExpanded {
         if model.collections.isEmpty {
           // 2026-10-01 走查：原来两句话在侧栏里被截成「例…」。精简成一句放得下的，
@@ -1569,8 +1568,6 @@ struct HistoryContentView: View {
           }
         }
       }
-      }
-      .id("collections-\(navigationCollectionsExpanded)-\(model.collections.count)")
     } header: {
       HStack(spacing: DesignTokens.Space.xs) {
         navigationSectionHeader("合集", expanded: $navigationCollectionsExpanded)
@@ -1589,6 +1586,7 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-navigation-collection-add")
       }
     }
+    .id("collections-\(navigationCollectionsExpanded)-\(model.collections.count)")
   }
 
   private var navigationRail: some View {
@@ -1648,9 +1646,6 @@ struct HistoryContentView: View {
 
       // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
       Section {
-        // id 跟着展开状态走：macOS 侧栏 List 对启动时为空的分组，后来插入的行不刷新
-        // （2026-09-23）。只换这一组，不换整张侧栏，滚动位置才留得住。
-        Group {
         if navigationViewsExpanded {
           // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
           navigationButton("最近 7 天", systemImage: "clock.arrow.circlepath", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
@@ -1690,19 +1685,21 @@ struct HistoryContentView: View {
             .accessibilityIdentifier("history-navigation-trash")
           }
         }
-        }
-        .id("views-\(navigationViewsExpanded)-\(navigationStepStatusExpanded)")
       } header: {
         navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
           .accessibilityIdentifier("history-navigation-views-header")
       }
+      // id 在分组上，不在里面的 Group 上。List 会把 Group 摊平，组内 id 换了，
+      // 空分组仍算同一个。进「全部博主」会新建一张侧栏，当时收着的「视图」是空的，
+      // 之后插入的行画不出来（2026-10-11）。换掉这一组，它生下来就带着行；
+      // 整张列表不换，滚动位置留着。
+      .id("views-\(navigationViewsExpanded)-\(navigationStepStatusExpanded)")
 
       collectionsNavigationSection
 
       // 形式：这条内容「是什么」。抓取时按规则判定（`ContentForm`），不需要 AI。
       if !model.navigationCounts.forms.isEmpty {
         Section {
-          Group {
           if navigationFormsExpanded {
             // 「笔记」不在这里列（2026-10-04 侧栏去重）：它就是「自有」下的笔记 + 备忘录，
             // 原来两处都叫「笔记」、一处 3 条一处 743 条。正选中它时仍留着，免得选中项凭空消失。
@@ -1718,12 +1715,11 @@ struct HistoryContentView: View {
               .accessibilityIdentifier("history-navigation-form-\(item.form.rawValue)")
             }
           }
-          }
-          .id("forms-\(navigationFormsExpanded)")
         } header: {
           navigationSectionHeader("形式", expanded: $navigationFormsExpanded)
             .accessibilityIdentifier("history-navigation-forms-header")
         }
+        .id("forms-\(navigationFormsExpanded)")
       }
 
       if !model.navigationCounts.platforms.isEmpty {
@@ -1743,7 +1739,6 @@ struct HistoryContentView: View {
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
         // 自己渲染的，和行内容一样收不到环境字体。
         Section {
-          Group {
           if navigationPlatformsExpanded {
             // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
             // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
@@ -1790,15 +1785,13 @@ struct HistoryContentView: View {
               isExpanded: $navigationPlatformsShowsAll
             )
           }
-          }
-          .id("platforms-\(navigationPlatformsExpanded)")
         } header: {
           navigationSectionHeader("来源", expanded: $navigationPlatformsExpanded)
         }
+        .id("platforms-\(navigationPlatformsExpanded)")
       }
 
       Section {
-        Group {
         if navigationCreatorsExpanded {
           navigationButton(
             "全部博主",
@@ -1821,11 +1814,10 @@ struct HistoryContentView: View {
           // 「导入博主」是个动作不是去处，不再常驻侧栏；入口放在「全部博主」页标题右侧，
           // 列表为空时空状态里也有同一个按钮。
         }
-        }
-        .id("creators-\(navigationCreatorsExpanded)")
       } header: {
         navigationSectionHeader("博主", expanded: $navigationCreatorsExpanded)
       }
+      .id("creators-\(navigationCreatorsExpanded)")
       .accessibilityIdentifier("history-navigation-creators")
 
       if model.navigationCounts.tags.isEmpty {
@@ -1840,7 +1832,6 @@ struct HistoryContentView: View {
         }
       } else {
         Section {
-          Group {
           if navigationTagsExpanded {
             // 标签是跨内容的分类关键词：按引用数降序的药丸云，
             // 大类自然浮到最前。
@@ -1896,12 +1887,11 @@ struct HistoryContentView: View {
                 .accessibilityIdentifier("history-navigation-tags-clear")
             }
           }
-          }
-          .id("tags-\(navigationTagsExpanded)")
         } header: {
           navigationSectionHeader("标签", expanded: $navigationTagsExpanded)
             .accessibilityIdentifier("history-navigation-tags-header")
         }
+        .id("tags-\(navigationTagsExpanded)")
         .accessibilityIdentifier("history-navigation-tags")
       }
       // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
@@ -1927,7 +1917,7 @@ struct HistoryContentView: View {
     }
     .listStyle(.sidebar)
     // 不再因为分组展开 / 收起换掉整张侧栏。换掉之后滚动回到顶上，恢复逻辑再滚两次，
-    // 点「视图」侧栏来回跳（2026-10-10）。分组内容自己带 id，空分组后来插入的行仍会刷新。
+    // 点「视图」侧栏来回跳（2026-10-10）。要刷新的是分组自己：见各 Section 上的 id。
     // 系统侧栏的默认最小行高会把 28pt 的行再撑高一截。
     .environment(\.defaultMinListRowHeight, 24)
     .scrollContentBackground(theme.isNative ? .automatic : .hidden)
