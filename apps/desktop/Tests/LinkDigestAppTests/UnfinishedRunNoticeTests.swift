@@ -84,6 +84,43 @@ final class UnfinishedRunNoticeTests: XCTestCase {
     XCTAssertNil(UnfinishedRunNotice.latest(in: []))
   }
 
+  /// 工序行副标题带第一句原因。悬停仍是正文里那整段（原因 + 怎么处理）。
+  func testFailedRunSubtitleIncludesTheShortReasonAndHoverKeepsTheFullText() {
+    let notice = UnfinishedRunNotice.latest(in: [
+      run(.summarize, .failed, at: 20, failureCode: "MODEL_ENDPOINT_NOT_FOUND")
+    ])
+    XCTAssertEqual(
+      notice?.message,
+      "上次总结没有完成：这个服务地址上没有汲作要调用的接口"
+    )
+    let full = V02ErrorCatalog.presentation(for: "MODEL_ENDPOINT_NOT_FOUND").visibleText
+    XCTAssertEqual(notice?.detail, full)
+    XCTAssertTrue(full.contains("请回到「模型服务」核对服务地址"))
+    XCTAssertFalse(notice?.message.contains("请回到") ?? true, "怎么处理不进副标题")
+  }
+
+  func testFailureWithoutACodeStaysASingleSentence() {
+    let notice = UnfinishedRunNotice.latest(in: [run(.translate, .failed, at: 20)])
+    XCTAssertEqual(notice?.message, "上次翻译没有完成。")
+    XCTAssertEqual(notice?.detail, notice?.message)
+  }
+
+  func testProcessFailureCopyUsesTheFirstSentenceForEveryStep() {
+    XCTAssertEqual(
+      ProcessFailureCopy.subtitle(step: "转写", reason: "找不到可转写的本机视频。请稍后再试。"),
+      "上次转写没有完成：找不到可转写的本机视频"
+    )
+    XCTAssertEqual(
+      ProcessFailureCopy.subtitle(step: "校对", reason: "模型没有返回内容；原文没有改动。"),
+      "上次校对没有完成：模型没有返回内容；原文没有改动"
+    )
+    XCTAssertEqual(ProcessFailureCopy.subtitle(step: "脑图", reason: "   "), "上次脑图没有完成。")
+    XCTAssertEqual(
+      ProcessFailureCopy.brief("上次总结没有完成：服务地址上没有这个接口"),
+      "服务地址上没有这个接口"
+    )
+  }
+
   /// 横幅必须带可执行的重试，只报告不给出口等于没修。
   func testDetailViewRendersTheNoticeWithARetryAction() throws {
     let source = try String(

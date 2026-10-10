@@ -159,6 +159,29 @@ struct SealStampView: View {
   }
 }
 
+/// 工序失败时标题下面那一行：「上次总结没有完成：服务地址上没有这个接口」。
+/// 只取原因的第一句。整段说明（含怎么处理）留在正文和悬停里，这一行放不下就由界面截断。
+enum ProcessFailureCopy {
+  static func subtitle(step: String, reason: String?) -> String {
+    guard let brief = brief(reason) else { return "上次\(step)没有完成。" }
+    return "上次\(step)没有完成：\(brief)"
+  }
+
+  /// 第一句，去掉句号。已经带「上次…没有完成：」的不再叠一层。
+  static func brief(_ reason: String?) -> String? {
+    guard var text = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+    if let range = text.range(of: #"^上次.+没有完成[：:]"#, options: .regularExpression) {
+      text = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    guard !text.isEmpty else { return nil }
+    if let end = text.firstIndex(where: { "。！？".contains($0) }) {
+      text = String(text[..<end])
+    }
+    text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return text.isEmpty ? nil : text
+  }
+}
+
 /// 「处理」面板里的一行：印 + 动作 + 右侧状态。
 struct ProcessStepRow: View {
   enum State: Equatable {
@@ -208,7 +231,8 @@ struct ProcessStepRow: View {
               .themedFont(.caption2)
               .foregroundStyle(secondaryText)
               .lineLimit(1)
-              .truncationMode(.middle)
+              // 从末尾截：留住「上次总结没有完成：」，原因太长时丢掉后半句。
+              .truncationMode(.tail)
           }
         }
         Spacer(minLength: 12)

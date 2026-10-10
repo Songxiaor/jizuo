@@ -126,9 +126,8 @@ struct HistoryGallerySplitView<Sidebar: View, Detail: View>: View {
           sidebar.frame(maxWidth: .infinity, maxHeight: .infinity)
             // 三栏里的侧栏是整列窗口高、顶上只让出标题栏；这里它让出的是整条工具栏，
             // 实测「汲作」和「全部」比三栏页低 10pt，切卡片墙时整列往下一跳（2026-10-01 走查）。
-            // 滚过之后再进来，同一条偏移会让各行再低大约 26–31pt（2026-10-11 走查：
-            // 形式 +31，来源 / 博主 / 标签 +26）。新列表的滚动坐标和三栏侧栏对不齐，
-            // 不是多出来一行。这里不再加减一个拍脑袋的数。
+            // 滚过之后再进来还有大约 26–31pt 对不齐，那是两张列表的可视区域不在同一高度，
+            // 不在这里再减一个固定数，由 SidebarScrollMemory 按画面上某一行校正。
             .padding(.top, theme.isNative ? 0 : -Self.toolbarOverhang)
         }
         .clipped()

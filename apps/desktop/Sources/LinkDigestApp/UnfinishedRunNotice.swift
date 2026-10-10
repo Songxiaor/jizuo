@@ -13,7 +13,10 @@ enum UnfinishedRunNotice {
   struct Notice: Equatable {
     let kind: RunKind
     let status: RunStatus
+    /// 工序行副标题。失败时带第一句原因。
     let message: String
+    /// 悬停里的完整说明。正文的失败页另有全文，这里也不截断。
+    let detail: String
   }
 
   /// 只有「同类运行之后再没成功过」才提示。
@@ -32,7 +35,10 @@ enum UnfinishedRunNotice {
       case .completed:
         pending[run.kind] = nil
       case .failed, .interrupted:
-        pending[run.kind] = Notice(kind: run.kind, status: run.status, message: message(for: run))
+        let copy = copy(for: run)
+        pending[run.kind] = Notice(
+          kind: run.kind, status: run.status, message: copy.message, detail: copy.detail
+        )
       case .queued, .running, .stopped:
         // 进行中另有转圈提示；用户主动停止的不算故障，不提示。
         pending[run.kind] = nil
@@ -47,15 +53,19 @@ enum UnfinishedRunNotice {
     latest(in: runs.filter { $0.run.kind == kind })
   }
 
-  private static func message(for run: HistoryRun) -> String {
+  private static func copy(for run: HistoryRun) -> (message: String, detail: String) {
     let name = label(for: run.kind)
     switch run.status {
     case .interrupted:
       // APP_INTERRUPTED 是「App 退出时被打断」，不是模型或网络出错——
       // 说清这一点，用户才知道重试大概率会成功。
-      return "上次\(name)在\(ProductDisplay.name)退出时中断，没有结果，重新点一次就行。"
+      let line = "上次\(name)在\(ProductDisplay.name)退出时中断，没有结果，重新点一次就行。"
+      return (line, line)
     default:
-      return "上次\(name)没有完成。"
+      // 副标题只要第一句（「服务地址上没有这个接口」）。怎么处理仍在正文和悬停里。
+      let presentation = run.failureCode.map { V02ErrorCatalog.presentation(for: $0) }
+      let line = ProcessFailureCopy.subtitle(step: name, reason: presentation?.message)
+      return (line, presentation?.visibleText ?? line)
     }
   }
 

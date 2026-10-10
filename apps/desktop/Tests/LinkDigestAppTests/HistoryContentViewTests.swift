@@ -340,6 +340,65 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 工序失败的副标题带原因，悬停用完整说明。转写、校对、脑图同一句式。一行放不下从末尾截。
+  func testProcessRowFailureSubtitleCarriesTheReason() {
+    let source = historyContentViewSource()
+    let panel = section(in: source, from: "private var processStepRows", to: "private var processPanelExtras")
+    XCTAssertEqual(panel.components(separatedBy: "ProcessFailureCopy.subtitle").count - 1, 3)
+    XCTAssertTrue(panel.contains("unfinished?.detail"), "总结和翻译的悬停要用完整失败说明")
+    let row = appSource("ProcessSteps.swift")
+    XCTAssertTrue(row.contains(".lineLimit(1)"))
+    XCTAssertTrue(row.contains(".truncationMode(.tail)"))
+    XCTAssertFalse(row.contains(".truncationMode(.middle)"))
+  }
+
+  /// 进「全部博主」时各行低了约 26–31pt。按画面上某一行的窗口坐标校正，不减一个固定点数。
+  /// 这一行比原来低 31pt（窗口坐标更小）时，偏移加上 31，内容往上走回原位。
+  func testCreatorPageHoldsTheVisibleRowInsteadOfAFixedNudge() {
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetToHoldRow(
+        currentOffset: 180,
+        rowWindowY: 400,
+        desiredWindowY: 431,
+        documentHeight: 1_400,
+        viewportHeight: 740
+      ),
+      211
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetToHoldRow(
+        currentOffset: 180,
+        rowWindowY: 400,
+        desiredWindowY: 400,
+        documentHeight: 1_400,
+        viewportHeight: 740
+      ),
+      180
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetToHoldRow(
+        currentOffset: 180,
+        rowWindowY: 400,
+        desiredWindowY: 431,
+        documentHeight: 700,
+        viewportHeight: 740
+      ),
+      0,
+      "内容已经短于窗口时不再往下拽"
+    )
+    let nearer = SidebarVisibleRow(id: "history-navigation-forms-header", distanceFromClipCenter: 40, windowY: 500)
+    let edge = SidebarVisibleRow(id: "history-navigation-trash", distanceFromClipCenter: 300, windowY: 80)
+    XCTAssertEqual(SidebarRowAnchor.choose([edge, nearer])?.id, nearer.id)
+    let memory = appSource("SidebarScrollMemory.swift")
+    XCTAssertTrue(memory.contains("anchoredRow = SidebarRowAnchor.capture"))
+    XCTAssertTrue(memory.contains("holdAnchoredRow"))
+    XCTAssertTrue(memory.contains("history-navigation-"))
+    XCTAssertFalse(
+      appSource("CreatorDirectoryViews.swift").contains("再低大约 26"),
+      "不要再靠一个拍脑袋的固定点数对齐"
+    )
+  }
+
   /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。
   func testStopControlIsTiedToAnActiveRunNotToTextLength() {
     let source = historyContentViewSource()
@@ -1765,9 +1824,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(more.contains("startRun(kind, ignoreLanguageMatch:"), "工序行重试要走带忽略语言匹配的入口")
     XCTAssertTrue(more.contains("if let unfinished { return .failed(unfinished.message) }"), "已有译文时再次失败仍要画成失败")
     XCTAssertFalse(more.contains("if !done, let unfinished"), "不能因为旧译文还在就把失败画成完成")
-    XCTAssertTrue(more.contains("subtitle: transcriptionFailedReason"), "转写失败原因要写在副标题")
-    XCTAssertTrue(more.contains("subtitle: tidyFailedReason"), "校对失败原因要写在副标题，压过模型名")
-    XCTAssertTrue(more.contains("subtitle: mindMapFailedReason"), "脑图失败原因要写在副标题，压过模型名")
+    XCTAssertTrue(more.contains("ProcessFailureCopy.subtitle(step: ProcessStep.record.title"), "转写失败原因要写在副标题")
+    XCTAssertTrue(more.contains("subtitle: failedLine\n          ?? transcriptTidyBlockedReason"), "校对失败原因要写在副标题，压过模型名")
+    XCTAssertTrue(more.contains("subtitle: failedLine\n          ?? mindMapUnavailableReason"), "脑图失败原因要写在副标题，压过模型名")
     XCTAssertTrue(more.contains("let done = (kind == .translate ? translationArtifact : summaryArtifact) != nil"), "失败只改这一行的状态，旧译文产物还在")
     // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。
     let surface = section(in: source, from: "private var readingSurface: some View", to: "private var showsReadingSurface")
@@ -3209,7 +3268,8 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     // 09-28「处理」改为自绘面板：禁用与理由同出一处。10-04 起理由写在这一项标题下面那行小字里
     //（原来挤在标题括号里，和其它步骤的「模型：…」那行同一个位置）。
     XCTAssertTrue(source.contains("isEnabled: transcriptTidyBlockedReason == nil"))
-    XCTAssertTrue(source.contains("subtitle: tidyFailedReason"))
+    XCTAssertTrue(source.contains("ProcessFailureCopy.subtitle(step: ProcessStep.proof.title, reason: $0)"))
+    XCTAssertTrue(source.contains("subtitle: failedLine"))
     XCTAssertTrue(source.contains("?? transcriptTidyBlockedReason"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))

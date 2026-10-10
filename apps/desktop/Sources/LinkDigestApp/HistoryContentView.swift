@@ -7435,9 +7435,12 @@ private struct HistoryDetailView: View, Equatable {
         if case let .failed(reason) = ui { return reason }
         return nil
       }()
+      let failedLine = transcriptionFailedReason.map {
+        ProcessFailureCopy.subtitle(step: ProcessStep.record.title, reason: $0)
+      }
       let state: ProcessStepRow.State = {
         if ui.isActive { return .running("转写中…") }
-        if let transcriptionFailedReason { return .failed(transcriptionFailedReason) }
+        if let failedLine { return .failed(failedLine) }
         return hasCompletedTranscript ? .done(doneText(.record)) : .pending
       }()
       rows.append(.init(
@@ -7445,8 +7448,8 @@ private struct HistoryDetailView: View, Equatable {
         title: hasCompletedTranscript ? "重新转写（本机）" : "转写（本机）",
         state: state,
         isEnabled: action.canStart && !model.transcriptionState(for: taskID).isActive,
-        help: action.help,
-        subtitle: transcriptionFailedReason,
+        help: transcriptionFailedReason ?? action.help,
+        subtitle: failedLine,
         identifier: hasCompletedTranscript ? "history-more-retranscribe" : "history-process-transcribe",
         action: { isProcessPanelPresented = false; action.start() }
       ))
@@ -7458,10 +7461,13 @@ private struct HistoryDetailView: View, Equatable {
         if case let .failed(reason) = tidy { return reason }
         return nil
       }()
+      let failedLine = tidyFailedReason.map {
+        ProcessFailureCopy.subtitle(step: ProcessStep.proof.title, reason: $0)
+      }
       let done = records[.proof] != nil
       let state: ProcessStepRow.State = {
         if tidy.isActive { return .running(model.transcriptTidyProgress ?? "校对中…") }
-        if let tidyFailedReason { return .failed(tidyFailedReason) }
+        if let failedLine { return .failed(failedLine) }
         return done ? .done(doneText(.proof)) : .pending
       }()
       rows.append(.init(
@@ -7470,8 +7476,8 @@ private struct HistoryDetailView: View, Equatable {
         title: done ? "重新校对转写稿" : "校对转写稿",
         state: state,
         isEnabled: transcriptTidyBlockedReason == nil && !tidy.isActive,
-        help: "把转写文字校对一遍并重新分段，不改说了什么",
-        subtitle: tidyFailedReason
+        help: tidyFailedReason ?? "把转写文字校对一遍并重新分段，不改说了什么",
+        subtitle: failedLine
           ?? transcriptTidyBlockedReason
           ?? processModelSubtitle(providerSettings.effectiveTidyModelName ?? providerSettings.activeSummaryModelName),
         identifier: "history-ai-transcript-tidy",
@@ -7517,7 +7523,7 @@ private struct HistoryDetailView: View, Equatable {
         state: state,
         isEnabled: (blocked == nil || (canRetryUnfinished && languageMatchBlock)) && !isRunning(kind),
         help: canRetryUnfinished
-          ? "上次\(step.title)没有完成，再试一次"
+          ? (unfinished?.detail ?? "上次\(step.title)没有完成，再试一次")
           : (blocked ?? (done ? "用本机已保存的正文再\(step.title)一次" : (kind == .translate
             ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
             : "让模型读完正文，写一份总结"))),
@@ -7544,10 +7550,13 @@ private struct HistoryDetailView: View, Equatable {
         if case let .failed(reason) = mindMapUI { return reason }
         return nil
       }()
+      let failedLine = mindMapFailedReason.map {
+        ProcessFailureCopy.subtitle(step: ProcessStep.mindMap.title, reason: $0)
+      }
       let state: ProcessStepRow.State = {
         if mindMapUI.isActive { return .running("生成中…") }
         if queued { return .running("已排队") }
-        if let mindMapFailedReason { return .failed(mindMapFailedReason) }
+        if let failedLine { return .failed(failedLine) }
         return done ? .done(doneText(.mindMap)) : .pending
       }()
       rows.append(.init(
@@ -7555,8 +7564,8 @@ private struct HistoryDetailView: View, Equatable {
         title: done ? "重新生成脑图" : "生成脑图",
         state: state,
         isEnabled: mindMapUnavailableReason == nil,
-        help: mindMapUnavailableReason ?? (queued ? "再点一次取消排队" : "把正文发给模型提取结构"),
-        subtitle: mindMapFailedReason
+        help: mindMapFailedReason ?? mindMapUnavailableReason ?? (queued ? "再点一次取消排队" : "把正文发给模型提取结构"),
+        subtitle: failedLine
           ?? mindMapUnavailableReason
           ?? processModelSubtitle(providerSettings.activeSummaryModelName),
         identifier: "mind-map-generate",

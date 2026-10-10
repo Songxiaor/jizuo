@@ -25,6 +25,84 @@ enum SidebarScrollRestore {
     let maxOffset = max(0, documentHeight - viewportHeight)
     return min(max(0, previous), maxOffset)
   }
+
+  /// 换侧栏后，让同一行回到原来的屏幕高度。
+  ///
+  /// AppKit 窗口坐标向上增大。滚动偏移增加时，内容在屏幕上往上走，这一行的窗口坐标也增大。
+  /// 进「全部博主」后各行大约低 26–31pt：新列表的可视区域和三栏侧栏不在同一高度，
+  /// 原样套用旧偏移就会全体下移。按这一行的窗口坐标把偏移补上，不靠一个固定的点数。
+  static func offsetToHoldRow(
+    currentOffset: CGFloat,
+    rowWindowY: CGFloat,
+    desiredWindowY: CGFloat,
+    documentHeight: CGFloat,
+    viewportHeight: CGFloat
+  ) -> CGFloat {
+    let adjusted = currentOffset + (desiredWindowY - rowWindowY)
+    return offsetAfterSectionToggle(
+      previous: adjusted,
+      documentHeight: documentHeight,
+      viewportHeight: viewportHeight
+    )
+  }
+}
+
+/// 侧栏里能认出来的一行，用来在两张列表之间对位置。
+struct SidebarVisibleRow: Equatable {
+  var id: String
+  var distanceFromClipCenter: CGFloat
+  var windowY: CGFloat
+}
+
+enum SidebarRowAnchor {
+  /// 可视区里最靠近中间的那一行。靠边的行换页时容易被裁掉，中间更稳。
+  static func choose(_ rows: [SidebarVisibleRow]) -> SidebarVisibleRow? {
+    rows.min { lhs, rhs in
+      if lhs.distanceFromClipCenter != rhs.distanceFromClipCenter {
+        return lhs.distanceFromClipCenter < rhs.distanceFromClipCenter
+      }
+      return lhs.id < rhs.id
+    }
+  }
+
+  @MainActor
+  static func capture(in scrollView: NSScrollView) -> SidebarVisibleRow? {
+    guard let document = scrollView.documentView else { return nil }
+    let clip = scrollView.contentView
+    let visible = clip.bounds
+    var rows: [SidebarVisibleRow] = []
+    func visit(_ view: NSView) {
+      let id = view.accessibilityIdentifier()
+      if !id.isEmpty, id.hasPrefix("history-navigation-"), view.bounds.height > 1 {
+        let inClip = view.convert(view.bounds, to: clip)
+        if visible.intersects(inClip) {
+          rows.append(SidebarVisibleRow(
+            id: id,
+            distanceFromClipCenter: abs(inClip.midY - visible.midY),
+            windowY: view.convert(view.bounds, to: nil).minY
+          ))
+        }
+      }
+      for child in view.subviews { visit(child) }
+    }
+    visit(document)
+    return choose(rows)
+  }
+
+  @MainActor
+  static func windowY(of identifier: String, in scrollView: NSScrollView) -> CGFloat? {
+    guard let document = scrollView.documentView else { return nil }
+    var found: CGFloat?
+    func visit(_ view: NSView) {
+      if found == nil, view.accessibilityIdentifier() == identifier {
+        found = view.convert(view.bounds, to: nil).minY
+        return
+      }
+      for child in view.subviews where found == nil { visit(child) }
+    }
+    visit(document)
+    return found
+  }
 }
 
 /// 侧栏重建前后保持滚动位置。
@@ -37,6 +115,8 @@ final class SidebarScrollMemory {
   private weak var scrollView: NSScrollView?
   private var observer: NSObjectProtocol?
   private var lastOffset: CGFloat = 0
+  /// 换侧栏前，可视区里某一行在屏幕上的高度。新列表套用旧偏移后按它校正。
+  private var anchoredRow: SidebarVisibleRow?
   private var hasAttached = false
   /// 新侧栏刚挂上、还没还原时，它自己报的「滚到 0」不能记成用户的位置。
   private var isRestoring = false
@@ -51,6 +131,7 @@ final class SidebarScrollMemory {
   func snapshot() {
     guard let scrollView else { return }
     lastOffset = scrollView.contentView.bounds.origin.y
+    anchoredRow = SidebarRowAnchor.capture(in: scrollView)
     isRestoring = true
     snapshotGeneration += 1
     let generation = snapshotGeneration
@@ -155,8 +236,23 @@ final class SidebarScrollMemory {
         target += min(grown, headroom)
       }
       self.scroll(scrollView, to: target)
+      self.holdAnchoredRow(in: scrollView)
       self.lastOffset = scrollView.contentView.bounds.origin.y
     }
+  }
+
+  /// 旧偏移先落到新列表上，再按锚点那一行的屏幕高度修正。找不到那一行就保持旧偏移。
+  private func holdAnchoredRow(in scrollView: NSScrollView) {
+    guard let anchoredRow, let rowWindowY = SidebarRowAnchor.windowY(of: anchoredRow.id, in: scrollView) else { return }
+    let clip = scrollView.contentView
+    let target = SidebarScrollRestore.offsetToHoldRow(
+      currentOffset: clip.bounds.origin.y,
+      rowWindowY: rowWindowY,
+      desiredWindowY: anchoredRow.windowY,
+      documentHeight: scrollView.documentView?.frame.height ?? 0,
+      viewportHeight: clip.bounds.height
+    )
+    scroll(scrollView, to: target)
   }
 
   private func scroll(_ scrollView: NSScrollView, to offset: CGFloat) {
