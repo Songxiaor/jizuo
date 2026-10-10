@@ -399,6 +399,33 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 收起「来源」时各行下移 160。收起前偏移 350，来源默认 5 行 × 32。
+  /// 收起后内容仍高于窗口（文档 1000、可视 677，最大偏移 323）。350 只比 323 多 27，
+  /// 不该把偏移减掉整段 160 停在 190。列表若已经停在 190，按这一行的屏幕高度加回去，再夹到 323。
+  func testCollapsingSourceOnlyGivesUpTheRealScrollClamp() {
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 350, documentHeight: 1_000, viewportHeight: 677),
+      323
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetToHoldRow(
+        currentOffset: 190,
+        rowWindowY: 394,
+        desiredWindowY: 554,
+        documentHeight: 1_000,
+        viewportHeight: 677
+      ),
+      323
+    )
+    let nearer = SidebarVisibleRow(id: "history-navigation-forms-header", distanceFromClipCenter: 40, windowY: 357)
+    let removed = SidebarVisibleRow(id: "history-navigation-platform-x.com", distanceFromClipCenter: 10, windowY: 554)
+    XCTAssertEqual(SidebarRowAnchor.ranked([nearer, removed]).map(\.id), [removed.id, nearer.id])
+    let memory = appSource("SidebarScrollMemory.swift")
+    let hold = section(in: memory, from: "func holdVisibleOffset()", to: "func remember(expanding:")
+    XCTAssertTrue(hold.contains("holdAnchoredRow"))
+    XCTAssertTrue(hold.contains("SidebarRowAnchor.candidates"))
+  }
+
   /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。
   func testStopControlIsTiedToAnActiveRunNotToTextLength() {
     let source = historyContentViewSource()
