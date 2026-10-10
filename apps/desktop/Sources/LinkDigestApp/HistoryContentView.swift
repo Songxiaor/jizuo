@@ -1462,10 +1462,8 @@ struct HistoryContentView: View {
   /// 几行往右缩了 4pt、行也矮一截）。
   private var stepStatusDisclosureRow: some View {
     Button {
-      // 展开/收起不恢复滚动，被点的这一行留在原地。
-      if SidebarScrollRestore.shouldRestore(.sectionToggle) {
-        sidebarScrollMemory.remember(expanding: !navigationStepStatusExpanded)
-      }
+      // 收起后如果列表自己滚回顶部，把还放得下的偏移按回去。这一行留在原地。
+      sidebarScrollMemory.holdVisibleOffset()
       navigationStepStatusExpanded.toggle()
     } label: {
       HStack(spacing: 8) {
@@ -2016,11 +2014,9 @@ struct HistoryContentView: View {
     HStack(spacing: 8) {
       if let expanded {
         Button {
-          // 展开/收起不恢复滚动。整表重建后再按旧偏移、新高度各滚一次，
-          // 点「视图」侧栏会来回跳（2026-10-10）。
-          if SidebarScrollRestore.shouldRestore(.sectionToggle) {
-            sidebarScrollMemory.remember(expanding: !expanded.wrappedValue)
-          }
+          // 分组换 id 时列表会自己滚回 0。内容还比窗口高就按回原来的偏移，
+          // 不再按新高度往下推（2026-10-10 点「视图」来回跳；2026-10-11 收起「来源」回顶）。
+          sidebarScrollMemory.holdVisibleOffset()
           expanded.wrappedValue.toggle()
         } label: {
           // 2026-09-23：分组默认收起后必须看得出「能点开」，补一个转向的小箭头（对标应用同款）。

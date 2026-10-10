@@ -295,7 +295,8 @@ final class HistoryContentViewTests: XCTestCase {
       from: "private func navigationSectionHeader(",
       to: "private var navigationFooter"
     )
-    XCTAssertTrue(header.contains("if SidebarScrollRestore.shouldRestore(.sectionToggle)"))
+    XCTAssertTrue(header.contains("sidebarScrollMemory.holdVisibleOffset()"))
+    XCTAssertFalse(header.contains("remember(expanding:"))
     XCTAssertFalse(
       source.contains(".id(navigationSectionsLayoutKey)"),
       "展开分组不能再换掉整张侧栏，否则滚动会被拉回顶部再还原"
@@ -326,6 +327,17 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertFalse(source.contains(".id(navigationSectionsLayoutKey)"))
     XCTAssertFalse(SidebarScrollRestore.shouldRestore(.sectionToggle))
+    // 滚离顶部 369pt（最近 7 天 411→42）。来源约 10 行、每行约 32pt，收起只少约 320pt，
+    // 下面还有博主和标签。内容仍高于窗口时必须留在 369，不能回到 0。
+    // 只有整列已经短于窗口（最大偏移 0）才停在顶部。
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 369, documentHeight: 1_200, viewportHeight: 740),
+      369
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 369, documentHeight: 700, viewportHeight: 740),
+      0
+    )
   }
 
   /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。

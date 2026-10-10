@@ -18,6 +18,13 @@ enum SidebarScrollRestore {
     case .sidebarReplacement: true
     }
   }
+
+  /// 收起分组后该停在哪。内容还比窗口高时停在原来的偏移，点的标题不动。
+  /// 内容已经短于窗口时最大偏移是 0，停在顶部是滚动范围被压短，不是被拉回去。
+  static func offsetAfterSectionToggle(previous: CGFloat, documentHeight: CGFloat, viewportHeight: CGFloat) -> CGFloat {
+    let maxOffset = max(0, documentHeight - viewportHeight)
+    return min(max(0, previous), maxOffset)
+  }
 }
 
 /// 侧栏重建前后保持滚动位置。
@@ -49,6 +56,28 @@ final class SidebarScrollMemory {
     let generation = snapshotGeneration
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
       guard let self, self.snapshotGeneration == generation, !self.isAwaitingRestore else { return }
+      self.isRestoring = false
+    }
+  }
+
+  /// 收起或展开分组前调用。列表有时会自己滚回 0（2026-10-11：滚离顶部后收起「来源」，
+  /// 「全部」回到 148）。内容还比窗口高时把原来的偏移按回去；已经短于窗口就停在 0。
+  /// 不按新长出来的高度再推一次，那是点「视图」来回跳的原因。
+  func holdVisibleOffset() {
+    guard let scrollView else { return }
+    lastOffset = scrollView.contentView.bounds.origin.y
+    pendingReveal = nil
+    isRestoring = true
+    snapshotGeneration += 1
+    let generation = snapshotGeneration
+    let pin = { [weak self] in
+      guard let self, self.snapshotGeneration == generation, let scrollView = self.scrollView else { return }
+      self.scroll(scrollView, to: self.lastOffset)
+    }
+    DispatchQueue.main.async(execute: pin)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+      pin()
+      guard let self, self.snapshotGeneration == generation else { return }
       self.isRestoring = false
     }
   }
@@ -133,8 +162,12 @@ final class SidebarScrollMemory {
   private func scroll(_ scrollView: NSScrollView, to offset: CGFloat) {
     let clip = scrollView.contentView
     let documentHeight = scrollView.documentView?.frame.height ?? 0
-    let maxOffset = max(0, documentHeight - clip.bounds.height)
-    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(max(0, offset), maxOffset)))
+    let target = SidebarScrollRestore.offsetAfterSectionToggle(
+      previous: offset,
+      documentHeight: documentHeight,
+      viewportHeight: clip.bounds.height
+    )
+    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: target))
     scrollView.reflectScrolledClipView(clip)
   }
 }
