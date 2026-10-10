@@ -1875,6 +1875,21 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertFalse(strip.contains(".pickerStyle(.segmented)"))
     XCTAssertTrue(strip.contains("ForEach(readingTabs)"))
+    // 字心和字距也要能点到，页签在辅助功能树里的名字就是屏上那几个字。
+    // 切到下一个属性为止：后面的朱批开关仍是 plain，不能算进页签。
+    let tabsOnly = section(
+      in: source,
+      from: "private func readingTabStrip(pinned: Bool) -> some View",
+      to: "private var singlePaneTranscriptSnapshot"
+    )
+    XCTAssertTrue(tabsOnly.contains(".buttonStyle(ReadingTabHitStyle())"))
+    XCTAssertFalse(tabsOnly.contains(".buttonStyle(.plain)"), "plain 只按笔画命中")
+    XCTAssertTrue(tabsOnly.contains(".accessibilityLabel(title)"))
+    XCTAssertTrue(tabsOnly.contains(".accessibilityElement(children: .contain)"))
+    XCTAssertTrue(tabsOnly.contains(".allowsHitTesting(false)"), "下划线那层不能挡住页签")
+    let hitStyle = section(in: source, from: "struct ReadingTabHitStyle: ButtonStyle", to: "enum LiveSummaryBody")
+    XCTAssertTrue(hitStyle.contains("configuration.label"))
+    XCTAssertTrue(hitStyle.contains(".contentShape(Rectangle())"))
 
     // 译文内部仍按层切换（翻译是整份文档一次翻完的），控件保持轻量。
     let layerPicker = section(

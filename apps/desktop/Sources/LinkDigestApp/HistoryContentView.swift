@@ -6847,10 +6847,10 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
             .padding(.bottom, 3)
             .anchorPreference(key: ReadingTabBoundsKey.self, value: .bounds) { isActive ? $0 : nil }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ReadingTabHitStyle())
         .help(isActive ? "正在看\(title)" : "切换到\(title)")
+        .accessibilityLabel(title)
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier("history-reading-tab-\(tab.id)")
       }
@@ -6872,6 +6872,8 @@ private struct HistoryDetailView: View, Equatable {
       }
       .allowsHitTesting(false)
     }
+    // 只标整排的名字时，系统会把里面的按钮收起来，辅助功能树里就找不到「原文」。
+    .accessibilityElement(children: .contain)
     .accessibilityLabel("阅读内容")
     .accessibilityIdentifier("history-reading-tabs")
   }
@@ -10190,6 +10192,16 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
 /// （2026-10-10，先是 4pt，压到 22 后还剩 2pt）。行本身也锁这个高度。
 enum ReadingHeaderMetrics {
   static let verbRow: CGFloat = 22
+}
+
+/// 页签是纯文字。系统的 plain 按钮按笔画的不透明像素算能不能点到，
+/// 点在字心或两个字中间会落空（2026-10-11 夜检：光标停在「原文」上，下划线仍在「翻译」）。
+/// 命中形状要挂在按钮样式的成品上，挂在文字里面不算。
+struct ReadingTabHitStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .contentShape(Rectangle())
+  }
 }
 
 /// 重新总结时阅读页显示哪一版正文。
