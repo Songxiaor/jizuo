@@ -293,9 +293,50 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(gate.contains("count"), "不能因为正文短就把停止藏掉")
     XCTAssertEqual(
       source.components(separatedBy: "frame(height: ReadingHeaderMetrics.verbRow)").count - 1,
-      1
+      2,
+      "进行中那组和整行表头都锁同一高度，静止时不能更矮"
     )
     XCTAssertEqual(ReadingHeaderMetrics.verbRow, 22)
+  }
+
+  /// 重新总结的流式中间态不能把正文换成空白。第一段写完之前留旧总结。
+  func testResummaryStreamNeverShowsAnEmptyBody() {
+    let saved = "旧总结。\n\n第二段还在。"
+    let snapshots = [
+      "",
+      "Swift 是一",
+      "Swift 是一门高性能的语言。",
+      "Swift 是一门高性能的语言。\n",
+      "Swift 是一门高性能的语言。\n它还在写",
+      "Swift 是一门高性能的语言。\n它还在写。\nT",
+      "Swift 是一门高性能的语言。\n它还在写。\nTAGS: 语言",
+    ]
+    var adopted = false
+    var longestNew = 0
+    for snapshot in snapshots {
+      let shown = LiveSummaryBody.display(saved: saved, incoming: snapshot)
+      XCTAssertFalse(
+        shown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        "流式中间态把正文清空了：\(snapshot)"
+      )
+      if LiveSummaryBody.replacesSaved(incoming: snapshot) {
+        adopted = true
+        XCTAssertFalse(shown.contains("第二段还在"), "写出第一段后不该退回旧总结")
+        XCTAssertGreaterThanOrEqual(shown.count, longestNew, "新总结只能变长，不能中途变短")
+        longestNew = shown.count
+      } else {
+        XCTAssertEqual(shown, saved, "第一段还没写完时必须留着旧总结")
+      }
+    }
+    XCTAssertTrue(adopted)
+    let source = historyContentViewSource()
+    XCTAssertTrue(source.contains("gate: pane == .summary ? .summaryParagraph : .completedLine"))
+    XCTAssertTrue(source.contains("LiveSummaryBody.replacesSaved"))
+    XCTAssertTrue(
+      source.contains("readingPane = finished"),
+      "总结完成要留在总结页，不能跳到还没刷新的最新产物"
+    )
+    XCTAssertTrue(source.contains("!isRunning(.translate)"), "新一轮翻译开始后清掉上一次的停止提示")
   }
 
   /// 没标签和有一行标签必须同高，否则标签落下时表头下移。
@@ -2263,7 +2304,7 @@ final class HistoryContentViewTests: XCTestCase {
     // 空面板指向表头右边的动词按钮；页签本身只列已经有的东西。
     XCTAssertTrue(detail.contains("点表头右边的「翻译」生成"))
     XCTAssertTrue(detail.contains("这条没存到正文"))
-    XCTAssertTrue(detail.contains("readingPane = defaultReadingPane"))
+    XCTAssertTrue(detail.contains("readingPane = finished"), "跑完停在这一轮的页签，不用还没刷新的最新产物")
     XCTAssertTrue(
       detail.contains("of: detail.task.id, initial: true"),
       "The first rendered item must also land on a non-empty pane"

@@ -5353,6 +5353,13 @@ private struct HistoryDetailView: View, Equatable {
   private func pane(for kind: RunKind) -> ReadingPane {
     kind == .translate ? .translation : .summary
   }
+  private func readingPane(for intent: RunIntentKind) -> ReadingPane? {
+    switch intent {
+    case .summarize: return .summary
+    case .translate: return .translation
+    case .connectionTest: return nil
+    }
+  }
   /// 正在生成、或失败/中断还只有这份草稿时，对应的总结/翻译页就是阅读区。
   /// 完成后正文进页签，这里关掉，避免同一段字出现两次。
   private var liveRunReadingPane: ReadingPane? {
@@ -5367,10 +5374,28 @@ private struct HistoryDetailView: View, Equatable {
 
   private var showsLiveRunInReadingPane: Bool {
     guard let pane = liveRunReadingPane else { return false }
-    if case .completed = appModel.runState, artifact(for: pane) != nil { return false }
+    // 旧产物还在时不能把刚写完的正文收掉：详情要等落库刷新才换上新总结，
+    // 提前收掉会先闪回旧总结，或在刷新前空一帧（2026-10-10）。
+    if case let .completed(intent, text) = appModel.runState,
+       savedArtifactIsThisRun(artifact(for: pane), completed: text, intent: intent) {
+      return false
+    }
     return appModel.runState.isActive
       || !appModel.runResultText.isEmpty
       || appModel.runHasFailure
+  }
+
+  /// 库里这份产物是不是刚跑完的那一版。对不上就还是上一份，阅读页继续留着这一轮的正文。
+  private func savedArtifactIsThisRun(
+    _ artifact: HistoryArtifact?,
+    completed: String,
+    intent: RunIntentKind
+  ) -> Bool {
+    guard let saved = artifact?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
+          !saved.isEmpty else { return false }
+    let finished = (intent == .summarize ? SummaryTagTrailer.visibleBody(completed) : completed)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return !finished.isEmpty && saved == finished
   }
   private var runIsCompleted: Bool {
     if case .completed = appModel.runState { return true }
@@ -5956,11 +5981,14 @@ private struct HistoryDetailView: View, Equatable {
       // 生成过程就在总结/翻译页里。完成后草稿换成落库正文，闪一下横幅。
       // 停止和失败仍留在这一页，把原因说清楚。
       guard wasShown, !isShown, hasResultBody else { return }
-      guard case .completed = appModel.runState else { return }
+      guard case let .completed(intent, _) = appModel.runState else { return }
+      // 停在刚跑完的这一页。用「最新一份产物」会在新总结还没写进详情时
+      // 跳到更早的翻译，中间空一帧（2026-10-10，总结完成闪到译文页）。
+      guard let finished = readingPane(for: intent) else { return }
       pendingRunPane = nil
+      readingPane = finished
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-        readingPane = defaultReadingPane
-        completionBanner = latestArtifactRun?.run.kind == .translate ? "翻译已完成" : "总结已完成"
+        completionBanner = intent == .translate ? "翻译已完成" : "总结已完成"
       }
       Task { @MainActor in
         try? await Task.sleep(nanoseconds: 2_200_000_000)
@@ -6694,6 +6722,9 @@ private struct HistoryDetailView: View, Equatable {
         if effectiveReadingPane == .source, splitsManuscriptTabs { manuscriptMarkToggle }
         readingVerbs(pinned: pinned)
       }
+      // 静止时这一行跟着「处理」按钮的高度。进行中那组如果更高，居中对齐会把
+      // 页签和「处理」一起下移（2026-10-10，y 275→277）。两边锁成同一高度。
+      .frame(height: ReadingHeaderMetrics.verbRow)
       .frame(maxWidth: .infinity, alignment: .leading)
       if !pinned {
         readingHeaderStatusLines
@@ -8826,7 +8857,7 @@ private struct HistoryDetailView: View, Equatable {
       if showsVisibleRun, liveRunReadingPane == pane, pane == .translation || pane == .summary {
         LiveArrivalProbe(
           live: appModel.liveRunText,
-          waitsForCompletedLine: pane == .translation
+          gate: pane == .summary ? .summaryParagraph : .completedLine
         ) {
           guard let started = appModel.runStartedAt else { return }
           if pane == .translation {
@@ -8856,7 +8887,7 @@ private struct HistoryDetailView: View, Equatable {
           liveRunReadingBody
         }
       } else if let artifact = artifact(for: pane), !artifact.bodyText.isEmpty {
-        if pane == .translation, let notice = translationReadback?.notice {
+        if pane == .translation, let notice = translationReadback?.notice, !isRunning(.translate) {
           Text(notice)
             .themedFont(.callout)
             .foregroundStyle(theme.secondaryText)
@@ -10118,12 +10149,43 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
   }
 }
 
-/// 表头右侧「翻译中… 停止」不能高过这一行。
+/// 表头这一行的高度。静止和进行中必须一样，否则居中对齐会把页签和「处理」下移。
 ///
-/// 「处理」是 small bordered。进行中那组如果更高，整行被撑高，居中对齐的页签和
-/// 「处理」一起下移 4pt（2026-10-10，y 246→250）。进行中和结束后都按这个高度。
+/// 「处理」是 bordered。进行中的「翻译中… 停止」曾经更高，整行被撑高
+/// （2026-10-10，先是 4pt，压到 22 后还剩 2pt）。行本身也锁这个高度。
 enum ReadingHeaderMetrics {
   static let verbRow: CGFloat = 22
+}
+
+/// 重新总结时阅读页显示哪一版正文。
+///
+/// 新总结刚吐出「Swift 是一」就换掉整页旧总结，阅读区会先空掉再慢慢长回来
+/// （2026-10-10，4.0 秒）。第一段（出现换行）写完才换上。半截尾标或空串
+/// 不能把已经有的正文换成空白。
+enum LiveSummaryBody {
+  /// 新总结已经写出第一段，可以换掉旧总结。
+  static func replacesSaved(incoming: String) -> Bool {
+    guard incoming.contains(where: \.isNewline) else { return false }
+    return !SummaryTagTrailer.visibleBody(incoming)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .isEmpty
+  }
+
+  /// 还没写出第一段就留旧总结。没有旧总结时，空的半截也不拿来当正文。
+  static func display(saved: String?, incoming: String) -> String {
+    if replacesSaved(incoming: incoming) {
+      return SummaryTagTrailer.visibleBody(incoming)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if let saved = nonempty(saved) { return saved }
+    return nonempty(SummaryTagTrailer.visibleBody(incoming)) ?? ""
+  }
+
+  private static func nonempty(_ text: String?) -> String? {
+    guard let text else { return nil }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
 }
 
 /// 停止或失败之后，翻译页该显示哪一份正文。
@@ -10240,16 +10302,24 @@ enum LiveReadingPlaceholder {
 /// 流式正文从「还没有可显示的新内容」变成「有了」时通知一次。
 /// 探针自己订阅拍点，外层详情只在这一下重绘。
 private struct LiveArrivalProbe: View {
+  enum Gate {
+    /// 翻译：写完一行再换，避免半行把旧译文清掉。
+    case completedLine
+    /// 总结：写出第一段再换。第一个字就换，阅读区会先剩「Swift 是一」。
+    case summaryParagraph
+  }
+
   @ObservedObject var live: LiveRunTextModel
-  /// 翻译要等写完一行再换正文；总结从第一个字就开始显示。
-  let waitsForCompletedLine: Bool
+  let gate: Gate
   let onArrive: () -> Void
 
   private var arrived: Bool {
-    if waitsForCompletedLine {
+    switch gate {
+    case .completedLine:
       return !LiveTranslationPreview.completedText(of: live.text).isEmpty
+    case .summaryParagraph:
+      return LiveSummaryBody.replacesSaved(incoming: live.text)
     }
-    return !live.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   var body: some View {
