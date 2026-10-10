@@ -310,14 +310,17 @@ public enum DouyinWebCapturePolicy {
     if let collects = page.collects { metadata.append("collects: \(yaml(collects))") }
     if isImagePost { metadata.append("content_kind: images") }
 
-    let caption = page.description?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let captionOrTitle = (caption?.isEmpty == false) ? caption! : page.title
+    let captionBody = Self.captionWithoutRepeatedTitle(page.description, title: page.title)
 
     var body: String
     if page.title.count <= maximumHeadingTitleCharacters {
-      body = "# \(page.title)\n\n\(captionOrTitle)"
+      if let captionBody {
+        body = "# \(page.title)\n\n\(captionBody)"
+      } else {
+        body = "# \(page.title)"
+      }
     } else {
-      body = captionOrTitle
+      body = captionBody ?? page.title
     }
     if isImagePost {
       let gallery = page.imageURLs
@@ -328,6 +331,23 @@ public enum DouyinWebCapturePolicy {
       }
     }
     return "---\n\(metadata.joined(separator: "\n"))\n---\n\n\(body)"
+  }
+
+  /// 配文和标题完全一样时不再写第二遍。未登录抖音经常两处都只给标题。
+  static func captionWithoutRepeatedTitle(_ description: String?, title: String) -> String? {
+    guard let description else { return nil }
+    let titleKey = normalizedParagraph(title)
+    let kept = description.components(separatedBy: "\n\n").filter { paragraph in
+      let key = normalizedParagraph(paragraph)
+      return !key.isEmpty && key != titleKey
+    }
+    let joined = kept.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return joined.isEmpty ? nil : joined
+  }
+
+  private static func normalizedParagraph(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines)
+      .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
   }
 
   private static func validatedGalleryImageURLs(_ raw: Any?) throws -> [URL] {

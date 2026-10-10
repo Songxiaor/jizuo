@@ -255,6 +255,40 @@ final class DouyinWebCaptureTests: XCTestCase {
       "实际输出：\(markdown)"
     )
     XCTAssertTrue(markdown.contains("# 短标题"))
+    let body = MarkdownNoteFrontmatter.parse(markdown).body
+    XCTAssertEqual(
+      body.components(separatedBy: "短标题").count - 1,
+      1,
+      "标题只出现在标题行，配文为空时不再重复一段：\(body)"
+    )
+  }
+
+  func testRenderedMarkdownDropsParagraphsThatOnlyRepeatTheTitle() {
+    let title = "第3集 | 食伤生财真相： 盲派讲透，为什么你有这个格局却赚不到收益"
+    let page = DouyinRenderedPage(
+      awemeID: "7661288207509769506",
+      canonicalURL: URL(string: "https://www.douyin.com/video/7661288207509769506")!,
+      title: title,
+      description: "\(title)\n\n口播正文"
+    )
+    let markdown = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: page)
+    let body = MarkdownNoteFrontmatter.parse(markdown).body
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertTrue(body.hasPrefix("# \(title)"))
+    XCTAssertFalse(body.contains("\(title)\n\n\(title)"))
+    XCTAssertTrue(body.contains("口播正文"))
+    XCTAssertEqual(body.components(separatedBy: title).count - 1, 1)
+
+    let onlyTitle = DouyinRenderedPage(
+      awemeID: "7661288207509769506",
+      canonicalURL: URL(string: "https://www.douyin.com/video/7661288207509769506")!,
+      title: title,
+      description: title
+    )
+    let onlyBody = MarkdownNoteFrontmatter.parse(
+      DouyinWebCapturePolicy.renderedDocumentMarkdown(from: onlyTitle)
+    ).body.trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertEqual(onlyBody, "# \(title)")
   }
 
   func testLongTitleDoesNotEmitHeadingLine() {
