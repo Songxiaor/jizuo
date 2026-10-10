@@ -57,5 +57,12 @@ final class XBookmarksSyncTests: XCTestCase {
       "1234567890123"
     )
     XCTAssertNil(XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://example.test/status/1234567890123"))
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://x.com/jack/status/20"),
+      "20"
+    )
+    XCTAssertTrue(XBookmarksSyncRequest.isValidTweetID("20"))
+    XCTAssertFalse(XBookmarksSyncRequest.isValidTweetID(""))
+    XCTAssertFalse(XBookmarksSyncRequest.isValidTweetID("12345678901234567890123456"))
   }
 }

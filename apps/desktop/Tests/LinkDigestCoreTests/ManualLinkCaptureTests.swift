@@ -502,6 +502,51 @@ final class ManualLinkCaptureTests: XCTestCase {
     XCTAssertFalse(document.text.contains("On this page"), document.text)
     XCTAssertEqual(SiblingMarkdownURL.make(from: pageURL)?.absoluteString, "https://www.aihero.dev/a-complete-guide-to-agents-md.md")
   }
+
+  func testXStatusPublicHTMLRejectsAPageThatDoesNotMatchTheRequestedPost() async throws {
+    XCTAssertFalse(
+      XStatusPublicHTMLIdentity.containsDelimitedID("20", in: "This is 2025, if you see this in 2040")
+    )
+    XCTAssertTrue(
+      XStatusPublicHTMLIdentity.containsDelimitedID("20", in: "https://x.com/jack/status/20")
+    )
+
+    let requested = "https://x.com/jack/status/20"
+    let wrongPost = ManualLinkCaptureService(fetcher: StaticFetcher(
+      url: URL(string: "https://x.com/jack")!,
+      html: """
+      <html><head><title>X 上的 jack (@jack)</title></head><body><article>
+      This is 2025, if you see this in 2040, I might not be around anymore. @totalsane
+      </article></body></html>
+      """
+    ))
+    do {
+      _ = try await wrongPost.capture(urlString: requested)
+      XCTFail("公开页换成别的帖时不能存下来")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .xStatusIdentityMismatch)
+      XCTAssertTrue(error.userMessage.contains("没有保存"))
+    }
+
+    let wrongAuthor = ManualLinkCaptureService(fetcher: StaticFetcher(
+      url: URL(string: "https://x.com/totalsane/status/20")!,
+      html: "<html><head><title>另一位作者</title></head><body><article>这是 totalsane 的帖子正文，编号碰巧一样。</article></body></html>"
+    ))
+    do {
+      _ = try await wrongAuthor.capture(urlString: requested)
+      XCTFail("作者对不上时不能存下来")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .xStatusIdentityMismatch)
+    }
+
+    let matching = ManualLinkCaptureService(fetcher: StaticFetcher(
+      url: URL(string: requested)!,
+      html: "<html><head><title>jack on X: just setting up my twttr</title></head><body><article>just setting up my twttr</article></body></html>"
+    ))
+    let document = try await matching.capture(urlString: requested)
+    XCTAssertEqual(document.method, "public_html")
+    XCTAssertTrue(document.text.contains("just setting up my twttr"))
+  }
 }
 
 private struct FixtureFetcher: WebPageFetcher {

@@ -52,8 +52,10 @@ public struct XBookmarksSyncRequest: Sendable, Equatable {
     return .init(version: 1, requestId: requestId, tweetIDs: ids)
   }
 
+  /// 早期推文的数字 id 可以短到个位数（jack 的「just setting up my twttr」是 20）。
+  /// 只认纯数字，避免把任意路径段拿去打公开端点。上限仍是 25，挡住明显不是 id 的长串。
   public static func isValidTweetID(_ value: String) -> Bool {
-    (8...25).contains(value.count) && value.allSatisfy { $0.isASCII && $0.isNumber }
+    (1...25).contains(value.count) && value.allSatisfy { $0.isASCII && $0.isNumber }
   }
 
   /// 入队抓取用的公开状态页。查重不能拿它做整串相等：落库几乎都是

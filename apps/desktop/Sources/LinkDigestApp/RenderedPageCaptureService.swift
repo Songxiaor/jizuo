@@ -250,6 +250,7 @@ enum RenderedPageCapturePolicy {
     let adapterHosts = [
       "douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn",
       "bilibili.com", "b23.tv", "github.com", "mp.weixin.qq.com",
+      "x.com", "twitter.com",
     ]
     return !adapterHosts.contains(where: on)
   }

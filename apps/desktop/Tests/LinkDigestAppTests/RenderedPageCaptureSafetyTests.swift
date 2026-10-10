@@ -25,5 +25,7 @@ final class RenderedPageCaptureSafetyTests: XCTestCase {
     XCTAssertTrue(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://github.com/a/b/blob/main/x.ipynb")!))
     XCTAssertFalse(RenderedPageCapturePolicy.allowsDirectFallback(URL(string: "https://github.com/a/b/blob/main/x.ipynb")!))
     XCTAssertFalse(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://example.com/notes.md")!))
+    XCTAssertFalse(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://x.com/jack/status/20")!))
+    XCTAssertFalse(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://twitter.com/jack/status/20")!))
   }
 }

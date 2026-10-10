@@ -72,6 +72,11 @@ final class XTweetResolverTests: XCTestCase {
       "1234567890123"
     )
 
+    XCTAssertEqual(
+      XTweetResolver.tweetID(from: "https://x.com/jack/status/20"),
+      "20"
+    )
+
     // 别的站点、非 status 路径、非数字 id 一律不认——避免拿任意 id 去打端点。
     for rejected in [
       "https://example.com/op7418/status/2080486709729587300",
@@ -82,6 +87,22 @@ final class XTweetResolverTests: XCTestCase {
     ] {
       XCTAssertNil(XTweetResolver.tweetID(from: rejected), rejected)
     }
+  }
+
+  func testShortTweetIDResolvesThroughSyndication() async throws {
+    let resources = XTweetFixtureResourceFetcher(
+      syndication: #"{"text":"just setting up my twttr","user":{"name":"jack","screen_name":"jack"}}"#,
+      graphQL: "{}"
+    )
+    let resolved = await XTweetResolver(resources: resources).resolveTweet(id: "20", includesRichContent: false)
+    let tweet = try XCTUnwrap(resolved)
+    XCTAssertEqual(tweet.text, "just setting up my twttr")
+    let syndication = try XCTUnwrap(resources.requests.first { $0.url.host == "cdn.syndication.twimg.com" })
+    XCTAssertEqual(
+      URLComponents(url: syndication.url, resolvingAgainstBaseURL: false)?
+        .queryItems?.first { $0.name == "id" }?.value,
+      "20"
+    )
   }
 
   func testOnlyXVideoCDNIsAcceptedAsAPlaybackSource() {

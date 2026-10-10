@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ManualLinkError: Error, Sendable, Equatable {
-  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubFileUnavailable, githubRateLimited, cancelled, network
+  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubFileUnavailable, githubRateLimited, xStatusIdentityMismatch, cancelled, network
 
   public var userMessage: String {
     switch self {
@@ -26,9 +26,73 @@ public enum ManualLinkError: Error, Sendable, Equatable {
     case .githubRepositoryUnavailable: "仓库不存在或不是公开仓库。请确认链接，或在浏览器登录后用浏览器扩展保存。"
     case .githubFileUnavailable: "无法读取这个 GitHub 文件。请确认它是公开文件，或在浏览器中打开后用浏览器扩展保存。"
     case .githubRateLimited: "GitHub 暂时限制了访问次数，请过几分钟再试。"
+    case .xStatusIdentityMismatch: "这条 X 帖子没有保存：公开页面上的内容和链接里的作者或帖子编号对不上。未登录时页面常会换成别的帖。可稍后重试，或在浏览器里打开这条帖子，用浏览器扩展保存。"
     case .cancelled: "已取消读取网页。"
     case .network: "无法读取网页，请检查网络后重试。"
     }
+  }
+}
+
+/// X 单帖走公开 HTML 兜底时，页面必须对得上链接里的作者和帖子编号。
+///
+/// 未登录的 x.com 常把状态页换成个人主页，主页上是另一条推荐帖。编号要按整段数字比，
+/// 不能把「2025」当成帖子 20。
+public enum XStatusPublicHTMLIdentity {
+  public struct Expectation: Equatable {
+    public let tweetID: String
+    public let screenName: String?
+  }
+
+  public static func expectation(from url: URL) -> Expectation? {
+    guard let tweetID = XBookmarksSyncRequest.tweetID(fromCanonicalURL: url.absoluteString) else { return nil }
+    let parts = url.pathComponents.filter { $0 != "/" }
+    let screenName: String?
+    if parts.count >= 3,
+       parts[0].caseInsensitiveCompare("i") != .orderedSame,
+       parts[1] == "status" || parts[1] == "statuses" {
+      screenName = parts[0]
+    } else {
+      screenName = nil
+    }
+    return Expectation(tweetID: tweetID, screenName: screenName)
+  }
+
+  public static func matches(
+    expectation: Expectation,
+    pageURL: URL,
+    author: String?,
+    title: String?,
+    body: String
+  ) -> Bool {
+    let idPlaces = [pageURL.absoluteString, author, title, body].compactMap { $0 }
+    guard idPlaces.contains(where: { containsDelimitedID(expectation.tweetID, in: $0) }) else { return false }
+    guard let screenName = expectation.screenName, !screenName.isEmpty else { return true }
+    return screenNameMatches(screenName, pageURL: pageURL, author: author, title: title)
+  }
+
+  static func containsDelimitedID(_ id: String, in text: String) -> Bool {
+    var rest = Substring(text)
+    while let range = rest.range(of: id) {
+      let before = range.lowerBound == rest.startIndex || !rest[rest.index(before: range.lowerBound)].isNumber
+      let after = range.upperBound == rest.endIndex || !rest[range.upperBound].isNumber
+      if before && after { return true }
+      rest = rest[range.upperBound...]
+    }
+    return false
+  }
+
+  static func screenNameMatches(_ name: String, pageURL: URL, author: String?, title: String?) -> Bool {
+    let needle = name.lowercased()
+    let pathParts = pageURL.pathComponents.filter { $0 != "/" }.map { $0.lowercased() }
+    if pathParts.contains(needle) { return true }
+    for field in [author, title].compactMap({ $0?.lowercased() }) {
+      if field.contains("@\(needle)") { return true }
+      let tokens = field.split { character in
+        !(character.isLetter || character.isNumber || character == "_")
+      }.map(String.init)
+      if tokens.contains(needle) { return true }
+    }
+    return false
   }
 }
 
@@ -356,6 +420,17 @@ public struct ManualLinkCaptureService: Sendable {
         in: XTrailingCounterNoiseFilter.removingTrailingCounter(from: extracted.text, sourceURL: page.url),
         baseURL: page.url
       )
+      if let requestedURL = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
+         let expected = XStatusPublicHTMLIdentity.expectation(from: requestedURL),
+         !XStatusPublicHTMLIdentity.matches(
+           expectation: expected,
+           pageURL: page.url,
+           author: extracted.author,
+           title: extracted.title,
+           body: cleanedText
+         ) {
+        throw ManualLinkError.xStatusIdentityMismatch
+      }
       return makeDocument(
         sourceURL: page.url,
         title: extracted.title,

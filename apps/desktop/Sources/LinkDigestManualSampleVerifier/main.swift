@@ -76,6 +76,7 @@ func stableErrorCode(_ error: Error) -> String {
   case .githubRepositoryUnavailable: return "githubRepositoryUnavailable"
   case .githubFileUnavailable: return "githubFileUnavailable"
   case .githubRateLimited: return "githubRateLimited"
+  case .xStatusIdentityMismatch: return "xStatusIdentityMismatch"
   case .cancelled: return "cancelled"
   case .network: return "network"
   }
