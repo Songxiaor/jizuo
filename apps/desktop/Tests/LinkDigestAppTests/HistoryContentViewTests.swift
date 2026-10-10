@@ -1901,6 +1901,24 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(layerPicker.contains("ForEach(layers)"))
   }
 
+  /// 方向键改选中时，列表会重算每一行。右键菜单不能挂在这一层，
+  /// 否则每一行都复制整页并当场建菜单（2026-10-11 夜检）。
+  func testArrowSelectionDoesNotRebuildEveryRowMenu() {
+    let source = historyContentViewSource()
+    let list = section(
+      in: source,
+      from: "ForEach(section.entries, id: \\.row.taskID)",
+      to: "if !model.visibleRelatedRows.isEmpty"
+    )
+    XCTAssertTrue(list.contains("HistorySelectionRow("))
+    XCTAssertTrue(list.contains(".equatable()"))
+    XCTAssertFalse(list.contains(".contextMenu"), "菜单不要挂在每次按键都会执行的列表层")
+    let row = section(in: source, from: "private struct HistorySelectionRow", to: "struct DeferredMenuContent")
+    XCTAssertTrue(row.contains(".contextMenu"))
+    XCTAssertTrue(row.contains("static func =="))
+    XCTAssertFalse(row.contains("historyContextMenu"), "行本身不要调用整页的菜单方法")
+  }
+
   /// 正文表头：动词归动词、名词归名词。
   ///
   /// 「总结」「翻译」「转写」是动词——点了要跑模型、产出新东西；「配文」「转写」

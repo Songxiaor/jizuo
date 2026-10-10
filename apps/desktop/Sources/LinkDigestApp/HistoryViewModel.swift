@@ -888,6 +888,37 @@ private actor DraftStreamBuffer {
   func append(_ chunk: String) { text += chunk }
 }
 
+/// 方向键连按和单次点选要分开。
+///
+/// 连按（两次选中隔得比 `settle` 近）时，前一条的详情还没画完，下一条的按键
+/// 已经到了。这时再读、再排版，主线程就顾不上把选中高亮画出来。
+/// 隔得够开的那一次是认真点的，马上读，不能为了连按让平常打开变慢。
+struct DetailSelectionPace: Equatable {
+  static let settle = Duration.milliseconds(120)
+  private var lastChange: ContinuousClock.Instant?
+
+  /// 返回 true 表示这一下马上读详情。
+  ///
+  /// 上一条已经显示在屏幕上时，哪怕隔得很近也马上读：那是点完一条再点下一条，
+  /// 不是按住方向键。上一条还没出来又换了选中，才是连按，先取消，停稳再读最后一条。
+  mutating func loadsImmediately(
+    displayedTaskID: TaskID?,
+    previousSelection: TaskID?,
+    now: ContinuousClock.Instant = .now
+  ) -> Bool {
+    let gapOpen: Bool
+    if let lastChange {
+      gapOpen = lastChange.duration(to: now) >= Self.settle
+    } else {
+      gapOpen = true
+    }
+    self.lastChange = now
+    if gapOpen { return true }
+    if let previousSelection, displayedTaskID == previousSelection { return true }
+    return false
+  }
+}
+
 /// 用 Observation 而不是 ObservableObject：视图只在自己读过的属性变化时重绘。
 /// 原来 113 个 任一变化都让整个主界面（侧栏、列表、详情三棵树）重排，
 /// 「打开长文后点哪都顿一下」就是这么来的。
@@ -920,11 +951,19 @@ final class HistoryViewModel {
           isReadingCreatorWorkInDirectory = true
         }
         remoteMediaFavoriteState = .idle
-        loadDetailForSelection()
+        selectionLoadsImmediately = selectionPace.loadsImmediately(
+          displayedTaskID: detail?.task.id,
+          previousSelection: previous
+        )
+        scheduleDetailAfterSelectionChange()
         refreshSelectedTaskCollections()
       }
     }
   }
+  /// 这一下选中要不要马上读详情、预热视频。连按时为 false，视图不要跟着每一条去准备播放器。
+  @ObservationIgnored private(set) var selectionLoadsImmediately = true
+  @ObservationIgnored private var selectionPace = DetailSelectionPace()
+  @ObservationIgnored private var detailSettleTask: Task<Void, Never>?
   var selectedTaskID: TaskID? {
     get { Self.singleSelection(in: selectedTaskIDs) }
     set { selectedTaskIDs = newValue.map { [$0] } ?? [] }
@@ -6931,6 +6970,22 @@ final class HistoryViewModel {
       rows.append(contentsOf: additions); nextCursor = page.nextCursor
       loadFavicons(for: additions, generation: generation)
     case let .failure(code): listErrorCode = code
+    }
+  }
+
+  /// 单次点选马上读。连按只取消正在读的那条，等选中停稳再读最后一条。
+  private func scheduleDetailAfterSelectionChange() {
+    detailSettleTask?.cancel()
+    if selectionLoadsImmediately || selectedTaskID == nil {
+      loadDetailForSelection()
+      return
+    }
+    detailTask?.cancel()
+    let taskID = selectedTaskID
+    detailSettleTask = Task { [weak self] in
+      try? await Task.sleep(for: DetailSelectionPace.settle)
+      guard !Task.isCancelled, let self, self.selectedTaskID == taskID else { return }
+      self.loadDetailForSelection()
     }
   }
 

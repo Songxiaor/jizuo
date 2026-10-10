@@ -78,6 +78,8 @@ struct HistoryContentView: View {
   @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
   /// 三步卡「看个示例」打开的只读示例（2026-10-01）。
   @State private var isSamplePreviewPresented = false
+  /// 列表行的菜单和「总结」只经这个对象转发，行本身不捕获整页。
+  @State private var rowActions = HistoryRowActions()
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
   @ObservedObject private var videoCinema = VideoCinemaController.shared
@@ -180,7 +182,14 @@ struct HistoryContentView: View {
       .onChange(of: firstCaptureIsComplete) { _, completed in
         if completed { isCaptureOnboardingDismissed = true }
       }
-      .onChange(of: model.selectedTaskID) { _, _ in
+      .onChange(of: model.selectedTaskID) { _, id in
+        // 连按不给每一条准备播放器：那会在按键回调里叠资产缓冲。单次点选仍马上预热。
+        if id == nil || model.selectionLoadsImmediately {
+          synchronizeRemotePreviewPreheat()
+        }
+      }
+      .onChange(of: model.detail?.task.id) { _, id in
+        guard id != nil, !model.selectionLoadsImmediately else { return }
         synchronizeRemotePreviewPreheat()
       }
       .onChange(of: model.selectedHosts) { oldHosts, hosts in
@@ -1234,27 +1243,26 @@ struct HistoryContentView: View {
           ForEach(historyListSections) { section in
           Section {
           ForEach(section.entries, id: \.row.taskID) { index, row in
-            UIReadingHistoryRow(
+            // 右键菜单放进行里，并且这行按值比较。选中变化时只有前后两条要重画；
+            // 菜单闭包若挂在这一层，每次按键都会给每一行复制整页并建一次菜单。
+            HistorySelectionRow(
               row: row,
               isSelected: model.selectedTaskIDs.contains(row.taskID),
               faviconURL: model.faviconImageURL(for: row),
               theme: theme,
-              // 分组的第一行总是写作者：上一行在另一个分组里，读者看不到它。
               showsAuthor: index == section.entries.first?.index
                 || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
-              onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
-              onSummarize: { summarizeSingle(row) },
-              onActivate: { model.selectedTaskIDs = [row.taskID] },
-              // 「更多」和右键是同一份菜单。原来列表内联写了一份、画廊调另一份，
-              // 两边已经开始漂移；现在只有 `historyContextMenu` 一处。
-              moreMenu: { AnyView(DeferredMenuContent { historyContextMenu(for: row) }) }
-            ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
+              model: model,
+              actions: rowActions
+            )
+            .equatable()
+            .tag(row.taskID)
+            .onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
               // 卡片之间留出 8pt，选中底色才读得出是一张张独立的卡。
               // 左右 -6：抵掉表格自带的 16pt，卡片外缘落在 10pt，和搜索框、侧栏选中条对齐。
               .listRowInsets(EdgeInsets(top: 4, leading: -6, bottom: 4, trailing: -6))
               .listRowSeparator(.hidden)
-              .contextMenu { DeferredMenuContent { historyContextMenu(for: row) } }
           }
           // 合集里可以拖动调整顺序；其它列表按时间排，没有「顺序」可调。
           .onMove(perform: model.canReorderSelectedCollection ? { model.moveCollectionRows(fromOffsets: $0, toOffset: $1) } : nil)
@@ -1282,7 +1290,9 @@ struct HistoryContentView: View {
                 .accessibilityIdentifier("history-list-next-page-retry")
             }
           }
-        }.listStyle(.sidebar)
+        }
+        .listStyle(.sidebar)
+          .background(RowActionBinder { installRowActions() }.frame(width: 0, height: 0))
           // 顶端定位行要真的是 0 高：List 默认给每行一个最小行高，那一行原来白占了一整行，
           // 列表顶上空出一大截（2026-10-01 Syc 截图）。内容行自己有 minHeight 44，不受影响。
           .environment(\.defaultMinListRowHeight, 0)
@@ -2797,6 +2807,12 @@ struct HistoryContentView: View {
       .foregroundStyle(theme.danger)
       .accessibilityIdentifier("history-context-delete")
     }
+  }
+
+  /// 列表每次重绘只绑定一次。行按方向键刷新时不要各自再捕获整页。
+  private func installRowActions() {
+    rowActions.menu = { row in AnyView(self.historyContextMenu(for: row)) }
+    rowActions.summarize = { self.summarizeSingle($0) }
   }
 
   /// 对单条内容跑总结：列表行内动作和右键菜单共用这一条路径。
@@ -11370,6 +11386,58 @@ final class ColophonContextMemo {
     key = (detail, mindMap)
     cached = context
     return context
+  }
+}
+
+/// 列表行转给「总结」和右键菜单的出口。持有的是闭包，不是整页视图。
+final class HistoryRowActions {
+  var menu: (HistoryRowProjection) -> AnyView = { _ in AnyView(EmptyView()) }
+  var summarize: (HistoryRowProjection) -> Void = { _ in }
+}
+
+/// 方向键改选中时，列表会把每一行的视图值重算一遍。
+///
+/// 右键菜单若挂在这一遍必经的修饰符上，SwiftUI 会当场执行菜单闭包，
+/// 每一行都复制整份 `HistoryContentView`（2026-10-11 夜检，选中回调里这一段占了主线程约三分之一）。
+/// 菜单放进按值比较的行里：没变的行不重画，菜单内容仍要等真正弹出才算。
+private struct HistorySelectionRow: View, Equatable {
+  let row: HistoryRowProjection
+  let isSelected: Bool
+  let faviconURL: URL?
+  let theme: HistoryThemeTokens
+  let showsAuthor: Bool
+  let model: HistoryViewModel
+  let actions: HistoryRowActions
+
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.row == rhs.row
+      && lhs.isSelected == rhs.isSelected
+      && lhs.faviconURL == rhs.faviconURL
+      && lhs.theme == rhs.theme
+      && lhs.showsAuthor == rhs.showsAuthor
+  }
+
+  var body: some View {
+    UIReadingHistoryRow(
+      row: row,
+      isSelected: isSelected,
+      faviconURL: faviconURL,
+      theme: theme,
+      showsAuthor: showsAuthor,
+      onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
+      onSummarize: { actions.summarize(row) },
+      onActivate: { model.selectedTaskIDs = [row.taskID] },
+      moreMenu: { AnyView(DeferredMenuContent { actions.menu(row) }) }
+    )
+    .contextMenu { DeferredMenuContent { actions.menu(row) } }
+  }
+}
+
+private struct RowActionBinder: View {
+  let bind: () -> Void
+  var body: some View {
+    let _ = bind()
+    Color.clear
   }
 }
 

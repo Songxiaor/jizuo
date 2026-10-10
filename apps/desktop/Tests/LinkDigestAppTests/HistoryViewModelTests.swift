@@ -4213,6 +4213,43 @@ private actor MediaDownloadGate {
     releaseContinuation = nil
   }
 }
+final class DetailSelectionLoadTests: XCTestCase {
+  func testSingleSelectionLoadsImmediately() {
+    var pace = DetailSelectionPace()
+    let start = ContinuousClock.now
+    XCTAssertTrue(pace.loadsImmediately(displayedTaskID: nil, previousSelection: nil, now: start))
+    XCTAssertTrue(pace.loadsImmediately(
+      displayedTaskID: nil, previousSelection: TaskID(), now: start.advanced(by: .milliseconds(500))
+    ))
+  }
+
+  func testRapidSelectionWaitsUntilTheLastItemSettles() {
+    var pace = DetailSelectionPace()
+    let start = ContinuousClock.now
+    XCTAssertTrue(pace.loadsImmediately(displayedTaskID: nil, previousSelection: nil, now: start), "第一次点选马上读")
+    let soon = start.advanced(by: .milliseconds(50))
+    XCTAssertFalse(
+      pace.loadsImmediately(displayedTaskID: nil, previousSelection: TaskID(), now: soon),
+      "上一条还没显示又换选中，不读中间那条"
+    )
+    XCTAssertTrue(
+      pace.loadsImmediately(displayedTaskID: nil, previousSelection: TaskID(), now: soon.advanced(by: .milliseconds(120))),
+      "停稳 120ms 后再读最后一条"
+    )
+  }
+
+  func testSwitchAfterThePreviousItemIsVisibleLoadsImmediately() {
+    var pace = DetailSelectionPace()
+    let start = ContinuousClock.now
+    let shown = TaskID()
+    XCTAssertTrue(pace.loadsImmediately(displayedTaskID: nil, previousSelection: nil, now: start))
+    XCTAssertTrue(
+      pace.loadsImmediately(displayedTaskID: shown, previousSelection: shown, now: start.advanced(by: .milliseconds(30))),
+      "上一条已经在屏幕上，接着点下一条要马上读"
+    )
+  }
+}
+
 private func faviconRow(host: String, updatedAt: Int64) -> HistoryRowProjection {
   .init(
     taskID: TaskID(), title: host, canonicalURL: "https://\(host)/article", host: host,
