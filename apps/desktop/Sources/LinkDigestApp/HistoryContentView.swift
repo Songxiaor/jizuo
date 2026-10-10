@@ -3893,8 +3893,13 @@ struct HistoryContentView: View {
   }
 
   private var firstCaptureIsComplete: Bool {
-    providerSettings.hasConfiguredAPIKey
-      && model.rows.contains { $0.hasSummary == true }
+    FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: providerSettings.hasConfiguredAPIKey,
+      listHasSummary: model.rows.contains { $0.hasSummary == true },
+      openDetailRuns: (model.detail?.runs ?? []).map {
+        ($0.run.kind, $0.run.status, hasArtifact: $0.artifact != nil)
+      }
+    )
   }
 
   private var hasInstalledBrowserSupport: Bool {
@@ -9950,6 +9955,34 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
   }
 }
 
+/// 详情标题下「标签与素材类型」这一行的高度。
+///
+/// 没标签时按钮实测高 15pt（布局大约 16pt）。翻译或总结落下自动标签后，
+/// 「＋」是 20pt，整行变高，下面的「生成总结 / 处理」下移 4pt（2026-10-10，y 297→301）。
+/// 两边都至少占这一行，标签出现时表头不再动。折行时仍按内容增高。
+enum ClassificationRowMetrics {
+  static let singleLine: CGFloat = 20
+}
+
+/// 首次设置引导什么时候该消失。
+///
+/// 文案说「生成第一份总结后引导会自动消失」。总结落库后 `onRunMetadataChanged`
+/// 只刷新打开的详情，不重查分页列表，列表行上的 `hasSummary` 还是 false。
+/// 只看列表的话，眼前这条已经有总结，横幅还在。
+enum FirstCaptureGuide {
+  static func shouldDismiss(
+    hasConfiguredAPIKey: Bool,
+    listHasSummary: Bool,
+    openDetailRuns: [(RunKind, RunStatus, hasArtifact: Bool)]
+  ) -> Bool {
+    guard hasConfiguredAPIKey else { return false }
+    if listHasSummary { return true }
+    return openDetailRuns.contains { kind, status, hasArtifact in
+      kind == .summarize && status == .completed && hasArtifact
+    }
+  }
+}
+
 private struct HistoryTagEditor: View {
   let tags: [HistoryTag]
   @Bindable var model: HistoryViewModel
@@ -10002,14 +10035,18 @@ private struct HistoryTagEditor: View {
               }
             }
         }
+        .frame(minHeight: ClassificationRowMetrics.singleLine, alignment: .topLeading)
         .accessibilityIdentifier("history-tag-chips")
       } else if model.canEditTags {
         // Minimal empty state — no long grey instructional line.
+        // 没标签时这一行只有约 16pt，标签落下后变成 20pt，下面的表头会下移。
+        // 先占住一行胶囊的高度，有没有标签都一样高。
         HStack(spacing: 6) {
           if canOpenComposer {
             addTagControl
           }
         }
+        .frame(minHeight: ClassificationRowMetrics.singleLine, alignment: .topLeading)
         .accessibilityIdentifier("history-tag-empty-hint")
       }
 
@@ -10127,7 +10164,7 @@ private struct HistoryTagEditor: View {
         if hasChipTags {
           Image(systemName: "plus")
             .font(.system(size: DesignTokens.IconSize.inline, weight: .semibold))
-            .frame(width: 22, height: 20)
+            .frame(width: 22, height: ClassificationRowMetrics.singleLine)
             .contentShape(Rectangle())
         } else {
           Label(showsMaterialTypes ? "标签与素材类型" : "添加标签", systemImage: "tag")

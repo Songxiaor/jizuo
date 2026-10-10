@@ -59,9 +59,53 @@ final class HistoryContentViewTests: XCTestCase {
       to: "private var hasInstalledBrowserSupport: Bool"
     )
     XCTAssertFalse(completion.contains("hasInstalledBrowserSupport"))
+    XCTAssertTrue(completion.contains("FirstCaptureGuide.shouldDismiss"))
     XCTAssertTrue(source.contains("title: \"添加第一条链接\""))
     XCTAssertTrue(source.contains("浏览器扩展可稍后安装"))
     XCTAssertFalse(source.contains("actionTitle: \"打开浏览器扩展\""))
+  }
+
+  /// 总结落库只刷新打开的详情，列表行的 hasSummary 还是 false。引导要看眼前这条。
+  func testFirstCaptureGuideDismissesWhenTheOpenDetailHasASummary() {
+    XCTAssertFalse(FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: true, listHasSummary: false, openDetailRuns: []
+    ))
+    XCTAssertFalse(FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: true,
+      listHasSummary: false,
+      openDetailRuns: [(.translate, .completed, hasArtifact: true)]
+    ), "只有翻译不算生成过总结")
+    XCTAssertFalse(FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: true,
+      listHasSummary: false,
+      openDetailRuns: [(.summarize, .completed, hasArtifact: false)]
+    ), "跑完但没落下产物不算")
+    XCTAssertFalse(FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: false,
+      listHasSummary: false,
+      openDetailRuns: [(.summarize, .completed, hasArtifact: true)]
+    ), "还没配置模型时引导不能消失")
+    XCTAssertTrue(FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: true,
+      listHasSummary: false,
+      openDetailRuns: [(.summarize, .completed, hasArtifact: true)]
+    ))
+    XCTAssertTrue(FirstCaptureGuide.shouldDismiss(
+      hasConfiguredAPIKey: true, listHasSummary: true, openDetailRuns: []
+    ))
+  }
+
+  /// 没标签和有一行标签必须同高，否则标签落下时表头下移。
+  func testClassificationRowReservesSingleLineHeightWithOrWithoutTags() {
+    XCTAssertEqual(ClassificationRowMetrics.singleLine, 20)
+    let source = historyContentViewSource()
+    let editor = section(in: source, from: "private struct HistoryTagEditor: View", to: "private struct HistoryTagChip")
+    XCTAssertEqual(
+      editor.components(separatedBy: "minHeight: ClassificationRowMetrics.singleLine").count - 1,
+      2,
+      "空状态和已有标签都要占住同一行高"
+    )
+    XCTAssertTrue(editor.contains("height: ClassificationRowMetrics.singleLine"))
   }
 
   func testCurrentCapturePreviewResolvesPlayableDirectAndHLSWithoutDownload() throws {
