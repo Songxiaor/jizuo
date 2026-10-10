@@ -1908,6 +1908,40 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { fixture.model.transcriptionState == .cancelled }
   }
 
+  func testAutomaticModelDownloadNeedIsNotReportedAsUserCancellation() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelStates: [.requiresDownload],
+      scripts: []
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .awaitingModelDownload }
+
+    fixture.model.noteAutomaticModelDownloadNeeded()
+    await waitUntil {
+      if case .failed = fixture.model.transcriptionState { true } else { false }
+    }
+    guard case let .failed(message) = fixture.model.transcriptionState else {
+      return XCTFail("expected a download reason, got \(fixture.model.transcriptionState)")
+    }
+    XCTAssertEqual(message, HistoryViewModel.automaticModelDownloadNeededMessage)
+    XCTAssertFalse(message.contains("已取消"))
+    XCTAssertFalse(fixture.model.isTranscriptionModelConfirmationPresented)
+
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryViewModel.swift"),
+      encoding: .utf8
+    )
+    let pipeline = source.range(of: "if transcriptionState(for: request.taskID) == .awaitingModelDownload {")
+    let window = pipeline.map { source[$0.lowerBound...].prefix(420) } ?? ""
+    XCTAssertTrue(window.contains("noteAutomaticModelDownloadNeeded()"))
+    XCTAssertFalse(window.contains("cancelModelDownloadConfirmation()"))
+  }
+
   func testCancelDuringSuspendedModelDownloadReturnsNone() async throws {
     let transcriber = ScriptedVideoTranscriber(
       modelState: .requiresDownload,

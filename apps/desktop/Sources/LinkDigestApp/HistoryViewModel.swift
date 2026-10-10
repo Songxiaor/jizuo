@@ -3596,7 +3596,8 @@ final class HistoryViewModel {
             }
           }
           if transcriptionState(for: request.taskID) == .awaitingModelDownload {
-            cancelModelDownloadConfirmation()
+            // 自动工序不能替用户确认下载，也不能把「还没下载模型」写成用户取消。
+            noteAutomaticModelDownloadNeeded()
           }
           withExtendedLifetime(lease) {}
           storedDetail = await loadStoredDetail(taskID: request.taskID) ?? storedDetail
@@ -5506,6 +5507,46 @@ final class HistoryViewModel {
         guard self?.transcriptionRequestID == requestID else { return }
         self?.transcriptionState = .failed(LocalVideoTranscriptionError.modelDownloadFailed.userMessage)
       }
+    }
+  }
+
+  /// 自动工序走到下载确认时停下来：用户没点停止，不能显示「已取消」。
+  /// 收起确认框，留下原因；「重试转写」会再次打开下载。
+  static let automaticModelDownloadNeededMessage = "需要先下载本机转写模型，这次没有开始转写。点「重试转写」下载并转写。"
+
+  func noteAutomaticModelDownloadNeeded() {
+    isTranscriptionModelConfirmationPresented = false
+    if let context = takePendingRemoteTranscriptionContext(), let history {
+      let requestID = transcriptionRequestID
+      transcriptionTask = Task { [weak self, worker] in
+        guard let self, self.transcriptionRequestID == requestID else { return }
+        _ = await worker.updateTaskTranscriptionStatus(
+          history,
+          taskID: context.taskID,
+          attempt: context.attempt,
+          status: .failed,
+          updatedAtMilliseconds: self.nowMilliseconds()
+        )
+        guard self.transcriptionRequestID == requestID else { return }
+        self.transcriptionState = .failed(Self.automaticModelDownloadNeededMessage)
+        self.cleanupRemoteTranscription(context)
+      }
+      return
+    }
+    guard let history, let context = pendingTranscriptionContext else {
+      if case .awaitingModelDownload = transcriptionState {
+        transcriptionState = .failed(Self.automaticModelDownloadNeededMessage)
+      }
+      return
+    }
+    pendingTranscriptionContext = nil
+    try? FileManager.default.removeItem(at: context.workspaceURL)
+    let requestID = transcriptionRequestID
+    transcriptionTask = Task { [weak self, worker] in
+      guard self?.transcriptionRequestID == requestID else { return }
+      _ = await worker.updateTranscriptionStatus(history, taskID: context.taskID, attempt: context.attempt, status: .none)
+      guard self?.transcriptionRequestID == requestID else { return }
+      self?.transcriptionState = .failed(Self.automaticModelDownloadNeededMessage)
     }
   }
 
