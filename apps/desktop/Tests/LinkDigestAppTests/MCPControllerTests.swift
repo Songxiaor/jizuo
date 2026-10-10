@@ -8,6 +8,24 @@ import LinkDigestTransport
 
 @MainActor
 final class MCPControllerTests: XCTestCase {
+  /// 统计和侧栏走同一条后台路径，不在主线程上扫库。返回字段仍由原来那段组装。
+  func testStatisticsQueryUsesTheSidebarWorker() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp")
+    let mcp = try String(contentsOf: root.appendingPathComponent("MCPController.swift"), encoding: .utf8)
+    let statsStart = try XCTUnwrap(mcp.range(of: "case \"jizuo_statistics\":"))
+    let statsEnd = try XCTUnwrap(mcp.range(of: "case \"jizuo_search\":", range: statsStart.upperBound..<mcp.endIndex))
+    let stats = String(mcp[statsStart.lowerBound..<statsEnd.lowerBound])
+    XCTAssertTrue(stats.contains("await historyModel.navigationCountsForAssistant()"))
+    XCTAssertFalse(stats.contains("history.navigationCounts()"), "不能再在主线程上直接扫库")
+    XCTAssertTrue(stats.contains("\"total\": counts.all"))
+    XCTAssertTrue(stats.contains("\"unsummarized\": counts.unsummarized"))
+    let model = try String(contentsOf: root.appendingPathComponent("HistoryViewModel.swift"), encoding: .utf8)
+    XCTAssertTrue(model.contains("await worker.navigationCounts(history)"))
+    XCTAssertTrue(model.contains("func navigationCountsForAssistant()"))
+  }
+
   func testPlatformAliasesAndStructuredTranscriptionStates() {
     XCTAssertEqual(MCPController.platformKey("twitter.com"), "x.com")
     XCTAssertEqual(MCPController.platformKey("www.douyin.com"), "douyin.com")

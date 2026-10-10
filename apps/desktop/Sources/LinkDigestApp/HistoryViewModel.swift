@@ -8994,6 +8994,13 @@ final class HistoryViewModel {
     }
   }
 
+  /// 外部助手要统计时用。和侧栏同一条后台路径，扫库不占主线程。
+  func navigationCountsForAssistant() async -> HistoryNavigationCounts? {
+    guard let history else { return nil }
+    guard case let .success(counts) = await worker.navigationCounts(history) else { return nil }
+    return counts
+  }
+
   private func reloadNavigationCounts() {
     // 合集的条数跟着内容变（删进回收站、恢复、导入）：和侧栏其它计数一起刷新。
     reloadCollections()

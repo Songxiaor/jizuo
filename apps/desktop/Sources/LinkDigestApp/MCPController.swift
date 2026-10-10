@@ -4,6 +4,9 @@ import LinkDigestCore
 import LinkDigestMCPKit
 import LinkDigestTransport
 
+/// 统计没算出来。对外仍是「操作失败」，不另造一种错误码。
+private struct AssistantStatisticsUnavailable: Error {}
+
 @MainActor
 final class MCPController: ObservableObject {
   static let shared = MCPController()
@@ -203,7 +206,10 @@ final class MCPController: ObservableObject {
     switch name {
     case "jizuo_status": return ["material_types": MaterialCatalog.typeTagNames, "used_tag": MaterialCatalog.usedTagName, "ownerships": ContentOwnership.allCases.map(\.rawValue), "forms": ContentForm.allCases.map(\.rawValue), "connected": true, "writable": writable, "allows_changes": allowsChanges, "allows_processing": allowsProcessing, "creator_platforms": ProfileImportPlatform.allCases.map(\.rawValue), "transcription": "local_downloaded_video", "jobs_lifetime": "current_app_process"]
     case "jizuo_statistics":
-      let counts = try history.navigationCounts()
+      // 和侧栏同一条后台路径。以前在主线程上同步扫库，1443 条就要停大约 60 毫秒。
+      guard let counts = await historyModel.navigationCountsForAssistant() else {
+        throw AssistantStatisticsUnavailable()
+      }
       var grouped: [String: Int] = [:]
       for platform in counts.platforms {
         let key = Self.platformKey(platform.host)
