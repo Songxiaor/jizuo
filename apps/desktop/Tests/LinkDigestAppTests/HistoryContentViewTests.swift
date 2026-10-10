@@ -248,6 +248,56 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 停止后半截新译文不能盖住上一份完成的译文。上一轮只测了「saved 仍是旧译文」，
+  /// 没测停止把半截写成最新产物之后读哪一份。
+  func testStoppedRetranslationKeepsThePreviousCompleteTranslation() {
+    let previous = TranslationReadback.Attempt(
+      token: 0,
+      body: "欢迎了解 Swift\n\n后面还有好几段。",
+      status: .completed,
+      completeness: .complete
+    )
+    let partial = TranslationReadback.Attempt(
+      token: 1,
+      body: "Swift 编程语言\n\n欢迎了解",
+      status: .stopped,
+      completeness: .partial
+    )
+    let stopped = TranslationReadback.choose(newestFirst: [partial, previous])
+    XCTAssertEqual(stopped?.body, previous.body)
+    XCTAssertEqual(stopped?.token, previous.token)
+    XCTAssertEqual(stopped?.notice, "已停止，保留上一次译文")
+    XCTAssertEqual(
+      TranslationReadback.replacementBase(newestFirst: [partial, previous]),
+      previous.body
+    )
+
+    let failed = TranslationReadback.Attempt(
+      token: 1, body: partial.body, status: .failed, completeness: .partial
+    )
+    XCTAssertEqual(
+      TranslationReadback.choose(newestFirst: [failed, previous])?.notice,
+      "这次没有译完，保留上一次译文"
+    )
+
+    let firstStop = TranslationReadback.choose(newestFirst: [partial])
+    XCTAssertEqual(firstStop?.body, partial.body)
+    XCTAssertNil(firstStop?.notice, "没有旧译文时仍显示这次停下的半截")
+  }
+
+  /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。
+  func testStopControlIsTiedToAnActiveRunNotToTextLength() {
+    let source = historyContentViewSource()
+    let gate = section(in: source, from: "private func isRunning", to: "/// 总结 / 翻译按钮")
+    XCTAssertTrue(gate.contains("runState.isActive"))
+    XCTAssertFalse(gate.contains("count"), "不能因为正文短就把停止藏掉")
+    XCTAssertEqual(
+      source.components(separatedBy: "frame(height: ReadingHeaderMetrics.verbRow)").count - 1,
+      1
+    )
+    XCTAssertEqual(ReadingHeaderMetrics.verbRow, 22)
+  }
+
   /// 没标签和有一行标签必须同高，否则标签落下时表头下移。
   func testClassificationRowReservesSingleLineHeightWithOrWithoutTags() {
     XCTAssertEqual(ClassificationRowMetrics.singleLine, 20)
@@ -2162,9 +2212,11 @@ final class HistoryContentViewTests: XCTestCase {
     // 按钮；名词和动词分开之后，页签不必再为空态留位置。
     XCTAssertFalse(detail.contains("keepsResultPanes"))
 
-    // 取产物必须按运行类型取最新一份，只取全局最新就等于回到老毛病。
+    // 取产物必须按运行类型取，只取全局最新就等于回到老毛病。
+    // 翻译还要跳过「停止后留下的半截」，否则半截会盖住上一份完成的译文。
     XCTAssertTrue(detail.contains("artifact(ofKind: .summarize)"))
-    XCTAssertTrue(detail.contains("artifact(ofKind: .translate)"))
+    XCTAssertTrue(detail.contains("run.run.kind == .translate"))
+    XCTAssertTrue(detail.contains("TranslationReadback.choose"))
 
     // 选中的格子不可用时要退回默认；这个兜底原来只对抖音生效。
     XCTAssertTrue(

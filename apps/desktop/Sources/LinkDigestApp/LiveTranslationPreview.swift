@@ -37,6 +37,30 @@ enum LiveTranslationPreview {
     LayeredSourceDocument.split(completed).first { $0.heading == heading }?.body
   }
 
+  /// 有旧译文时，新译文按段换上，剩下的旧译文留在后面。不用原文当底稿，
+  /// 否则整页会从中文跳成英文再跳回中文。
+  static func replacementDraft(incoming: String?, base: String) -> (settled: String, pending: String?) {
+    let settled = incoming?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let baseBlocks = blocks(base)
+    guard !baseBlocks.isEmpty else { return (settled, nil) }
+    if settled.isEmpty {
+      return ("", base.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    let count = blocks(settled).count
+    if count >= baseBlocks.count { return (settled, nil) }
+    let pending = baseBlocks.dropFirst(count).joined(separator: "\n\n")
+    return (settled, pending.isEmpty ? nil : pending)
+  }
+
+  private static func blocks(_ text: String) -> [String] {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return [] }
+    let separator = trimmed.contains("\n\n") ? "\n\n" : "\n"
+    return trimmed.components(separatedBy: separator)
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  }
+
   /// 没分层的译文（普通文章）：整段就是正文，开头的译文标题行由调用方决定要不要显示。
   static func unlayeredBody(in completed: String) -> String? {
     let layers = LayeredSourceDocument.split(completed)

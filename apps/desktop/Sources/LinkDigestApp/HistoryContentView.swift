@@ -4685,7 +4685,29 @@ private struct HistoryDetailView: View, Equatable {
     }?.artifact
   }
   private var summaryArtifact: HistoryArtifact? { artifact(ofKind: .summarize) }
-  private var translationArtifact: HistoryArtifact? { artifact(ofKind: .translate) }
+  /// 翻译页读哪一份。停止或失败如果已经有完成的译文，不把半截新译文当成当前译文。
+  private var translationReadback: TranslationReadback.Choice? {
+    TranslationReadback.choose(newestFirst: translationAttemptsNewestFirst)
+  }
+  private var translationAttemptsNewestFirst: [TranslationReadback.Attempt] {
+    Array(detail.runs.enumerated().compactMap { index, run in
+      guard run.run.kind == .translate, let artifact = run.artifact else { return nil }
+      return TranslationReadback.Attempt(
+        token: index,
+        body: artifact.bodyText,
+        status: run.run.status,
+        completeness: artifact.completeness
+      )
+    }.reversed())
+  }
+  private var translationArtifact: HistoryArtifact? {
+    guard let choice = translationReadback, detail.runs.indices.contains(choice.token) else { return nil }
+    return detail.runs[choice.token].artifact
+  }
+  /// 重新翻译时逐段替换的底稿：上一份已经完成的译文。没有则用原文。
+  private var translationReplacementBase: String? {
+    TranslationReadback.replacementBase(newestFirst: translationAttemptsNewestFirst)
+  }
   private func artifact(for pane: ReadingPane) -> HistoryArtifact? {
     switch pane {
     case .summary: summaryArtifact
@@ -6974,6 +6996,7 @@ private struct HistoryDetailView: View, Equatable {
     if isRunning(kind) {
       HStack(spacing: DesignTokens.Space.xs) {
         ProgressView().controlSize(.mini)
+          .frame(width: 12, height: 12)
         Text("\(title)中…")
           .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
@@ -6988,6 +7011,8 @@ private struct HistoryDetailView: View, Equatable {
             .accessibilityIdentifier("stop-model-run")
         }
       }
+      // 这组比旁边的「处理」更高时，整行变高，页签和「处理」一起下移（2026-10-10，y 246→250）。
+      .frame(height: ReadingHeaderMetrics.verbRow)
       .accessibilityIdentifier("model-run-status")
     } else if !artifactExists, kind == .summarize, primaryReadingVerb == .summarize {
       // 翻译不再在表头露按钮，只在跑的时候显示进度和「停止」（上面那支）；入口在「处理」里。
@@ -8044,29 +8069,62 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
+  /// 已经写出来的新译文。有旧译文时用它逐段换掉旧译文，不用整页英文原文当底稿。
+  private func liveIncomingTranslation(_ completed: String) -> String? {
+    if let active = activeLiveTranslationLayer(completed),
+       let translated = LiveTranslationPreview.translatedBody(of: active.heading, in: completed)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+       !translated.isEmpty {
+      return translated
+    }
+    if let unlayered = LiveTranslationPreview.unlayeredBody(in: completed)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !unlayered.isEmpty {
+      return unlayered
+    }
+    let trimmed = completed.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
   @ViewBuilder
   private func liveTranslationContent(_ completed: String) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      liveTranslationStatusRow
-      let layers = liveTranslationLayers(in: completed)
-      let active = activeLiveTranslationLayer(completed)
-      if layers.count > 1 {
-        layerPicker(
-          title: "译文对应",
-          layers: layers,
-          active: active,
-          identifier: "history-translation-layer-picker",
-          select: { selectedTranslationLayer = $0 }
+      if let base = translationReplacementBase {
+        liveTranslationStatusRow(replacingPrevious: true)
+        let draft = LiveTranslationPreview.replacementDraft(
+          incoming: liveIncomingTranslation(completed),
+          base: base
         )
-        .padding(.bottom, 4)
-      }
-      if let active {
-        liveTranslationLayerBody(active, completed: completed)
+        if !draft.settled.isEmpty {
+          liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: draft.settled))
+        }
+        if let pending = draft.pending, !pending.isEmpty {
+          liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: pending))
+            .opacity(0.45)
+            .accessibilityLabel("尚未替换的旧译文")
+        }
       } else {
-        // 没分层的文章：已写完的段落照常按 Markdown 排。评论同样先不显示，见
-        // `liveTranslationLayerBody` 里的说明：直播时它每行重建一次，闪成一片。
-        let body = LiveTranslationPreview.unlayeredBody(in: completed) ?? completed
-        liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: body))
+        liveTranslationStatusRow(replacingPrevious: false)
+        let layers = liveTranslationLayers(in: completed)
+        let active = activeLiveTranslationLayer(completed)
+        if layers.count > 1 {
+          layerPicker(
+            title: "译文对应",
+            layers: layers,
+            active: active,
+            identifier: "history-translation-layer-picker",
+            select: { selectedTranslationLayer = $0 }
+          )
+          .padding(.bottom, 4)
+        }
+        if let active {
+          liveTranslationLayerBody(active, completed: completed)
+        } else {
+          // 没分层的文章：已写完的段落照常按 Markdown 排。评论同样先不显示，见
+          // `liveTranslationLayerBody` 里的说明：直播时它每行重建一次，闪成一片。
+          let body = LiveTranslationPreview.unlayeredBody(in: completed) ?? completed
+          liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: body))
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -8074,11 +8132,18 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// 顶上一行：转圈 + 状态 + 已用时；失败或停下时只留状态（红字）。
-  private var liveTranslationStatusRow: some View {
+  private func liveTranslationStatusRow(replacingPrevious: Bool) -> some View {
+    liveTranslationStatusRow(progress: replacingPrevious
+      ? "正在翻译，译好的段落会逐段换上"
+      : "正在翻译，译好的段落会逐段替换下面的原文")
+  }
+
+  /// 顶上一行：转圈 + 状态 + 已用时；失败或停下时只留状态（红字）。
+  private func liveTranslationStatusRow(progress: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       if appModel.runState.isActive {
         ProgressView().controlSize(.small)
-        Text("正在翻译，译好的段落会逐段替换下面的原文")
+        Text(progress)
           .themedFont(.callout)
           .foregroundStyle(theme.secondaryText)
         if let startedAt = appModel.runStartedAt {
@@ -8791,8 +8856,14 @@ private struct HistoryDetailView: View, Equatable {
           liveRunReadingBody
         }
       } else if let artifact = artifact(for: pane), !artifact.bodyText.isEmpty {
-        if placeholder?.keepsSavedBody == true, showsRestoredRunStatus, liveRunReadingPane == pane {
-          liveTranslationStatusRow
+        if pane == .translation, let notice = translationReadback?.notice {
+          Text(notice)
+            .themedFont(.callout)
+            .foregroundStyle(theme.secondaryText)
+            .padding(.bottom, 10)
+            .accessibilityIdentifier("history-translation-kept-previous")
+        } else if placeholder?.keepsSavedBody == true, showsRestoredRunStatus, liveRunReadingPane == pane {
+          liveTranslationStatusRow(replacingPrevious: false)
             .padding(.bottom, 10)
         }
         if artifact.completeness == .partial {
@@ -10044,6 +10115,59 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
   static let defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     value = max(value, nextValue())
+  }
+}
+
+/// 表头右侧「翻译中… 停止」不能高过这一行。
+///
+/// 「处理」是 small bordered。进行中那组如果更高，整行被撑高，居中对齐的页签和
+/// 「处理」一起下移 4pt（2026-10-10，y 246→250）。进行中和结束后都按这个高度。
+enum ReadingHeaderMetrics {
+  static let verbRow: CGFloat = 22
+}
+
+/// 停止或失败之后，翻译页该显示哪一份正文。
+///
+/// 停止会把半截新译文写成这一次运行的产物。只看「最新一份有字的译文」就会停在半截上，
+/// 上一轮以为「saved 还是旧译文」因此没盖住这条路径。已经有完成译文时，半截不算当前译文。
+enum TranslationReadback {
+  struct Attempt: Equatable {
+    var token: Int
+    var body: String
+    var status: RunStatus
+    var completeness: ArtifactCompleteness
+  }
+
+  struct Choice: Equatable {
+    var token: Int
+    var body: String
+    var notice: String?
+  }
+
+  static func choose(newestFirst: [Attempt]) -> Choice? {
+    let rows = newestFirst.filter { !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    guard let newest = rows.first else { return nil }
+    if isComplete(newest) { return Choice(token: newest.token, body: newest.body, notice: nil) }
+    guard let previous = rows.dropFirst().first(where: isComplete) else {
+      return Choice(token: newest.token, body: newest.body, notice: nil)
+    }
+    let notice: String? = switch newest.status {
+    case .stopped: "已停止，保留上一次译文"
+    case .failed, .interrupted: "这次没有译完，保留上一次译文"
+    case .queued, .running, .completed: nil
+    }
+    return Choice(token: previous.token, body: previous.body, notice: notice)
+  }
+
+  /// 重新翻译逐段替换用的底稿：最近一份完成的译文。半截新译文不能当底稿。
+  static func replacementBase(newestFirst: [Attempt]) -> String? {
+    newestFirst.first(where: isComplete)?.body
+  }
+
+  private static func isComplete(_ attempt: Attempt) -> Bool {
+    attempt.status == .completed
+      && attempt.completeness == .complete
+      && !attempt.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 }
 

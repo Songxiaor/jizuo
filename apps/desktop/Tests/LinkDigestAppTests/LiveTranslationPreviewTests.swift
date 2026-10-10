@@ -50,6 +50,28 @@ final class LiveTranslationPreviewTests: XCTestCase {
     XCTAssertEqual(LiveTranslationPreview.untranslatedSource(long, afterTranslated: "1:00:02 乙"), "1:00:09 c")
   }
 
+  func testRetranslationReplacesThePreviousTranslationByParagraph() {
+    let previous = """
+    欢迎了解 Swift
+
+    Swift 是一门高性能的系统编程语言。
+
+    它默认内存安全。
+    """
+    let draft = LiveTranslationPreview.replacementDraft(
+      incoming: "Swift 编程语言\n\n欢迎了解",
+      base: previous
+    )
+    XCTAssertEqual(draft.settled, "Swift 编程语言\n\n欢迎了解")
+    XCTAssertEqual(draft.pending, "它默认内存安全。")
+    XCTAssertFalse(draft.settled.contains("Swift is"))
+    XCTAssertFalse(draft.pending?.contains("Swift is") == true)
+
+    let waiting = LiveTranslationPreview.replacementDraft(incoming: nil, base: previous)
+    XCTAssertEqual(waiting.settled, "")
+    XCTAssertEqual(waiting.pending, previous)
+  }
+
   func testLayersFollowTranslationOrder() {
     let completed = "# 标题\n\n## 配文\n\n配文译文\n\n## 视频转写\n\n00:20 晚上好。"
     XCTAssertEqual(LiveTranslationPreview.translatedLayerHeadings(in: completed), ["配文", "视频转写"])
