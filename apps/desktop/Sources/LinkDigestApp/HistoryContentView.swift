@@ -5028,15 +5028,10 @@ private struct HistoryDetailView: View, Equatable {
       return .init(text: HistoryListFinding.informativeCaptionTitle(caption: name.text, sourcePreview: preview), origin: .caption)
     }
   }
-  private var hidesRepeatedCaptureHeading: Bool {
-    guard !isOwnWriting,
-          readingPrimaryTitle == contentName.text,
-          readingOriginalSubtitle == nil, let source = latestSourceSnapshot else { return false }
-    // 只有正文首句就在眼前时才藏标题，免得同一句话连着出现两次。
-    // 推文、抖音这类标题从配文首句合成的，原来所有页签一律不显示标题：切到「总结」
-    // 或抖音的「转写」后，整页没有任何地方写着这是哪一条（2026-10-01 走查）。
-    guard effectiveReadingPane == .source,
-          !showsLayeredSource || activeSourceLayer == .caption else { return false }
+  /// 原文这一页会不会把大标题藏掉。只看抓来的标题和正文，不看总结或译文标题。
+  /// 译文把标题换成另一句后，不能用新标题把「原文不画」翻成「要画」。
+  private var sourceWouldHideRepeatedHeading: Bool {
+    guard !isOwnWriting, let source = latestSourceSnapshot else { return false }
     // 标题和正文之间夹着视频时，正文首句被挤到一屏以外：藏了标题，整页看不出是哪一条
     // （2026-10-01 走查：一条竖版视频推文，头部只剩作者行）。
     if localMediaFileURL != nil || detail.media != nil { return false }
@@ -5048,6 +5043,20 @@ private struct HistoryDetailView: View, Equatable {
         body: LayeredSourceDocument.body(of: source)
       )
     }
+  }
+  private var hidesRepeatedCaptureHeading: Bool {
+    let pane: CaptureHeadingVisibility.Pane
+    switch effectiveReadingPane {
+    case .source: pane = .source
+    case .translation: pane = .translation
+    case .summary: pane = .summary
+    }
+    return CaptureHeadingVisibility.hidesRepeatedHeading(
+      sourceWouldHide: sourceWouldHideRepeatedHeading,
+      hasOriginalSubtitle: readingOriginalSubtitle != nil,
+      pane: pane,
+      sourceLayerIsCaption: !showsLayeredSource || activeSourceLayer == .caption
+    )
   }
   /// 页面上方正显示着一个取自配文首句的标题：这时配文就不必再从同一句开始。
   private var showsCaptionTitleAbove: Bool {
@@ -9962,6 +9971,36 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
 /// 两边都至少占这一行，标签出现时表头不再动。折行时仍按内容增高。
 enum ClassificationRowMetrics {
   static let singleLine: CGFloat = 20
+}
+
+/// 详情顶上的大标题出不出。
+///
+/// 按原文判断，译文页沿用：原文不画，译文也不画；原文画，译文画译文标题。
+/// 这样原文和译文来回切、译文刚落成时，来源行和页签不会被多出来的一行顶下去。
+/// 总结页、以及原文里的转写层仍画标题，否则整页看不出是哪一条（2026-10-01）。
+enum CaptureHeadingVisibility {
+  enum Pane: Equatable {
+    case source
+    case translation
+    case summary
+  }
+
+  static func hidesRepeatedHeading(
+    sourceWouldHide: Bool,
+    hasOriginalSubtitle: Bool,
+    pane: Pane,
+    sourceLayerIsCaption: Bool
+  ) -> Bool {
+    guard sourceWouldHide, !hasOriginalSubtitle else { return false }
+    switch pane {
+    case .translation:
+      return true
+    case .source:
+      return sourceLayerIsCaption
+    case .summary:
+      return false
+    }
+  }
 }
 
 /// 首次设置引导什么时候该消失。

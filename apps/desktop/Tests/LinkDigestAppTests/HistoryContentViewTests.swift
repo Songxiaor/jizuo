@@ -95,6 +95,91 @@ final class HistoryContentViewTests: XCTestCase {
     ))
   }
 
+  /// 推文标题就是正文时，译完也不画大标题；普通文章仍画译文标题。
+  func testTranslationKeepsTheOriginalHeadingDecision() {
+    let tweet = "the bird is freed"
+    let tweetName = CapturedContentNaming.name(
+      title: tweet,
+      body: tweet,
+      host: "x.com",
+      author: nil,
+      published: nil
+    )
+    XCTAssertEqual(tweetName.origin, .caption)
+    XCTAssertEqual(tweetName.text, tweet)
+    let translatedTweet = HistoryReadingTitle.detailTitles(
+      captured: tweetName.text,
+      product: HistoryReadingTitle.productTitle(
+        summaryBody: nil,
+        translationBody: "# 鸟儿自由了\n\n鸟已经自由了。"
+      ),
+      sourceBody: tweet
+    )
+    XCTAssertEqual(translatedTweet.primary, "鸟儿自由了")
+    XCTAssertNil(translatedTweet.original)
+    for pane in [CaptureHeadingVisibility.Pane.source, .translation] {
+      XCTAssertTrue(
+        CaptureHeadingVisibility.hidesRepeatedHeading(
+          sourceWouldHide: tweetName.origin == .caption,
+          hasOriginalSubtitle: translatedTweet.original != nil,
+          pane: pane,
+          sourceLayerIsCaption: true
+        ),
+        "\(pane) 不应画出大标题"
+      )
+    }
+    XCTAssertFalse(
+      CaptureHeadingVisibility.hidesRepeatedHeading(
+        sourceWouldHide: true,
+        hasOriginalSubtitle: false,
+        pane: .summary,
+        sourceLayerIsCaption: true
+      ),
+      "总结页仍要有标题，否则看不出是哪一条"
+    )
+
+    let articleTitle = "How to learn faster"
+    let articleBody = "Most people read too much and practice too little."
+    let articleName = CapturedContentNaming.name(
+      title: articleTitle,
+      body: articleBody,
+      host: "example.com",
+      author: nil,
+      published: nil
+    )
+    XCTAssertEqual(articleName.origin, .sourceTitle)
+    let translatedArticle = HistoryReadingTitle.detailTitles(
+      captured: articleName.text,
+      product: HistoryReadingTitle.productTitle(
+        summaryBody: nil,
+        translationBody: "# 如何更快学习\n\n多数人读得太多，练得太少。"
+      ),
+      sourceBody: articleBody
+    )
+    XCTAssertEqual(translatedArticle.primary, "如何更快学习")
+    XCTAssertEqual(translatedArticle.original, articleTitle)
+    for pane in [CaptureHeadingVisibility.Pane.source, .translation] {
+      XCTAssertFalse(
+        CaptureHeadingVisibility.hidesRepeatedHeading(
+          sourceWouldHide: false,
+          hasOriginalSubtitle: translatedArticle.original != nil,
+          pane: pane,
+          sourceLayerIsCaption: true
+        ),
+        "\(pane) 仍应显示译文标题"
+      )
+    }
+
+    let decision = section(
+      in: historyContentViewSource(),
+      from: "private var sourceWouldHideRepeatedHeading",
+      to: "private var showsCaptionTitleAbove"
+    )
+    XCTAssertFalse(decision.contains("readingPrimaryTitle"), "藏不藏大标题不能再看译文标题")
+    XCTAssertTrue(decision.contains("CaptureHeadingVisibility.hidesRepeatedHeading"))
+    XCTAssertTrue(decision.contains("case .translation: pane = .translation"))
+  }
+
   /// 没标签和有一行标签必须同高，否则标签落下时表头下移。
   func testClassificationRowReservesSingleLineHeightWithOrWithoutTags() {
     XCTAssertEqual(ClassificationRowMetrics.singleLine, 20)
