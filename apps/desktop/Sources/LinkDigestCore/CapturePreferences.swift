@@ -13,15 +13,41 @@ public struct CapturePreferencesStore: Sendable {
 
   private let fileURL: URL
 
+  /// 与 `AppApplicationSupportRoot.smokeOverrideEnvironmentKey` 是同一个变量。
+  /// Debug 烟测和 `--isolated-data` 用它换掉资料库所在的 Application Support 根。
+  public static let smokeApplicationSupportRootEnvironmentKey = "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT"
+
   /// `root` 可注入：测试写 `/private/tmp` 的干净目录，不碰真人的设置。
+  /// 这里的 root 是用户主目录，后面会接上 `Library/Application Support/LinkDigest`。
   public init(root: URL) {
     self.fileURL = root
       .appendingPathComponent("Library/Application Support/LinkDigest", isDirectory: true)
       .appendingPathComponent("capture-preferences-v1.json", isDirectory: false)
   }
 
-  public static func standard() -> CapturePreferencesStore {
-    .init(root: FileManager.default.homeDirectoryForCurrentUser)
+  /// `applicationSupportRoot` 是 App 正在用的数据根（正式版的 `~/Library/Application Support`，
+  /// 或烟测覆盖的那一层）。偏好和资料库都在它下面的 `LinkDigest/`。
+  public init(applicationSupportRoot: URL) {
+    self.fileURL = applicationSupportRoot
+      .appendingPathComponent("LinkDigest", isDirectory: true)
+      .appendingPathComponent("capture-preferences-v1.json", isDirectory: false)
+  }
+
+  /// 没设烟测根时仍读写用户主目录下的那份偏好。设了则跟 App 的数据根走，
+  /// 不再碰正式版文件。这个覆盖只在 Debug 编译进二进制；正式版忽略该环境变量。
+  public static func standard(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    home: URL = FileManager.default.homeDirectoryForCurrentUser
+  ) -> CapturePreferencesStore {
+    #if DEBUG
+    if let raw = environment[smokeApplicationSupportRootEnvironmentKey] {
+      let root = URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL
+      if root.path.hasPrefix("/"), root.path != "/" {
+        return CapturePreferencesStore(applicationSupportRoot: root)
+      }
+    }
+    #endif
+    return CapturePreferencesStore(root: home)
   }
 
   public static func clampedCommentLimit(_ value: Int) -> Int {

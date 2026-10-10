@@ -112,4 +112,47 @@ final class CapturePreferencesTests: XCTestCase {
     let encoded = try JSONEncoder().encode(full)
     XCTAssertEqual(try JSONDecoder().decode(NativeResponse.self, from: encoded), full)
   }
+
+  func testStandardWithoutSmokeRootKeepsTheHomeLibraryLayout() throws {
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let store = CapturePreferencesStore.standard(environment: [:], home: home)
+    try store.setAutoSaveComments(true)
+    let live = home.appendingPathComponent(
+      "Library/Application Support/LinkDigest/capture-preferences-v1.json"
+    )
+    XCTAssertTrue(FileManager.default.fileExists(atPath: live.path))
+    XCTAssertTrue(CapturePreferencesStore.standard(environment: [:], home: home).autoSaveComments)
+    XCTAssertFalse(FileManager.default.fileExists(
+      atPath: home.appendingPathComponent("LinkDigest/capture-preferences-v1.json").path
+    ))
+  }
+
+  func testStandardFollowsTheSmokeApplicationSupportRoot() throws {
+    let home = root.appendingPathComponent("home", isDirectory: true)
+    let smoke = root.appendingPathComponent("Application Support", isDirectory: true)
+    let environment = [
+      CapturePreferencesStore.smokeApplicationSupportRootEnvironmentKey: smoke.path
+    ]
+    let store = CapturePreferencesStore.standard(environment: environment, home: home)
+    try store.setCommentLimit(40)
+    let isolated = smoke.appendingPathComponent("LinkDigest/capture-preferences-v1.json")
+    let doubled = smoke.appendingPathComponent(
+      "Library/Application Support/LinkDigest/capture-preferences-v1.json"
+    )
+    let live = home.appendingPathComponent(
+      "Library/Application Support/LinkDigest/capture-preferences-v1.json"
+    )
+    #if DEBUG
+    XCTAssertTrue(FileManager.default.fileExists(atPath: isolated.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: doubled.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: live.path))
+    XCTAssertEqual(
+      CapturePreferencesStore.standard(environment: environment, home: home).commentLimit,
+      40
+    )
+    #else
+    XCTAssertTrue(FileManager.default.fileExists(atPath: live.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: isolated.path))
+    #endif
+  }
 }

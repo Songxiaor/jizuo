@@ -229,7 +229,7 @@ actor AppComposition {
 }
 
 enum AppApplicationSupportRoot {
-  static let smokeOverrideEnvironmentKey = "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT"
+  static let smokeOverrideEnvironmentKey = CapturePreferencesStore.smokeApplicationSupportRootEnvironmentKey
   static let smokeOpenFailureEnvironmentKey = "LINKDIGEST_SMOKE_FORCE_STORAGE_OPEN_FAILURE"
   static let debugHistoryLoadingEnvironmentKey = "LINKDIGEST_DEBUG_HISTORY_LOADING"
   static let debugHistoryLoadingSentinelName = ".linkdigest-debug-history-loading"
