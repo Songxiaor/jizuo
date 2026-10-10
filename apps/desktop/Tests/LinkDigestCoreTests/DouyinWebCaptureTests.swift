@@ -291,6 +291,64 @@ final class DouyinWebCaptureTests: XCTestCase {
     XCTAssertEqual(onlyBody, "# \(title)")
   }
 
+  /// 未登录视频页经常只给标题。b45be71 去掉重复段之后正文仍是「# 标题」，
+  /// 能通过入库校验。队列里「要求登录或验证，这次没有保存」只来自登录或验证失败。
+  func testCaptionEqualToTitleStillSavesAndIsNotTheLoginRefusal() throws {
+    let title = "第3集 | 食伤生财真相： 盲派讲透，为什么你有这个格局却赚不到收益"
+    let url = URL(string: "https://www.douyin.com/video/7661288207509769506")!
+    let page = DouyinRenderedPage(
+      awemeID: "7661288207509769506",
+      canonicalURL: url,
+      title: title,
+      description: title
+    )
+    let current = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: page)
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.parse(current).body
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      "# \(title)"
+    )
+
+    let previous = current.replacingOccurrences(
+      of: "# \(title)",
+      with: "# \(title)\n\n\(title)"
+    )
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.parse(previous).body
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      "# \(title)\n\n\(title)"
+    )
+
+    let timestamp = "2026-10-10T08:00:00Z"
+    for text in [previous, current] {
+      let document = CapturedDocument(
+        createdAt: timestamp,
+        origin: .manualLink,
+        url: url.absoluteString,
+        title: title,
+        platform: "douyin",
+        method: "douyin_rendered_webkit",
+        text: text,
+        completeness: "best_effort",
+        capturedAt: timestamp,
+        sourceLabel: "手动链接（抖音渲染页面）"
+      )
+      XCTAssertGreaterThan(document.text.unicodeScalars.count, 0)
+      XCTAssertNoThrow(try CapturedDocumentValidator.validate(document))
+    }
+
+    let loginSentence = "抖音要求登录或验证，这次没有保存。"
+    XCTAssertFalse(
+      CaptureRouteGuidance.failureMessage(for: .emptyContent, url: url).contains(loginSentence)
+    )
+    XCTAssertTrue(
+      CaptureRouteGuidance.failureMessage(for: .verificationRequired, url: url).hasPrefix(loginSentence)
+    )
+    XCTAssertTrue(
+      CaptureRouteGuidance.failureMessage(for: .loginRequired, url: url).hasPrefix(loginSentence)
+    )
+  }
+
   func testLongTitleDoesNotEmitHeadingLine() {
     let title = String(repeating: "字", count: 61)
     let page = DouyinRenderedPage(
