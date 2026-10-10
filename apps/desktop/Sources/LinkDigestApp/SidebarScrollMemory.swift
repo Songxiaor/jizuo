@@ -1,12 +1,30 @@
 import AppKit
 import SwiftUI
 
+/// 什么时候该把侧栏滚回记住的位置。
+///
+/// 展开或收起分组不滚。以前点「视图」会把整张侧栏按新 id 重建，接着按旧偏移滚回去，
+/// 过一会儿再按新长出来的高度推一次，侧栏来回跳（2026-10-10）。
+/// 换掉整张侧栏（进「全部博主」）仍要还原，否则会停在顶上。
+enum SidebarScrollRestore {
+  enum Cause {
+    case sectionToggle
+    case sidebarReplacement
+  }
+
+  static func shouldRestore(_ cause: Cause) -> Bool {
+    switch cause {
+    case .sectionToggle: false
+    case .sidebarReplacement: true
+    }
+  }
+}
+
 /// 侧栏重建前后保持滚动位置。
 ///
-/// 侧栏会整张重建：分组展开 / 收起时按新 id 重建（macOS 侧栏 List 对后插入的行不刷新，见
-/// `navigationSectionsLayoutKey`），进「全部博主」这类两栏页面时也换了一张。重建后滚动回到
-/// 顶上：在侧栏底部点开「博主」「标签」或点「全部博主」，侧栏一下跳回顶部，刚点的东西反而
-/// 看不见（2026-10-04 走查）。所以一直记着侧栏滚到哪儿，新侧栏一挂上就还原。
+/// 侧栏会整张重建：进「全部博主」这类两栏页面时换了一张。重建后滚动回到顶上，
+/// 在侧栏底部点开「全部博主」，刚点的东西反而看不见（2026-10-04 走查）。
+/// 所以一直记着侧栏滚到哪儿，新侧栏一挂上就还原。分组展开 / 收起不走这里。
 @MainActor
 final class SidebarScrollMemory {
   private weak var scrollView: NSScrollView?

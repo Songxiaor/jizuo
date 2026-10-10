@@ -285,6 +285,23 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertNil(firstStop?.notice, "没有旧译文时仍显示这次停下的半截")
   }
 
+  /// 展开或收起侧栏分组不安排滚动恢复。点「视图」时整表重建再滚两次，侧栏会来回跳。
+  func testSectionToggleDoesNotRestoreSidebarScroll() {
+    XCTAssertFalse(SidebarScrollRestore.shouldRestore(.sectionToggle))
+    XCTAssertTrue(SidebarScrollRestore.shouldRestore(.sidebarReplacement))
+    let source = historyContentViewSource()
+    let header = section(
+      in: source,
+      from: "private func navigationSectionHeader(",
+      to: "private var navigationFooter"
+    )
+    XCTAssertTrue(header.contains("if SidebarScrollRestore.shouldRestore(.sectionToggle)"))
+    XCTAssertFalse(
+      source.contains(".id(navigationSectionsLayoutKey)"),
+      "展开分组不能再换掉整张侧栏，否则滚动会被拉回顶部再还原"
+    )
+  }
+
   /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。
   func testStopControlIsTiedToAnActiveRunNotToTextLength() {
     let source = historyContentViewSource()
