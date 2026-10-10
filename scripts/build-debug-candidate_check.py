@@ -8,7 +8,9 @@ invokes Swift, pnpm, or a real build.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -104,9 +106,42 @@ def main() -> int:
         "sparkle_info_keys(app_config, enable_automatic_checks=False)" in source,
         "debug candidate must suppress Sparkle automatic checks via the shared helper",
     )
+    check(
+        "copy_signed_app(staged_app, delivery / DEBUG_APP_NAME)" in source,
+        "delivery copy must go through the symlink-preserving helper",
+    )
+    check(
+        "shutil.copytree(staged_app, delivery / DEBUG_APP_NAME, symlinks=False)" not in source,
+        "delivery copy must not expand Sparkle framework symlinks",
+    )
+    check_signed_app_copy_keeps_framework_symlinks(module)
 
     print(f"build-debug-candidate-check: PASS ({TESTS} assertions)")
     return 0
+
+
+def check_signed_app_copy_keeps_framework_symlinks(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="linkdigest-debug-copy.") as temporary:
+        root = Path(temporary)
+        framework = root / "source.app/Contents/Frameworks/Sparkle.framework"
+        version = framework / "Versions/B"
+        version.mkdir(parents=True)
+        (version / "Sparkle").write_bytes(b"binary")
+        (framework / "Versions/Current").symlink_to("B")
+        (framework / "Sparkle").symlink_to("Versions/Current/Sparkle")
+        destination = root / "delivery.app"
+        module.copy_signed_app(root / "source.app", destination)
+        copied = destination / "Contents/Frameworks/Sparkle.framework"
+        current = copied / "Versions/Current"
+        binary = copied / "Sparkle"
+        check(current.is_symlink(), "Versions/Current must stay a symlink")
+        check(binary.is_symlink(), "Sparkle binary entry must stay a symlink")
+        check(os.readlink(current) == "B", "Versions/Current must still point at B")
+        check(
+            os.readlink(binary) == "Versions/Current/Sparkle",
+            "Sparkle entry must still point into Versions/Current",
+        )
+        check((copied / "Sparkle").read_bytes() == b"binary", "symlink target must still be readable")
 
 
 if __name__ == "__main__":

@@ -138,6 +138,15 @@ def copy_tree_nofollow(source: Path, destination: Path) -> None:
             destination_entry.chmod(mode)
 
 
+def copy_signed_app(source: Path, destination: Path) -> None:
+    """Copy an already-signed app without expanding framework symlinks.
+
+    Sparkle.framework's top-level entries point at Versions/Current. Expanding
+    them makes `codesign --verify --deep --strict` report an ambiguous bundle.
+    """
+    shutil.copytree(source, destination, symlinks=True)
+
+
 def verify_delivery_directory(delivery: Path) -> None:
     names = sorted(entry.name for entry in delivery.iterdir())
     if names != [DEBUG_APP_NAME, "extension"]:
@@ -253,7 +262,7 @@ def main() -> int:
             str(staged_app),
         )
         run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(staged_app))
-        shutil.copytree(staged_app, delivery / DEBUG_APP_NAME, symlinks=False)
+        copy_signed_app(staged_app, delivery / DEBUG_APP_NAME)
         verify_delivery_directory(delivery)
 
         # Create the user-named top-level directory only after every build and
