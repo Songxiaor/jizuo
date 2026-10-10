@@ -248,6 +248,26 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 打开一条带转写的记录时，分段和排版记录跟详情一起在后台读，不在主线程上再扫一遍。
+  func testOpeningDetailDoesNotLoadTranscriptParagraphsOnTheMainThread() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp")
+    let model = try String(contentsOf: root.appendingPathComponent("HistoryViewModel.swift"), encoding: .utf8)
+    let sideload = section(in: model, from: "struct DetailSideload", to: "nonisolated static func batchSummaryState")
+    XCTAssertTrue(sideload.contains("loadTranscriptParagraphs("))
+    XCTAssertTrue(sideload.contains("loadReformat(taskID: taskID)"))
+    XCTAssertTrue(sideload.contains("transcriptSnapshot(in: value.snapshots)"))
+    let receive = section(in: model, from: "private func receiveDetail(", to: "private func backfillRemoteImagesIfNeeded(")
+    let detailAssign = try XCTUnwrap(receive.range(of: "detail = value"))
+    let preload = try XCTUnwrap(receive.range(of: "preloadedTranscriptParagraphs = sideload.transcriptParagraphs"))
+    XCTAssertLessThan(preload.lowerBound, detailAssign.lowerBound, "分段要在换上详情之前就位，界面一来取就不能再读库")
+    let view = historyContentViewSource()
+    let loader = section(in: view, from: "private func loadTranscriptParagraphs()", to: "private func saveTranscriptionDraft(")
+    XCTAssertTrue(loader.contains("transcriptParagraphsForOpenedDetail(snapshotID:"))
+    XCTAssertFalse(loader.contains("model.transcriptParagraphs(snapshotID:"))
+  }
+
   /// 重新转写：旧稿留到新稿写出第一段；写完、新稿还没换上库里那份之前不闪回旧稿。
   func testRetranscriptionKeepsTheSavedTranscriptUntilNewTextArrives() {
     let saved = "snapshot-old"

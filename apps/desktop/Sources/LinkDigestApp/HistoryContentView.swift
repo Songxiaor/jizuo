@@ -9694,7 +9694,7 @@ private struct HistoryDetailView: View, Equatable {
       transcriptParagraphsSnapshotID = nil
       return
     }
-    transcriptParagraphs = model.transcriptParagraphs(snapshotID: snapshot.id)
+    transcriptParagraphs = model.transcriptParagraphsForOpenedDetail(snapshotID: snapshot.id)
     transcriptParagraphsSnapshotID = transcriptParagraphs.isEmpty ? nil : snapshot.id
   }
 

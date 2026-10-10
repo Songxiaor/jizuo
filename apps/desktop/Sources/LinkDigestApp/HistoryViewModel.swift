@@ -1320,7 +1320,12 @@ final class HistoryViewModel {
 
   /// 读当前条目已有的重排产物。切换条目时调用。
   func loadReformat(taskID: TaskID) {
-    reformatRecord = (try? history?.reformatStore?.loadReformat(taskID: taskID)) ?? nil
+    // 换条目时这份已经和详情一起在后台读过。再同步读一次，长列表里每点一条都要停一下。
+    if preloadedReformatTaskID == taskID {
+      reformatRecord = preloadedReformatRecord
+    } else {
+      reformatRecord = (try? history?.reformatStore?.loadReformat(taskID: taskID)) ?? nil
+    }
     showsReformattedBody = false
     reformatPartialNotice = reformatRecord?.isPartial == true
       ? "有几段没能整理排版，那几段保持原文。" : nil
@@ -1687,6 +1692,19 @@ final class HistoryViewModel {
     guard let store = history?.transcriptParagraphStore else { return [] }
     return (try? store.loadTranscriptParagraphs(snapshotID: snapshotID.rawValue)) ?? []
   }
+
+  /// 打开详情时用。分段已经在后台读完；对得上就不要再在主线程上把整篇分段捞一遍。
+  func transcriptParagraphsForOpenedDetail(snapshotID: ContentSnapshotID) -> [TranscriptParagraph] {
+    if preloadedTranscriptParagraphSnapshotID == snapshotID {
+      return preloadedTranscriptParagraphs
+    }
+    return transcriptParagraphs(snapshotID: snapshotID)
+  }
+
+  private(set) var preloadedTranscriptParagraphs: [TranscriptParagraph] = []
+  private(set) var preloadedTranscriptParagraphSnapshotID: ContentSnapshotID?
+  private(set) var preloadedReformatRecord: TaskReformatRecord?
+  private(set) var preloadedReformatTaskID: TaskID?
 
   private var history: HistoryApplicationService?
   /// 笔记写作窗口要读写同一个历史库，而不是另开一份连接。
@@ -8477,6 +8495,12 @@ final class HistoryViewModel {
     guard generation == configurationGeneration, requestID == detailRequestID, selectedTaskID == taskID else { return }
     switch result {
     case let .success(value):
+      // 先放上后台读好的分段和排版，再换详情。换详情会立刻让界面来取这两份，
+      // 取的时候必须已经在，不能再同步扫一遍库。
+      preloadedTranscriptParagraphs = sideload.transcriptParagraphs
+      preloadedTranscriptParagraphSnapshotID = sideload.transcriptParagraphSnapshotID
+      preloadedReformatRecord = sideload.reformatRecord
+      preloadedReformatTaskID = taskID
       detail = value
       localImageURLs = sideload.localImageURLs
       if let snapshot = value.snapshots.last {
@@ -8548,6 +8572,10 @@ final class HistoryViewModel {
       }
       setDetailState(.loaded)
     case let .failure(code):
+      preloadedTranscriptParagraphs = []
+      preloadedTranscriptParagraphSnapshotID = nil
+      preloadedReformatRecord = nil
+      preloadedReformatTaskID = nil
       detail = nil
       localImageURLs = []
       localMediaFileURL = nil
@@ -9198,22 +9226,27 @@ final class HistoryViewModel {
     catch { return .failure(storageCode(for: error, context: .open)) }
   }
 
-  /// 一条详情的配套数据：脑图、Token 账、摘录、笔记草稿、本地图片。
+  /// 一条详情的配套数据：脑图、Token 账、摘录、笔记草稿、本地图片、转写分段、排版记录。
   ///
-  /// 这些原来在 `receiveDetail` 里同步读——四次 SQLite 加一次目录枚举全压在主线程，
+  /// 这些原来在 `receiveDetail` 里同步读——几次 SQLite 加一次目录枚举全压在主线程，
   /// 切换文章时整段时间界面不出帧。它们和正文投影一起在后台读完再回主线程一次性铺上。
+  /// 长转写的分段是整篇时间码，打开那一下若再同步读，会长到几十毫秒。
   struct DetailSideload: Sendable {
     var localImageURLs: [URL] = []
     var mindMapRecord: TaskMindMapRecord?
     var ledgerTokenTotals: TaskTokenTotals?
     var taskExcerpts: [TaskExcerpt] = []
     var note: String = ""
+    var transcriptParagraphs: [TranscriptParagraph] = []
+    var transcriptParagraphSnapshotID: ContentSnapshotID?
+    var reformatRecord: TaskReformatRecord?
   }
 
   nonisolated private static func detailSideload(
     _ history: HistoryApplicationService,
     taskID: TaskID,
     snapshotID: ContentSnapshotID?,
+    transcriptSnapshotID: ContentSnapshotID?,
     imageCache: GitHubREADMEImageCache?
   ) -> DetailSideload {
     var side = DetailSideload()
@@ -9224,6 +9257,13 @@ final class HistoryViewModel {
     side.ledgerTokenTotals = (try? history.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
     side.taskExcerpts = (try? history.annotationStore?.listExcerpts(taskID: taskID)) ?? []
     side.note = ((try? history.annotationStore?.loadNote(taskID: taskID) ?? nil) ?? "")
+    if let transcriptSnapshotID {
+      side.transcriptParagraphs = (try? history.transcriptParagraphStore?.loadTranscriptParagraphs(
+        snapshotID: transcriptSnapshotID.rawValue
+      )) ?? []
+      side.transcriptParagraphSnapshotID = transcriptSnapshotID
+    }
+    side.reformatRecord = (try? history.reformatStore?.loadReformat(taskID: taskID)) ?? nil
     return side
   }
 
@@ -9238,6 +9278,7 @@ final class HistoryViewModel {
     let side = detailSideload(
       history, taskID: taskID,
       snapshotID: value.snapshots.last?.id,
+      transcriptSnapshotID: LayeredSourceDocument.transcriptSnapshot(in: value.snapshots)?.id,
       imageCache: imageCache
     )
     return (result, side)
