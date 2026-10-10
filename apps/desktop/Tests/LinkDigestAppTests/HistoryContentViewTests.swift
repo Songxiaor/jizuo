@@ -2377,6 +2377,15 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(chrome.contains("Text(\"和浏览器扩展有什么不同？\")"))
   }
 
+  func testPendingCaptureFailureReasonCanWrapInANarrowSidebar() {
+    let chrome = appSource("HistoryWindowChrome.swift")
+    let row = section(in: chrome, from: "struct PendingCaptureRow: View", to: "struct ReadOnlyHistoryCallout")
+    XCTAssertTrue(row.contains(".lineLimit(nil)"), "失败原因不能继承成一行省略")
+    XCTAssertTrue(row.contains(".frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)"))
+    XCTAssertTrue(row.contains(".fixedSize(horizontal: false, vertical: true)"))
+    XCTAssertFalse(row.contains("lineLimit(1)\n            .truncationMode(.tail)"))
+  }
+
   private func appSource(_ fileName: String) -> String {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

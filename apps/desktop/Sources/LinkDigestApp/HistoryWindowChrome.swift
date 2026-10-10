@@ -215,14 +215,17 @@ struct PendingCaptureRow: View {
         case .fetching: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
         case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
         case let .failed(message):
-          // 失败原因必须完整可读。`lineLimit(2)` 会把「网页暂时无法打开，
-          // 请检查链接后重试」截掉尾巴——而尾巴恰恰是那句可执行的建议。
+          // 失败原因必须完整可读。窄侧栏里若按理想宽度排成一行，List 会把后半句裁成省略号。
           Text(message)
             .themedFont(.caption2)
             .foregroundStyle(theme.warning)
+            .lineLimit(nil)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Spacer(minLength: 4)
       if case .failed = pending.phase {
         Button("重试") { model.retryPendingCapture(pending.id) }
