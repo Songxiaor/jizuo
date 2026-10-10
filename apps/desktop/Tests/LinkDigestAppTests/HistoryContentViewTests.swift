@@ -248,6 +248,79 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 重新转写：旧稿留到新稿写出第一段；写完、新稿还没换上库里那份之前不闪回旧稿。
+  func testRetranscriptionKeepsTheSavedTranscriptUntilNewTextArrives() {
+    let saved = "snapshot-old"
+    XCTAssertFalse(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: saved,
+        snapshotIDWhenRunBegan: saved,
+        liveText: "",
+        stateIsActive: true
+      ),
+      "重新转写刚开始、还没有新字时继续显示旧稿"
+    )
+    XCTAssertFalse(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: saved,
+        snapshotIDWhenRunBegan: saved,
+        liveText: "   \n",
+        stateIsActive: true
+      )
+    )
+    XCTAssertTrue(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: saved,
+        snapshotIDWhenRunBegan: saved,
+        liveText: "第一段已经听出来了。",
+        stateIsActive: true
+      ),
+      "新稿写出第一段后才换成实时正文"
+    )
+    XCTAssertTrue(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: saved,
+        snapshotIDWhenRunBegan: saved,
+        liveText: "第一段已经听出来了。",
+        stateIsActive: false
+      ),
+      "写完但库里还是开跑前那一份时，不要先闪回旧稿"
+    )
+    XCTAssertFalse(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: "snapshot-new",
+        snapshotIDWhenRunBegan: saved,
+        liveText: "第一段已经听出来了。",
+        stateIsActive: false
+      ),
+      "新稿落库后改看库里的稿"
+    )
+    XCTAssertTrue(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: nil,
+        snapshotIDWhenRunBegan: nil,
+        liveText: "",
+        stateIsActive: true
+      ),
+      "第一次转写没有旧稿，仍显示实时区"
+    )
+    XCTAssertTrue(
+      LiveTranscriptHold.showsLiveBody(
+        savedSnapshotID: nil,
+        snapshotIDWhenRunBegan: nil,
+        liveText: "听出来了。",
+        stateIsActive: false
+      ),
+      "第一次转写写完、稿还没落库时继续看实时正文"
+    )
+    let source = historyContentViewSource()
+    let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
+    let kept = section(in: detail, from: "private var singlePaneTranscriptSnapshot", to: "private var splitsManuscriptTabs")
+    XCTAssertTrue(detail.contains("if showsReplacingLiveTranscript {"))
+    XCTAssertTrue(kept.contains("!showsReplacingLiveTranscript"))
+    XCTAssertFalse(kept.contains("hasLiveTranscription"), "旧稿还在时，页签不能因为转写刚开跑就消失")
+  }
+
   /// 停止后半截新译文不能盖住上一份完成的译文。上一轮只测了「saved 仍是旧译文」，
   /// 没测停止把半截写成最新产物之后读哪一份。
   func testStoppedRetranslationKeepsThePreviousCompleteTranslation() {

@@ -4451,6 +4451,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var showsPlainText = false
   /// 逐字稿看哪一份：校对稿（默认）、朱批（校对稿 + 改动）、原稿（机器听写）。
   @State private var manuscriptMode: TranscriptManuscript.Mode = .revised
+  /// 这次重新转写开跑时库里那份稿。写完、新稿还没落库之前靠它认出「还是旧的」。
+  @State private var transcriptSnapshotWhenRunBegan: String?
   /// 刚校对完的那一条：「校对稿已保存」只亮几秒。
   @State private var recentlyCompletedTidyTaskID: TaskID?
   /// 「处理」面板（2026-09-28 工序印）：原来是系统菜单，只能放单色小图标，放不下印。
@@ -5316,6 +5318,15 @@ private struct HistoryDetailView: View, Equatable {
   private var hasLiveTranscription: Bool {
     liveTranscriptionState.isActive || (!liveTranscriptionText.isEmpty && latestTranscriptionSnapshot == nil)
   }
+  /// 已经有转写稿时，新稿写出第一段之前不换成空白实时区。
+  private var showsReplacingLiveTranscript: Bool {
+    LiveTranscriptHold.showsLiveBody(
+      savedSnapshotID: latestTranscriptionSnapshot?.id.rawValue,
+      snapshotIDWhenRunBegan: transcriptSnapshotWhenRunBegan,
+      liveText: liveTranscriptionText,
+      stateIsActive: liveTranscriptionState.isActive
+    )
+  }
   private var hasPresentableSourceBody: Bool {
     guard let snapshot = latestSnapshot, hasSourceBody else { return false }
     return !CapturedSourceBodyPresentation.isRedundantDouyinBody(
@@ -6179,6 +6190,19 @@ private struct HistoryDetailView: View, Equatable {
     }
     .onChange(of: detail.task.id) { _, _ in
       scrollProxy.scrollTo(Self.detailTopAnchor, anchor: .top)
+      transcriptSnapshotWhenRunBegan = liveTranscriptionState.isActive
+        ? latestTranscriptionSnapshot?.id.rawValue
+        : nil
+    }
+    .onChange(of: liveTranscriptionState.isActive) { _, active in
+      if active {
+        transcriptSnapshotWhenRunBegan = latestTranscriptionSnapshot?.id.rawValue
+      }
+    }
+    .onAppear {
+      if liveTranscriptionState.isActive, transcriptSnapshotWhenRunBegan == nil {
+        transcriptSnapshotWhenRunBegan = latestTranscriptionSnapshot?.id.rawValue
+      }
     }
     } // ScrollViewReader
   }
@@ -6854,7 +6878,7 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 原文只有一层、而且就是本机转写稿（本地视频、录音，或抖音那类只有转写的）。
   private var singlePaneTranscriptSnapshot: ContentSnapshot? {
-    guard !isOwnWriting, !showsLayeredSource, !hasLiveTranscription else { return nil }
+    guard !isOwnWriting, !showsLayeredSource, !showsReplacingLiveTranscript else { return nil }
     let snapshot = (isDouyinCapture && !isDouyinImagePostCapture) ? latestTranscriptionSnapshot : latestSnapshot
     guard let snapshot, !snapshot.bodyText.isEmpty,
           snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue else { return nil }
@@ -8979,7 +9003,7 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 配文和转写是两层：转写完成后配文仍留在原文里，不再被转写稿盖掉。
   @ViewBuilder private var sourcePaneBody: some View {
-    if hasLiveTranscription {
+    if showsReplacingLiveTranscript {
       VStack(alignment: .leading, spacing: 18) {
         if hasPresentableCaption, let caption = latestSourceSnapshot {
           sourceLayer(heading: LayeredSourceDocument.captionHeading, snapshot: caption)
@@ -10251,6 +10275,30 @@ enum TranslationReadback {
 /// 两边都至少占这一行，标签出现时表头不再动。折行时仍按内容增高。
 enum ClassificationRowMetrics {
   static let singleLine: CGFloat = 20
+}
+
+/// 重新转写时，阅读区该看实时新稿还是库里的旧稿。
+///
+/// 一点「重新转写」，状态立刻变成进行中，实时正文还是空的。原来这一下就把已经
+/// 存好的转写稿换成空白，要等听出第一段才慢慢长回来；写完、新稿还没落库的那一拍
+/// 又会先闪回旧稿。有旧稿就留着，直到新稿写出非空白的第一段。写完后库里仍是开跑
+/// 前那一份时，继续看已经写出的实时稿。
+enum LiveTranscriptHold {
+  static func showsLiveBody(
+    savedSnapshotID: String?,
+    snapshotIDWhenRunBegan: String?,
+    liveText: String,
+    stateIsActive: Bool
+  ) -> Bool {
+    let arrived = !liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    if !arrived {
+      return savedSnapshotID == nil && stateIsActive
+    }
+    if stateIsActive { return true }
+    if savedSnapshotID == nil { return true }
+    if let began = snapshotIDWhenRunBegan, savedSnapshotID == began { return true }
+    return false
+  }
 }
 
 /// 重新总结 / 重新翻译开始时，阅读页该显示什么。
