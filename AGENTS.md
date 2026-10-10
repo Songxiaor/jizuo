@@ -44,3 +44,8 @@
 
 - 按需读：[PRD](docs/PRD.md) 管产品行为，[ARCHITECTURE](docs/ARCHITECTURE.md) 管组件边界，相关交接文档管未完成状态；只在对应信息实际变化时更新。
 - 长期决策需要时读 [BRAIN.md](BRAIN.md)，只通过 CLI 访问。写进 BRAIN.md 的每条决策包含：日期、决定了什么、考虑过哪些方案、为什么选这个、证据或注明「判断，无数据」、什么情况下重新考虑；明确拒绝的方案也写原因。
+
+## Syc 已确认的主控与可见执行流程（2026-10-10）
+
+- 执行 Agent 用 Droid，模型走 Magpie 的 Grok 系列（当前 `custom:magpie/grok-plugin/grok-4.7`）。
+- 会话由 AO 编排器通过 `ao spawn` 派发，不再用 Cursor Auto，也不再通过 `sc chat` 创建。
