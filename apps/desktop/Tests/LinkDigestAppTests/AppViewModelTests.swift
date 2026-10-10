@@ -580,6 +580,87 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.dataDestinationNotice, "原文已经是输出语言，不用翻译。")
   }
 
+  func testFailedTranslationRetryIgnoresLanguageMatchAndCallsProvider() async throws {
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let detail = historyDetail(body: chinese)
+    let provider = AppTestModelProvider(results: [.success([.delta("再译"), .completed])])
+    let model = try makeModel(provider: provider)
+    model.receive(
+      CurrentCapture(
+        envelope: capture(text: chinese),
+        taskID: detail.task.id,
+        snapshotID: detail.snapshots.last!.id
+      )
+    )
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    let started = await model.translate(
+      historyDetail: detail,
+      preferences: preferences,
+      ignoreLanguageMatch: true
+    )
+    XCTAssertTrue(started)
+    await waitUntil { model.runState == .completed(intent: .translate, text: "再译") }
+    XCTAssertEqual(provider.callCount, 1)
+    XCTAssertNil(model.dataDestinationNotice)
+  }
+
+  /// 通道忙时「再试」先入队。出队必须沿用 ignoreLanguageMatch，否则中文正文会被判成
+  /// 「不用翻译」，这次重试静默消失。
+  func testQueuedTranslationRetryKeepsIgnoreLanguageMatch() async throws {
+    let provider = AppTestModelProvider(results: [
+      .pendingWithPrefix("A output"),
+      .success([.delta("再译"), .completed]),
+    ])
+    let model = try makeModel(provider: provider)
+    let captureA = currentCapture(title: "A", text: "Article A")
+    model.receive(captureA)
+    await model.summarize()
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "A output") }
+
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let detailB = historyDetail(body: chinese)
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+    await model.translate(
+      historyDetail: detailB,
+      preferences: preferences,
+      ignoreLanguageMatch: true
+    )
+
+    XCTAssertEqual(model.queuedGenerations.map(\.ignoreLanguageMatch), [true])
+    XCTAssertTrue(model.isManualGenerationQueued(taskID: detailB.task.id, kind: .translate))
+    XCTAssertEqual(provider.callCount, 1)
+
+    await model.stop()
+    await waitUntil { provider.callCount == 2 }
+    XCTAssertNil(model.dataDestinationNotice)
+    XCTAssertFalse(model.isManualGenerationQueued(taskID: detailB.task.id, kind: .translate))
+  }
+
+  /// 没带忽略标记的排队翻译仍按语言匹配跳过，避免把普通入队也放行。
+  func testQueuedTranslationWithoutIgnoreFlagStillSkipsLanguageMatch() async throws {
+    let provider = AppTestModelProvider(results: [
+      .pendingWithPrefix("A output"),
+      .success([.delta("不该出现"), .completed]),
+    ])
+    let model = try makeModel(provider: provider)
+    let captureA = currentCapture(title: "A", text: "Article A")
+    model.receive(captureA)
+    await model.summarize()
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "A output") }
+
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let detailB = historyDetail(body: chinese)
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+    await model.translate(historyDetail: detailB, preferences: preferences)
+
+    XCTAssertEqual(model.queuedGenerations.map(\.ignoreLanguageMatch), [false])
+    await model.stop()
+    await waitUntil { model.dataDestinationNotice == "原文已经是输出语言，不用翻译。" }
+    XCTAssertEqual(provider.callCount, 1)
+    XCTAssertFalse(model.isManualGenerationQueued(taskID: detailB.task.id, kind: .translate))
+  }
+
   func testAmbiguousScriptCapturesRemainTranslatableThroughActionEntry() async throws {
     let cases: [(String, String)] = [
       (String(repeating: "中", count: 24) + String(repeating: "a", count: 20), "简体中文"),

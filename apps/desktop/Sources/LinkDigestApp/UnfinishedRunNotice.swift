@@ -42,6 +42,11 @@ enum UnfinishedRunNotice {
     return ordered.reversed().compactMap { pending[$0.run.kind] }.first
   }
 
+  /// 只看某一类。失败页和工序行要按翻译/总结各自判断，不能被另一类的成功盖掉。
+  static func latest(in runs: [HistoryDetailProjection.RunDetail], kind: RunKind) -> Notice? {
+    latest(in: runs.filter { $0.run.kind == kind })
+  }
+
   private static func message(for run: HistoryRun) -> String {
     let name = label(for: run.kind)
     switch run.status {

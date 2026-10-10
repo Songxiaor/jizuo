@@ -5159,8 +5159,15 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// 正文已经是输出语言：翻译不是「暂时不能做」，而是「不需要做」。这时按钮直接不出现，
   /// 不再留一颗永远灰着、要悬停才知道原因的「翻译」（2026-09-24 走查）。
+  /// 失败或中断的翻译除外：用户已经点过一次，必须还能再点。
   private var translationNotNeeded: Bool {
-    translateUnavailableReason?.contains("无需翻译") == true
+    let reason = translateUnavailableReason
+    let languageMatch = reason?.contains("不用翻译") == true || reason?.contains("无需翻译") == true
+    return languageMatch && unfinishedNotice(for: .translate) == nil
+  }
+
+  private func unfinishedNotice(for kind: RunKind) -> UnfinishedRunNotice.Notice? {
+    UnfinishedRunNotice.latest(in: detail.runs, kind: kind)
   }
 
   /// 一行说清为什么灰。两颗钮同一原因只写一次；总结能点、翻译不能时写翻译的原因。
@@ -6259,7 +6266,11 @@ private struct HistoryDetailView: View, Equatable {
       case .summarize:
         await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
       case .translate:
-        await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
+        await appModel.translate(
+          historyDetail: detail,
+          preferences: providerSettings.runPreferences,
+          ignoreLanguageMatch: true
+        )
       }
     }
   }
@@ -6839,7 +6850,7 @@ private struct HistoryDetailView: View, Equatable {
     return nil
   }
 
-  private func startRun(_ kind: RunKind) {
+  private func startRun(_ kind: RunKind, ignoreLanguageMatch: Bool = false) {
     // 还没配模型：直接带去「模型服务」。原来会去试一次，失败说明写在一块收起的面板里，
     // 用户只看到按钮闪一下、什么都没发生（2026-10-02 新用户走查）。
     guard providerSettings.hasConfiguredAPIKey else {
@@ -6853,9 +6864,38 @@ private struct HistoryDetailView: View, Equatable {
       case .summarize:
         started = await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
       case .translate:
-        started = await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
+        started = await appModel.translate(
+          historyDetail: detail,
+          preferences: providerSettings.runPreferences,
+          ignoreLanguageMatch: ignoreLanguageMatch
+        )
       }
       engageReadingPane(pane(for: kind), started: started)
+    }
+  }
+
+  /// 失败页上的「再试一次」。翻译失败后语言匹配可能已经翻成「不用翻译」，
+  /// 这时还按首次点击拦截，按钮看起来能点、点了却只弹提示。
+  private func retryFailedLiveRun() {
+    if appModel.runState.intent == .translate {
+      startRun(.translate, ignoreLanguageMatch: true)
+    } else {
+      startRun(.summarize)
+    }
+  }
+
+  private var liveRunRetryTitle: String {
+    appModel.runState.intent == .translate ? "再翻译一次" : "再总结一次"
+  }
+
+  private var liveRunRetryAction: (title: String, action: () -> Void)? {
+    guard appModel.runHasFailure else { return nil }
+    return (title: liveRunRetryTitle, action: { retryFailedLiveRun() })
+  }
+
+  private var liveRunModelFixAction: (title: String, action: () -> Void)? {
+    ModelFailureFix(runState: appModel.runState).map { fix in
+      (title: fix.buttonTitle, action: { openSettings() })
     }
   }
 
@@ -7268,10 +7308,14 @@ private struct HistoryDetailView: View, Equatable {
     // 面板列全部工序，顺序和设置里的「处理流程」一致（2026-10-04 Syc 确认）。原来表头上露着的
     // 那一步（转写 / 生成总结）不在这里列，结果设置里有「总结」、面板里却找不到。
     if let action = transcribeAction {
+      let ui = model.transcriptionState(for: taskID)
+      let transcriptionFailedReason: String? = {
+        if case let .failed(reason) = ui { return reason }
+        return nil
+      }()
       let state: ProcessStepRow.State = {
-        let ui = model.transcriptionState(for: taskID)
         if ui.isActive { return .running("转写中…") }
-        if case let .failed(reason) = ui { return .failed(reason) }
+        if let transcriptionFailedReason { return .failed(transcriptionFailedReason) }
         return hasCompletedTranscript ? .done(doneText(.record)) : .pending
       }()
       rows.append(.init(
@@ -7280,6 +7324,7 @@ private struct HistoryDetailView: View, Equatable {
         state: state,
         isEnabled: action.canStart && !model.transcriptionState(for: taskID).isActive,
         help: action.help,
+        subtitle: transcriptionFailedReason,
         identifier: hasCompletedTranscript ? "history-more-retranscribe" : "history-process-transcribe",
         action: { isProcessPanelPresented = false; action.start() }
       ))
@@ -7287,10 +7332,14 @@ private struct HistoryDetailView: View, Equatable {
 
     if hasCompletedTranscript {
       let tidy = model.transcriptTidyState(for: taskID)
+      let tidyFailedReason: String? = {
+        if case let .failed(reason) = tidy { return reason }
+        return nil
+      }()
       let done = records[.proof] != nil
       let state: ProcessStepRow.State = {
         if tidy.isActive { return .running(model.transcriptTidyProgress ?? "校对中…") }
-        if case let .failed(reason) = tidy { return .failed(reason) }
+        if let tidyFailedReason { return .failed(tidyFailedReason) }
         return done ? .done(doneText(.proof)) : .pending
       }()
       rows.append(.init(
@@ -7300,7 +7349,8 @@ private struct HistoryDetailView: View, Equatable {
         state: state,
         isEnabled: transcriptTidyBlockedReason == nil && !tidy.isActive,
         help: "把转写文字校对一遍并重新分段，不改说了什么",
-        subtitle: transcriptTidyBlockedReason
+        subtitle: tidyFailedReason
+          ?? transcriptTidyBlockedReason
           ?? processModelSubtitle(providerSettings.effectiveTidyModelName ?? providerSettings.activeSummaryModelName),
         identifier: "history-ai-transcript-tidy",
         action: {
@@ -7324,43 +7374,58 @@ private struct HistoryDetailView: View, Equatable {
     }
 
     for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
-      if kind == .translate, translationNotNeeded, translationArtifact == nil { continue }
+      let unfinished = unfinishedNotice(for: kind)
+      if kind == .translate, translationNotNeeded, translationArtifact == nil, unfinished == nil { continue }
       let done = (kind == .translate ? translationArtifact : summaryArtifact) != nil
+      let languageMatchBlock = kind == .translate && translateUnavailableReason?.contains("不用翻译") == true
       let blocked = kind == .translate ? translateUnavailableReason : summarizeUnavailableReason
       let queued = appModel.isManualGenerationQueued(taskID: taskID, kind: kind == .translate ? .translate : .summarize)
       let state: ProcessStepRow.State = {
         if isRunning(kind) { return .running("\(step.title)中…") }
         if queued { return .running("已排队") }
-        if !done, let notice = UnfinishedRunNotice.latest(in: detail.runs), notice.kind == kind {
-          return .failed(notice.message)
-        }
+        // 已有译文再翻失败仍是失败：旧译文留在页签里，这一行显示失败并可再试。
+        // 成功发生在失败之后时 unfinished 已是 nil，不会把完成画成失败。
+        if let unfinished { return .failed(unfinished.message) }
         return done ? .done(doneText(step)) : .pending
       }()
+      let canRetryUnfinished = unfinished != nil && !isRunning(kind)
       rows.append(.init(
         step: step,
         title: done ? "重新\(step.title)" : step.title,
         state: state,
-        isEnabled: blocked == nil && !isRunning(kind),
-        help: blocked ?? (done ? "用本机已保存的正文再\(step.title)一次" : (kind == .translate
-          ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
-          : "让模型读完正文，写一份总结")),
-        subtitle: blocked ?? processModelSubtitle(
-          kind == .translate ? providerSettings.effectiveTranslationModelName : providerSettings.activeSummaryModelName
-        ),
+        isEnabled: (blocked == nil || (canRetryUnfinished && languageMatchBlock)) && !isRunning(kind),
+        help: canRetryUnfinished
+          ? "上次\(step.title)没有完成，再试一次"
+          : (blocked ?? (done ? "用本机已保存的正文再\(step.title)一次" : (kind == .translate
+            ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+            : "让模型读完正文，写一份总结"))),
+        subtitle: canRetryUnfinished
+          ? unfinished?.message
+          : (blocked ?? processModelSubtitle(
+            kind == .translate ? providerSettings.effectiveTranslationModelName : providerSettings.activeSummaryModelName
+          )),
         identifier: kind == .translate
           ? (done ? "history-more-retranslate" : "history-process-translate")
           : (done ? "history-more-resummarize" : "history-process-summarize"),
-        action: { isProcessPanelPresented = false; startRun(kind) }
+        action: {
+          isProcessPanelPresented = false
+          startRun(kind, ignoreLanguageMatch: canRetryUnfinished && kind == .translate)
+        }
       ))
     }
 
     if !isOwnWriting {
       let done = model.mindMapRecord?.taskID == taskID
       let queued = appModel.isManualGenerationQueued(taskID: taskID, kind: .mindMap)
+      let mindMapUI = model.mindMapState(for: taskID)
+      let mindMapFailedReason: String? = {
+        if case let .failed(reason) = mindMapUI { return reason }
+        return nil
+      }()
       let state: ProcessStepRow.State = {
-        if model.mindMapState(for: taskID).isActive { return .running("生成中…") }
+        if mindMapUI.isActive { return .running("生成中…") }
         if queued { return .running("已排队") }
-        if case let .failed(reason) = model.mindMapState(for: taskID) { return .failed(reason) }
+        if let mindMapFailedReason { return .failed(mindMapFailedReason) }
         return done ? .done(doneText(.mindMap)) : .pending
       }()
       rows.append(.init(
@@ -7369,7 +7434,9 @@ private struct HistoryDetailView: View, Equatable {
         state: state,
         isEnabled: mindMapUnavailableReason == nil,
         help: mindMapUnavailableReason ?? (queued ? "再点一次取消排队" : "把正文发给模型提取结构"),
-        subtitle: mindMapUnavailableReason ?? processModelSubtitle(providerSettings.activeSummaryModelName),
+        subtitle: mindMapFailedReason
+          ?? mindMapUnavailableReason
+          ?? processModelSubtitle(providerSettings.activeSummaryModelName),
         identifier: "mind-map-generate",
         action: {
           isProcessPanelPresented = false
@@ -7842,9 +7909,8 @@ private struct HistoryDetailView: View, Equatable {
       isActive: appModel.runState.isActive,
       startedAt: appModel.runStartedAt,
       hasFailure: appModel.runHasFailure,
-      modelFixAction: ModelFailureFix(runState: appModel.runState).map { fix in
-        (title: fix.buttonTitle, action: { openSettings() })
-      },
+      modelFixAction: liveRunModelFixAction,
+      retryAction: liveRunRetryAction,
       dangerColor: theme.danger,
       font: readingFont.nsFont(),
       color: NSColor(theme.primaryText),
@@ -7879,20 +7945,29 @@ private struct HistoryDetailView: View, Equatable {
     ].joined(separator: "|")
   }
 
-  /// 进行中也给「译文对应」：层取原文那边有的层（译文里还没出现的层也列着，点开就是待译的原文）。
-  private var liveTranslationLayers: [SourceLayer] {
-    availableSourceLayers.count > 1 ? availableSourceLayers : []
+  /// 进行中的「译文对应」：只列译文里已经出现过的层。
+  ///
+  /// 原来把原文的层先全摆上去（有的层译文还没写到），译文的开头会先吐
+  /// 一行标题、再吐 `## 配文` 层标题：在标题之后、层标题之前那段空窗里这一行还是
+  /// 单胶囊，不显示；层标题一落地，这一行又多出一颗胶囊，把下面整块正文往下顶一格，
+  /// 下一层进来再顶一次。边翻边看时每进一层这一行就跳进跳出一回——2026-10-09 Syc
+  /// 截图里评论区上方反复闪的「纸片」就是这一行在挤动。
+  /// 只看译文：它还没写到的层，读者本来也没东西可看。
+  private func liveTranslationLayers(in completed: String) -> [SourceLayer] {
+    let seen = Set(LiveTranslationPreview.translatedLayerHeadings(in: completed).compactMap(SourceLayer.init(heading:)))
+    let layers = availableSourceLayers.filter { seen.contains($0) }
+    return layers.count > 1 ? layers : []
   }
 
   private func activeLiveTranslationLayer(_ completed: String) -> SourceLayer? {
-    let layers = liveTranslationLayers
+    let layers = liveTranslationLayers(in: completed)
     if let selected = selectedTranslationLayer, layers.contains(selected) { return selected }
     // 没选过就跟着翻译走：停在正在翻的那一层。
     if let current = LiveTranslationPreview.translatedLayerHeadings(in: completed).last
       .flatMap(SourceLayer.init(heading:)), layers.contains(current) {
       return current
     }
-    return layers.first
+    return layers.first ?? availableSourceLayers.first
   }
 
   private func sourceSnapshot(for layer: SourceLayer) -> ContentSnapshot? {
@@ -7907,7 +7982,7 @@ private struct HistoryDetailView: View, Equatable {
   private func liveTranslationContent(_ completed: String) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       liveTranslationStatusRow
-      let layers = liveTranslationLayers
+      let layers = liveTranslationLayers(in: completed)
       let active = activeLiveTranslationLayer(completed)
       if layers.count > 1 {
         layerPicker(
@@ -7922,8 +7997,10 @@ private struct HistoryDetailView: View, Equatable {
       if let active {
         liveTranslationLayerBody(active, completed: completed)
       } else {
-        // 没分层的文章：已写完的段落照常按 Markdown 排。
-        liveTranslationMarkdown(LiveTranslationPreview.unlayeredBody(in: completed) ?? completed)
+        // 没分层的文章：已写完的段落照常按 Markdown 排。评论同样先不显示，见
+        // `liveTranslationLayerBody` 里的说明：直播时它每行重建一次，闪成一片。
+        let body = LiveTranslationPreview.unlayeredBody(in: completed) ?? completed
+        liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: body))
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -7947,6 +8024,11 @@ private struct HistoryDetailView: View, Equatable {
         Text(appModel.runStatusText)
           .themedFont(.callout)
           .foregroundStyle(appModel.runHasFailure ? theme.danger : theme.secondaryText)
+        if appModel.runHasFailure {
+          Button(liveRunRetryTitle, action: retryFailedLiveRun)
+            .controlSize(.small)
+            .accessibilityIdentifier("run-failure-retry")
+        }
       }
       Spacer(minLength: 0)
     }
@@ -7972,10 +8054,16 @@ private struct HistoryDetailView: View, Equatable {
         }
       }
     } else if let translated {
-      liveTranslationMarkdown(translated)
+      // 评论区在直播译文里先不显示（2026-10-09 Syc：「一直闪」）。译文每写完一行
+      // 正文就重拼一次，`## 评论` 起的那一段被模型原样逐行回抄，评论块是嵌在文字
+      // 视图里的一个嵌入块：它的复用键里带着评论内容，每多抄一行键就变一次、块就
+      // 整体重建一次。重建中的宿主视图在文字引擎里被换成一张默认的半透明纸片，
+      // 上万点高的评论块一次一次地换，就是压在评论上那一大片反复闪的东西。
+      // 评论不是译文内容，边翻边看不需要它：翻完落库后照常显示。
+      liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: translated))
     } else if let source {
       // 这一层还没轮到：先放原文（淡色），轮到时整段换成译文。
-      liveTranslationMarkdown(source).opacity(0.45)
+      liveTranslationMarkdown(LiveTranslationPreview.strippingComments(from: source)).opacity(0.45)
     }
   }
 
@@ -10513,6 +10601,7 @@ private struct LiveRunReadingBody: View {
   let startedAt: Date?
   let hasFailure: Bool
   var modelFixAction: (title: String, action: () -> Void)? = nil
+  var retryAction: (title: String, action: () -> Void)? = nil
   let dangerColor: Color
   let font: NSFont
   let color: NSColor
@@ -10537,16 +10626,31 @@ private struct LiveRunReadingBody: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 24)
-        if hasFailure, let modelFixAction {
-          Button(modelFixAction.title, action: modelFixAction.action)
-            .controlSize(.regular)
-            .accessibilityIdentifier("run-failure-fix-model")
+        if hasFailure {
+          HStack(spacing: 10) {
+            Button(retryAction?.title ?? "再试一次", action: { retryAction?.action() })
+              .controlSize(.regular)
+              .disabled(retryAction == nil)
+              .accessibilityIdentifier("run-failure-retry")
+            if let modelFixAction {
+              Button(modelFixAction.title, action: modelFixAction.action)
+                .controlSize(.regular)
+                .accessibilityIdentifier("run-failure-fix-model")
+            }
+          }
         }
       } else {
         if hasFailure || !isActive {
-          Text(statusText)
-            .themedFont(.callout)
-            .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(statusText)
+              .themedFont(.callout)
+              .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
+            if hasFailure, let retryAction {
+              Button(retryAction.title, action: retryAction.action)
+                .controlSize(.small)
+                .accessibilityIdentifier("run-failure-retry")
+            }
+          }
         }
         // 外层详情已经是 ScrollView。这里只长正文，不再套一层限高预览框。
         // 流式阶段不渲染 Markdown：逐 token 重排太贵；完成后换成富文本。

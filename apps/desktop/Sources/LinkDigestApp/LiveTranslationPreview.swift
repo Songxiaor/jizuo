@@ -19,6 +19,19 @@ enum LiveTranslationPreview {
     LayeredSourceDocument.split(completed).compactMap(\.heading)
   }
 
+  /// 去掉译文里 `## 评论` 起到结尾的那一段（2026-10-09）。
+  ///
+  /// 直播预览每写完一行就重拼一次正文，评论段被模型原样逐行回抄（翻译提示要求
+  /// `## 评论` 起的小节原样复制），评论块于是每行整体重建一次：它是嵌在文字视图里
+  /// 的嵌入块，复用键里带着评论内容，每多抄一行键就变一次。重建中的宿主视图在
+  /// 文字引擎里被换成一张默认的半透明纸片——上万点高的评论块一次一次地换，就是
+  /// 压在评论上反复闪的那一大片（Syc 截图）。
+  /// 评论不是译文，边翻边看不需要它；翻完落库后由成品那条路径照常显示。
+  static func strippingComments(from body: String) -> String {
+    guard let range = body.range(of: #"(?m)^## 评论"#, options: .regularExpression) else { return body }
+    return String(body[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   /// 某一层已经译好的正文；这一层还没开始时为 nil。
   static func translatedBody(of heading: String, in completed: String) -> String? {
     LayeredSourceDocument.split(completed).first { $0.heading == heading }?.body

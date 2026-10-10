@@ -1414,7 +1414,18 @@ final class HistoryContentViewTests: XCTestCase {
     // 2026-10-04：面板列全部工序（顺序同设置里的工序总览），表头的主按钮只是捷径。
     XCTAssertTrue(more.contains("if let action = transcribeAction {"), "转写永远在面板里")
     XCTAssertFalse(more.contains("primary == .summarize { continue }"), "总结永远在面板里")
-    XCTAssertTrue(more.contains("if kind == .translate, translationNotNeeded, translationArtifact == nil { continue }"), "不需要翻译时翻译不出现")
+    XCTAssertTrue(
+      more.contains("if kind == .translate, translationNotNeeded, translationArtifact == nil, unfinished == nil { continue }"),
+      "不需要翻译时翻译不出现，失败过的翻译除外"
+    )
+    XCTAssertTrue(more.contains("ignoreLanguageMatch: canRetryUnfinished && kind == .translate"), "失败翻译再试时不能被语言匹配挡住")
+    XCTAssertTrue(more.contains("startRun(kind, ignoreLanguageMatch:"), "工序行重试要走带忽略语言匹配的入口")
+    XCTAssertTrue(more.contains("if let unfinished { return .failed(unfinished.message) }"), "已有译文时再次失败仍要画成失败")
+    XCTAssertFalse(more.contains("if !done, let unfinished"), "不能因为旧译文还在就把失败画成完成")
+    XCTAssertTrue(more.contains("subtitle: transcriptionFailedReason"), "转写失败原因要写在副标题")
+    XCTAssertTrue(more.contains("subtitle: tidyFailedReason"), "校对失败原因要写在副标题，压过模型名")
+    XCTAssertTrue(more.contains("subtitle: mindMapFailedReason"), "脑图失败原因要写在副标题，压过模型名")
+    XCTAssertTrue(more.contains("let done = (kind == .translate ? translationArtifact : summaryArtifact) != nil"), "失败只改这一行的状态，旧译文产物还在")
     // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。
     let surface = section(in: source, from: "private var readingSurface: some View", to: "private var showsReadingSurface")
     XCTAssertTrue(surface.contains("readingHeaderRow(pinned: false)"))
@@ -2030,6 +2041,25 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("live: appModel.liveRunText"))
   }
 
+  /// 边翻边看的「译文对应」：只列译文里已经出现过的层。
+  ///
+  /// 原来把原文的层先全列出来，译文标题行落地后、第一个层标题落地前的那段空窗里
+  /// 这一行还是单胶囊；层标题一落地又多出一颗，把下方正文整体顶下一格，下一层进来
+  /// 再顶一次——每进一层阅读区就跳一下（2026-10-09 Syc 截图里评论区上方反复闪的
+  /// 「纸片」正是这一行在挤动）。
+  func testLiveTranslationLayerPickerOnlyListsLayersSeenInTranslation() {
+    let source = historyContentViewSource()
+    XCTAssertTrue(
+      source.contains("只列译文里已经出现过的层"),
+      "进行中的层切换只列译文里已经出现过的层，避免切换行随每个层标题跳进跳出")
+    XCTAssertTrue(
+      source.contains("liveTranslationLayers(in: completed)"),
+      "层列表要以当前已写完的译文为准，不能拿原文的层先全列出来")
+    XCTAssertFalse(
+      source.contains("译文里还没出现的层也列着"),
+      "把原文层先全列出来的旧写法又回来了")
+  }
+
   /// 行宽只能有一个控制点。
   ///
   /// 原来阅读区卡在 590pt，而它所在的内容列有 680pt 且左对齐——右边固定空出
@@ -2229,7 +2259,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("展开全文"))
     XCTAssertTrue(detail.contains("collapsibleSourceSection"))
     XCTAssertFalse(detail.contains("history-reading-retranscribe"))
-    XCTAssertTrue(detail.contains("translate(historyDetail: detail"))
+    XCTAssertTrue(detail.contains("appModel.translate("))
+    XCTAssertTrue(detail.contains("historyDetail: detail"))
+    XCTAssertTrue(detail.contains("ignoreLanguageMatch: true"))
     XCTAssertFalse(detail.contains("appModel.translate(preferences:"))
   }
 
@@ -2823,7 +2855,8 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     // 09-28「处理」改为自绘面板：禁用与理由同出一处。10-04 起理由写在这一项标题下面那行小字里
     //（原来挤在标题括号里，和其它步骤的「模型：…」那行同一个位置）。
     XCTAssertTrue(source.contains("isEnabled: transcriptTidyBlockedReason == nil"))
-    XCTAssertTrue(source.contains("subtitle: transcriptTidyBlockedReason"))
+    XCTAssertTrue(source.contains("subtitle: tidyFailedReason"))
+    XCTAssertTrue(source.contains("?? transcriptTidyBlockedReason"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
     XCTAssertTrue(source.contains("transcriptTidyVisibleBlockedReason"))
@@ -2973,5 +3006,42 @@ final class AutoPipelineTidyHintTests: XCTestCase {
     )
     XCTAssertTrue(viewModel.contains("if request.tidy, Self.latestTranscriptText(in: storedDetail) != nil"))
     XCTAssertTrue(viewModel.contains("guard autoTidyEnabled, !autoPipelineQueuedTaskIDs.contains(taskID)"))
+  }
+}
+
+/// 工序行失败时，原因要出现在标题下那行字里。只挂在「再试」的悬停提示上，鼠标不停上去就看不到。
+final class ProcessStepFailureVisibilityTests: XCTestCase {
+  func testFailedReasonReplacesModelSubtitleAndBlankReasonFallsBack() {
+    XCTAssertEqual(
+      ProcessStepRow.displayedSubtitle(state: .failed("连接超时"), subtitle: "模型：haiku"),
+      "连接超时"
+    )
+    XCTAssertEqual(
+      ProcessStepRow.displayedSubtitle(state: .failed("转写失败"), subtitle: nil),
+      "转写失败"
+    )
+    XCTAssertEqual(
+      ProcessStepRow.displayedSubtitle(state: .failed("   "), subtitle: "模型：haiku"),
+      "模型：haiku"
+    )
+    XCTAssertEqual(
+      ProcessStepRow.displayedSubtitle(state: .pending, subtitle: "模型：haiku"),
+      "模型：haiku"
+    )
+    XCTAssertNil(ProcessStepRow.displayedSubtitle(state: .done("10-10"), subtitle: nil))
+  }
+
+  func testRowDrawsDisplayedSubtitleAsText() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/ProcessSteps.swift"),
+      encoding: .utf8
+    )
+    let bodyStart = try XCTUnwrap(source.range(of: "var body: some View"))
+    let bodyEnd = try XCTUnwrap(source.range(of: "private var accessibilityState"))
+    let body = source[bodyStart.lowerBound..<bodyEnd.lowerBound]
+    XCTAssertTrue(body.contains("displayedSubtitle(state: state, subtitle: subtitle)"))
+    XCTAssertTrue(body.contains("Text(shown)"), "失败原因要画成正文，不能只留在 .help")
   }
 }

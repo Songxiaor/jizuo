@@ -86,6 +86,18 @@ final class ModelHealthTests: XCTestCase {
     XCTAssertNil(ModelFailureFix(runState: .idle))
   }
 
+  func testLiveFailurePageKeepsARetryButtonBesideModelFix() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("run-failure-retry"), "失败页必须能再试，不能只剩换模型")
+    XCTAssertTrue(source.contains("var retryAction:"))
+    XCTAssertTrue(source.contains("再翻译一次"))
+  }
+
   func testProbeResultIsNotOverwrittenByTheLateRunNotification() {
     let health = registry()
     health.record(baseURL: zen, model: "m", status: .available, source: .probe)

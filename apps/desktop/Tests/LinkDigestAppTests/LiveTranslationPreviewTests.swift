@@ -58,4 +58,25 @@ final class LiveTranslationPreviewTests: XCTestCase {
     XCTAssertNil(LiveTranslationPreview.unlayeredBody(in: completed))
     XCTAssertEqual(LiveTranslationPreview.unlayeredBody(in: "第一段\n\n第二段"), "第一段\n\n第二段")
   }
+
+  /// 直播预览不显示评论区（2026-10-09 Syc：「一直闪」）。
+  ///
+  /// 译文每写完一行就重拼一次正文，评论段被模型原样逐行回抄；评论块是嵌在文字视图里的
+  /// 嵌入块，复用键带着评论内容，每多抄一行块就整体重建一次，重建中的宿主视图在文字
+  /// 引擎里被换成默认的半透明纸片——上万点高的评论块一次一次地换，就是压在评论上
+  /// 反复闪的那一大片。评论不是译文，边翻边看不需要它；翻完落库后由成品路径照常显示。
+  func testLivePreviewStripsTheCommentsSection() {
+    let withComments = "# 标题\n\n## 配文\n\n配文译文。\n\n## 评论（已保存 3 条）\n\n- **甲** · 赞 1\n  好的"
+    XCTAssertEqual(
+      LiveTranslationPreview.strippingComments(from: withComments),
+      "# 标题\n\n## 配文\n\n配文译文。"
+    )
+    // 没有评论段的正文原样返回，不去动内容。
+    XCTAssertEqual(LiveTranslationPreview.strippingComments(from: "配文译文。"), "配文译文。")
+    // 「评论区」这类正文里的字不算：切分点是行首的 `## 评论` 小标题。
+    XCTAssertEqual(
+      LiveTranslationPreview.strippingComments(from: "评论区的设计\n\n正文"),
+      "评论区的设计\n\n正文"
+    )
+  }
 }

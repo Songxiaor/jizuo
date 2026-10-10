@@ -60,6 +60,8 @@ struct ManualGenerationRequest: Equatable {
   let historyDetail: HistoryDetailProjection?
   let preferences: ModelPreferences
   let modelOverride: String?
+  /// 通道忙时「再试」先入队。出队若再按语言匹配跳过，这次重试会静默消失。
+  let ignoreLanguageMatch: Bool
 }
 
 /// 用 Observation 而不是 ObservableObject：视图只在自己读过的属性变化时重绘。
@@ -296,24 +298,27 @@ final class AppViewModel {
   func translate(
     historyDetail: HistoryDetailProjection,
     preferences: ModelPreferences,
-    modelOverride: String? = nil
+    modelOverride: String? = nil,
+    ignoreLanguageMatch: Bool = false
   ) async -> Bool {
     if handledManualGenerationRequest(
       kind: .translate,
       taskID: historyDetail.task.id,
       historyDetail: historyDetail,
       preferences: preferences,
-      modelOverride: modelOverride
+      modelOverride: modelOverride,
+      ignoreLanguageMatch: ignoreLanguageMatch
     ) {
       return didEngageModelRun
     }
     guard prepareHistoryCapture(historyDetail) else { return false }
     // 详情页门禁按分层快照判断；若这里仍用合并后的 currentCapture 正文，
     // 中文转写 + 英文配文会被误判为「已是中文」，按钮可点但翻译静默退出。
-    guard LayeredSourceDocument.needsTranslation(
-      from: historyDetail.snapshots,
-      outputLanguage: preferences.outputLanguage
-    ) else {
+    if !ignoreLanguageMatch,
+       !LayeredSourceDocument.needsTranslation(
+        from: historyDetail.snapshots,
+        outputLanguage: preferences.outputLanguage
+       ) {
       dataDestinationNotice = "原文已经是输出语言，不用翻译。"
       return false
     }
@@ -357,7 +362,8 @@ final class AppViewModel {
         kind: .mindMap,
         historyDetail: nil,
         preferences: .default,
-        modelOverride: nil
+        modelOverride: nil,
+        ignoreLanguageMatch: false
       )
     )
   }
@@ -392,10 +398,13 @@ final class AppViewModel {
         await startNextQueuedGenerationIfIdle()
         return
       }
-      if isTranslationLanguageMatch(
-        text: currentCapture?.document.text,
-        outputLanguage: next.preferences.outputLanguage
-      ) {
+      // 入队时带来的「忽略语言判断」必须在这里生效。否则失败后再试会先排队，
+      // 出队时又被判成「不用翻译」，用户只看到什么都没发生。
+      if !next.ignoreLanguageMatch,
+         isTranslationLanguageMatch(
+           text: currentCapture?.document.text,
+           outputLanguage: next.preferences.outputLanguage
+         ) {
         dataDestinationNotice = "原文已经是输出语言，不用翻译。"
         await startNextQueuedGenerationIfIdle()
         return
@@ -430,7 +439,8 @@ final class AppViewModel {
     taskID: TaskID,
     historyDetail: HistoryDetailProjection?,
     preferences: ModelPreferences,
-    modelOverride: String?
+    modelOverride: String?,
+    ignoreLanguageMatch: Bool = false
   ) -> Bool {
     if isManualGenerationQueued(taskID: taskID, kind: kind) {
       queuedGenerations.removeAll { $0.taskID == taskID && $0.kind == kind }
@@ -443,7 +453,8 @@ final class AppViewModel {
         kind: kind,
         historyDetail: historyDetail,
         preferences: preferences,
-        modelOverride: modelOverride
+        modelOverride: modelOverride,
+        ignoreLanguageMatch: ignoreLanguageMatch
       )
     )
     return true

@@ -203,8 +203,8 @@ struct ProcessStepRow: View {
             .themedFont(.body)
             .foregroundStyle(isDone ? secondaryText : primaryText)
             .lineLimit(1)
-          if let subtitle {
-            Text(subtitle)
+          if let shown = Self.displayedSubtitle(state: state, subtitle: subtitle) {
+            Text(shown)
               .themedFont(.caption2)
               .foregroundStyle(secondaryText)
               .lineLimit(1)
@@ -237,6 +237,15 @@ struct ProcessStepRow: View {
     .accessibilityIdentifier(identifier)
   }
 
+  /// 失败原因写在标题下面，不用悬停。调用方若仍把模型名放在 subtitle，这里改成原因。
+  static func displayedSubtitle(state: State, subtitle: String?) -> String? {
+    if case let .failed(reason) = state {
+      let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return subtitle
+  }
+
   private var accessibilityState: String {
     switch state {
     case .pending: "去做"
@@ -266,8 +275,8 @@ struct ProcessStepRow: View {
         Text(text).themedFont(.caption).foregroundStyle(secondaryText).lineLimit(1)
       }
     case let .failed(reason):
-      Text(reason).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(1).truncationMode(.tail)
-        .frame(maxWidth: 150, alignment: .trailing)
+      Text("再试").themedFont(.caption).foregroundStyle(appTheme.accent)
+        .help(reason)
     case let .done(when):
       Text(when).themedFont(.caption, monospacedDigit: true).foregroundStyle(secondaryText)
     }

@@ -64,6 +64,15 @@ final class UnfinishedRunNoticeTests: XCTestCase {
     XCTAssertEqual(notice?.kind, .translate, "总结成功不该把翻译的中断盖掉")
   }
 
+  func testLatestForKindIgnoresOtherKinds() {
+    let runs = [
+      run(.translate, .failed, at: 10),
+      run(.summarize, .completed, at: 20),
+    ]
+    XCTAssertEqual(UnfinishedRunNotice.latest(in: runs, kind: .translate)?.kind, .translate)
+    XCTAssertNil(UnfinishedRunNotice.latest(in: runs, kind: .summarize))
+  }
+
   /// 用户主动停止不是故障；进行中另有转圈提示。
   func testStoppedAndInFlightRunsAreNotNotices() {
     XCTAssertNil(UnfinishedRunNotice.latest(in: [run(.summarize, .stopped, at: 10)]))
@@ -87,5 +96,9 @@ final class UnfinishedRunNoticeTests: XCTestCase {
     XCTAssertTrue(
       source.contains("private func retryUnfinishedRun(_ kind: RunKind)"),
       "重试要走和工具栏按钮相同的入口，另起一条路径两边校验迟早漂移")
+    XCTAssertTrue(source.contains("ignoreLanguageMatch: true"), "未完成翻译再试时不能被语言匹配挡住")
+    XCTAssertTrue(source.contains("run-failure-retry"), "失败页自己要有再试按钮")
+    XCTAssertTrue(source.contains("再翻译一次"))
+    XCTAssertTrue(source.contains("再总结一次"))
   }
 }
