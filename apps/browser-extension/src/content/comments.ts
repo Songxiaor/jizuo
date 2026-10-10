@@ -536,6 +536,24 @@ const xReader: CommentReader = {
 
 // YouTube ---------------------------------------------------------------------
 
+/**
+ * 评论总数是评论面板标题旁边那一格（「评论 1063万」），不是 `ytd-comments-header-renderer #count`。
+ * 现在这个 #count 里只有「评论」两个字；播放量那个节点也叫 #count。
+ * 读错时会把一个页面上没有的整数写成「页面显示 10637155」（2026-10-10，Me at the zoo）。
+ * 面板上没有可读的总数时不猜，标题只留「已保存 N 条」。
+ */
+function youtubeShownCommentTotal(documentLike: Document): number | undefined {
+  const shown = countFrom(
+    documentLike.querySelector("#engagement-panel-comments-section #contextual-info")?.textContent,
+  );
+  if (shown) return shown;
+  const legacy = documentLike.querySelector("ytd-comments-header-renderer #count .count-text");
+  const text = clean(legacy?.textContent);
+  if (!text || /^(评论|comments?)$/iu.test(text)) return undefined;
+  if (/次观看|\bviews\b/iu.test(text)) return undefined;
+  return countFrom(text);
+}
+
 const youtubeReader: CommentReader = {
   read(documentLike) {
     const threads = Array.from(documentLike.querySelectorAll("ytd-comment-thread-renderer"));
@@ -561,7 +579,7 @@ const youtubeReader: CommentReader = {
         ...(permalink ? { permalink } : {}),
       });
     }
-    const expected = countFrom(documentLike.querySelector("ytd-comments-header-renderer #count")?.textContent);
+    const expected = youtubeShownCommentTotal(documentLike);
     return { comments, ...(expected ? { expectedCount: expected } : {}), anchor: threads.at(-1) ?? null };
   },
   prime(documentLike) {

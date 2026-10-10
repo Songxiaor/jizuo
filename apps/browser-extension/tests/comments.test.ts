@@ -190,6 +190,41 @@ describe("collectCommentsFromDocument", () => {
   });
 });
 
+describe("youtube comment total", () => {
+  const youtube = (textFor: (selector: string) => string | null) => ({
+    location: { href: "https://www.youtube.com/watch?v=jNQXAC9IVRw" },
+    defaultView: { scrollX: 0, scrollY: 0, scrollTo: () => undefined, getComputedStyle: () => ({ overflowY: "visible" }) },
+    documentElement: {},
+    body: {},
+    scrollingElement: { scrollHeight: 0 },
+    querySelector: (selector: string) => {
+      const text = textFor(selector);
+      return text === null ? null : { textContent: text };
+    },
+    querySelectorAll: () => [],
+  }) as unknown as Document;
+  const options = { sleep: async () => undefined, settleMillis: 0, idleRounds: 0 };
+
+  it("uses the count beside the comments title, not the view counter or the word 评论", async () => {
+    const documentLike = youtube((selector) => {
+      if (selector.includes("contextual-info")) return "1063万";
+      if (selector.includes("#count")) return "442,311,870次观看";
+      return null;
+    });
+    expect((await collectCommentsFromDocument(documentLike, 20, options))?.expectedCount).toBe(10_630_000);
+  });
+
+  it("omits the page total when the comments header has no number", async () => {
+    const documentLike = youtube((selector) => selector.includes("count-text") ? "评论" : null);
+    expect((await collectCommentsFromDocument(documentLike, 20, options))?.expectedCount).toBeUndefined();
+  });
+
+  it("still reads the old comments header when that node is the count", async () => {
+    const documentLike = youtube((selector) => selector.includes("count-text") ? "1,234 Comments" : null);
+    expect((await collectCommentsFromDocument(documentLike, 20, options))?.expectedCount).toBe(1234);
+  });
+});
+
 describe("page totals", () => {
   it("reads thousands separators and 万 units from comment headers", async () => {
     const header = (text: string) => ({
