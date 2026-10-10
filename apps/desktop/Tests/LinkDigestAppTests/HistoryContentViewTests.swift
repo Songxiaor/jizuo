@@ -180,6 +180,74 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(decision.contains("case .translation: pane = .translation"))
   }
 
+  /// 重新翻译开始时正文仍是旧译文；第一次翻译从原文开始，不出现空页。
+  func testRetranslationKeepsThePreviousBodyUntilNewTextArrives() {
+    let previous = "Swift 是一门高性能的系统编程语言。"
+    let source = "Swift is a high-performance system programming language."
+    XCTAssertEqual(
+      LiveReadingPlaceholder.translation(
+        saved: previous,
+        source: source,
+        incomingArrived: false,
+        runIsActive: true,
+        runIsCompleted: false
+      ),
+      .saved(previous)
+    )
+    XCTAssertFalse(previous.isEmpty)
+    XCTAssertEqual(
+      LiveReadingPlaceholder.translation(
+        saved: "   ",
+        source: source,
+        incomingArrived: false,
+        runIsActive: true,
+        runIsCompleted: false
+      ),
+      .source(source),
+      "没有旧译文时先显示原文"
+    )
+    XCTAssertEqual(
+      LiveReadingPlaceholder.translation(
+        saved: previous,
+        source: source,
+        incomingArrived: true,
+        runIsActive: true,
+        runIsCompleted: false
+      ),
+      .incoming
+    )
+    XCTAssertEqual(
+      LiveReadingPlaceholder.translation(
+        saved: previous,
+        source: source,
+        incomingArrived: true,
+        runIsActive: false,
+        runIsCompleted: false
+      ),
+      .saved(previous),
+      "失败或停止后回到旧译文"
+    )
+    XCTAssertEqual(
+      LiveReadingPlaceholder.summary(
+        saved: "旧总结",
+        incomingArrived: false,
+        runIsActive: true,
+        runIsCompleted: false
+      ),
+      .saved("旧总结"),
+      "重新总结开始时也不清空旧总结"
+    )
+    XCTAssertEqual(
+      LiveReadingPlaceholder.summary(
+        saved: nil,
+        incomingArrived: false,
+        runIsActive: true,
+        runIsCompleted: false
+      ),
+      .status
+    )
+  }
+
   /// 没标签和有一行标签必须同高，否则标签落下时表头下移。
   func testClassificationRowReservesSingleLineHeightWithOrWithoutTags() {
     XCTAssertEqual(ClassificationRowMetrics.singleLine, 20)

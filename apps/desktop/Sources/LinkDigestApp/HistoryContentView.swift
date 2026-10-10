@@ -4474,6 +4474,11 @@ private struct HistoryDetailView: View, Equatable {
   /// 点了总结/翻译、Run 还没变成可见态时，先把对应页签打开。
   /// 否则抖音图文只有「原文」，生成过程只能再挂一块预览卡片。
   @State private var pendingRunPane: ReadingPane?
+  /// 这一轮运行里，翻译已经写出完整的一行 / 总结已经有字。
+  /// 记下的是这次 `runStartedAt`：新一轮开始时对不上，正文继续留着旧结果，
+  /// 不会因为上一轮的标记把页面换成空的「正在开始」。
+  @State private var translationArrival: PerItem<Date>?
+  @State private var summaryArrival: PerItem<Date>?
   /// 阅读进度独立小模型：进度若放进本视图的 @State，每个滚动事件都会
   /// 重求值整个详情页——那是长文滚动掉帧的来源（见 ReadingProgressModel）。
   ///
@@ -5344,6 +5349,51 @@ private struct HistoryDetailView: View, Equatable {
     return appModel.runState.isActive
       || !appModel.runResultText.isEmpty
       || appModel.runHasFailure
+  }
+  private var runIsCompleted: Bool {
+    if case .completed = appModel.runState { return true }
+    return false
+  }
+  /// 这一轮翻译是否已经写出可以换上的正文。用开始时间对账，避免上一轮的标记
+  /// 在新一轮把旧译文立刻清掉。
+  private var translationIncomingIsArrived: Bool {
+    guard let started = appModel.runStartedAt else { return false }
+    return translationArrival?.value(for: detail.task.id) == started
+  }
+  private var summaryIncomingIsArrived: Bool {
+    guard let started = appModel.runStartedAt else { return false }
+    return summaryArrival?.value(for: detail.task.id) == started
+  }
+  /// 还没有旧译文时，翻译页先放的原文：和发给模型的那份相同。
+  private var translationHoldSourceText: String? {
+    let text = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+  }
+  /// 失败或停止后正文回到旧结果，原因仍留在正文上方这一行，不把整页换成空状态。
+  private var showsRestoredRunStatus: Bool {
+    showsLiveRunInReadingPane && !appModel.runState.isActive && !runIsCompleted
+  }
+  private func liveReadingPlaceholder(for pane: ReadingPane) -> LiveReadingPlaceholder.Display? {
+    guard showsLiveRunInReadingPane, liveRunReadingPane == pane else { return nil }
+    switch pane {
+    case .translation:
+      return LiveReadingPlaceholder.translation(
+        saved: translationArtifact?.bodyText,
+        source: translationHoldSourceText,
+        incomingArrived: translationIncomingIsArrived,
+        runIsActive: appModel.runState.isActive,
+        runIsCompleted: runIsCompleted
+      )
+    case .summary:
+      return LiveReadingPlaceholder.summary(
+        saved: summaryArtifact?.bodyText,
+        incomingArrived: summaryIncomingIsArrived,
+        runIsActive: appModel.runState.isActive,
+        runIsCompleted: runIsCompleted
+      )
+    case .source:
+      return nil
+    }
   }
   private var protectedTaskIDs: Set<TaskID> {
     var result: Set<TaskID> = []
@@ -7936,9 +7986,11 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 翻译进行中的翻译页：和翻完后同一套排版，边翻边换（2026-10-04 Syc）。
   ///
-  /// 还没写完第一行时（开始、思考、失败）沿用原来的状态页。之后：顶上一行进度，
-  /// 下面按层显示——转写层已译的段落按逐字稿排，没译到的原文淡色接在后面，译文
-  /// 到一段替换一段。只有「多写完一行」才重排，流式的每个拍点不碰这一大块。
+  /// 还没写出第一行时不进这里：有旧译文就继续显示旧译文，没有就先放原文
+  /// （`LiveReadingPlaceholder`）。空的「正在开始翻译」会把正文整块清掉大约几秒
+  /// （2026-10-10）。写出第一行之后：顶上一行进度，下面按层显示——转写层已译的
+  /// 段落按逐字稿排，没译到的原文淡色接在后面，译文到一段替换一段。只有「多写完
+  /// 一行」才重排，流式的每个拍点不碰这一大块。
   private var liveTranslationReadingBody: some View {
     LiveCompletedTextObserver(
       live: appModel.liveRunText,
@@ -8703,15 +8755,46 @@ private struct HistoryDetailView: View, Equatable {
     // 生成中的正文换成落库定稿：直接换。这一拍常和盖章提示的动画落在同一次更新里，
     // 新旧两版正文被顺带做成淡入淡出、上下错开叠在一起，翻完那一下整页重影（2026-10-09 Syc 录屏）。
     .animation(nil, value: showsLiveRunInReadingPane)
+    .background {
+      // 只在「还没有字 → 有字」这一下通知外层。流式拍点留在探针里，不把整页详情
+      // 按 token 重算。
+      if showsVisibleRun, liveRunReadingPane == pane, pane == .translation || pane == .summary {
+        LiveArrivalProbe(
+          live: appModel.liveRunText,
+          waitsForCompletedLine: pane == .translation
+        ) {
+          guard let started = appModel.runStartedAt else { return }
+          if pane == .translation {
+            if translationArrival?.value(for: detail.task.id) != started {
+              translationArrival = PerItem(taskID: detail.task.id, value: started)
+            }
+          } else if summaryArrival?.value(for: detail.task.id) != started {
+            summaryArrival = PerItem(taskID: detail.task.id, value: started)
+          }
+        }
+      }
+    }
   }
 
   @ViewBuilder
   private func readingPaneContent(_ pane: ReadingPane) -> some View {
     switch pane {
     case .summary, .translation:
-      if showsLiveRunInReadingPane, liveRunReadingPane == pane {
-        if pane == .translation { liveTranslationReadingBody } else { liveRunReadingBody }
+      let placeholder = liveReadingPlaceholder(for: pane)
+      if let placeholder, !placeholder.keepsSavedBody {
+        switch placeholder {
+        case .source(let text):
+          liveTranslationMarkdown(text)
+        case .incoming where pane == .translation:
+          liveTranslationReadingBody
+        default:
+          liveRunReadingBody
+        }
       } else if let artifact = artifact(for: pane), !artifact.bodyText.isEmpty {
+        if placeholder?.keepsSavedBody == true, showsRestoredRunStatus, liveRunReadingPane == pane {
+          liveTranslationStatusRow
+            .padding(.bottom, 10)
+        }
         if artifact.completeness == .partial {
           Label("\(paneLabel(pane))不完整", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
@@ -9971,6 +10054,88 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
 /// 两边都至少占这一行，标签出现时表头不再动。折行时仍按内容增高。
 enum ClassificationRowMetrics {
   static let singleLine: CGFloat = 20
+}
+
+/// 重新总结 / 重新翻译开始时，阅读页该显示什么。
+///
+/// 开跑后如果立刻换成「正在开始…」的空状态，已有的正文会整块消失几秒，再装回来。
+/// 有旧结果就留着，直到新内容真正写出来；翻译没有旧结果时先放原文，和逐段替换的
+/// 起点一致。失败或停止则回到旧结果，不把半截新正文留在页面上。
+enum LiveReadingPlaceholder {
+  enum Display: Equatable {
+    case saved(String)
+    case source(String)
+    case incoming
+    case status
+
+    var keepsSavedBody: Bool {
+      if case .saved = self { return true }
+      return false
+    }
+  }
+
+  static func translation(
+    saved: String?,
+    source: String?,
+    incomingArrived: Bool,
+    runIsActive: Bool,
+    runIsCompleted: Bool
+  ) -> Display {
+    let saved = nonempty(saved)
+    let source = nonempty(source)
+    if let saved, !runIsActive, !runIsCompleted { return .saved(saved) }
+    if runIsActive, !incomingArrived {
+      if let saved { return .saved(saved) }
+      if let source { return .source(source) }
+      return .status
+    }
+    if incomingArrived { return .incoming }
+    if let saved { return .saved(saved) }
+    return .status
+  }
+
+  static func summary(
+    saved: String?,
+    incomingArrived: Bool,
+    runIsActive: Bool,
+    runIsCompleted: Bool
+  ) -> Display {
+    let saved = nonempty(saved)
+    if let saved, !runIsActive, !runIsCompleted { return .saved(saved) }
+    if runIsActive, !incomingArrived, let saved { return .saved(saved) }
+    if incomingArrived { return .incoming }
+    return .status
+  }
+
+  private static func nonempty(_ text: String?) -> String? {
+    guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return text
+  }
+}
+
+/// 流式正文从「还没有可显示的新内容」变成「有了」时通知一次。
+/// 探针自己订阅拍点，外层详情只在这一下重绘。
+private struct LiveArrivalProbe: View {
+  @ObservedObject var live: LiveRunTextModel
+  /// 翻译要等写完一行再换正文；总结从第一个字就开始显示。
+  let waitsForCompletedLine: Bool
+  let onArrive: () -> Void
+
+  private var arrived: Bool {
+    if waitsForCompletedLine {
+      return !LiveTranslationPreview.completedText(of: live.text).isEmpty
+    }
+    return !live.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var body: some View {
+    Color.clear
+      .frame(width: 0, height: 0)
+      .onAppear { if arrived { onArrive() } }
+      .onChange(of: arrived) { _, isArrived in
+        if isArrived { onArrive() }
+      }
+  }
 }
 
 /// 详情顶上的大标题出不出。
