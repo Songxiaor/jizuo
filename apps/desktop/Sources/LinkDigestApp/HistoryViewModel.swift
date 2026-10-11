@@ -6681,7 +6681,7 @@ final class HistoryViewModel {
     // 同上：派生层不止听写一种，判据统一走 `captionSnapshot`。
     let sourceSnapshot = LayeredSourceDocument.captionSnapshot(in: detail.snapshots) ?? snapshot
     let sourceNote = MarkdownNoteFrontmatter.parse(sourceSnapshot.bodyText)
-    let body = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    let body = Self.exportBody(from: detail)
     func nonEmpty(_ value: String?) -> String? {
       guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
       return trimmed
@@ -6711,6 +6711,26 @@ final class HistoryViewModel {
 
     let base = sanitizedExportFilename(prepared.title)
     return (base, lines.joined(separator: "\n"))
+  }
+
+  /// 正文导出要带上读者在 App 里看得到的各层：配文、转写，以及最新一份总结和译文。
+  /// 「全部数据」仍走原来的 JSON，这里不改它。
+  nonisolated static func exportBody(from detail: HistoryDetailProjection) -> String {
+    var sections = [LayeredSourceDocument.modelInput(from: detail.snapshots)]
+    func latest(_ kind: RunKind, heading: String) {
+      guard let artifact = detail.runs.reversed().first(where: {
+        $0.run.kind == kind && !($0.artifact?.bodyText.isEmpty ?? true)
+      })?.artifact else { return }
+      let body = artifact.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !body.isEmpty else { return }
+      sections.append("## \(heading)\n\n\(body)")
+    }
+    latest(.summarize, heading: "总结")
+    latest(.translate, heading: "译文")
+    return sections
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
   }
 
   private func yamlQuoted(_ value: String) -> String {

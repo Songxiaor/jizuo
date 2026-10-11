@@ -128,6 +128,102 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertTrue(types.contains("Extension=\"png\""))
   }
 
+  /// 正文导出带上最新一份总结和译文；更早的同一种不重复。
+  func testExportBodyAppendsTheLatestSummaryAndTranslation() throws {
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "https://example.com/a", canonicalizationVersion: 1,
+      createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    )
+    let snapshot = ContentSnapshot(
+      id: ContentSnapshotID(), taskID: task.id, sequence: 1,
+      envelopeCreatedAtMilliseconds: 10, capturedAtMilliseconds: 10,
+      sourceKind: "browser_capture", sourceURL: task.canonicalURL, title: "例",
+      platform: "generic", captureMethod: "browser_capture", completeness: "complete",
+      bodyText: "原文很长", characterCount: 4, bodySHA256: String(repeating: "a", count: 64),
+      sourceLabel: "网页", usedCookie: false
+    )
+    func run(_ kind: RunKind, body: String, at: Int64) -> HistoryDetailProjection.RunDetail {
+      let value = HistoryRun(
+        id: RunID(), taskID: task.id, snapshotID: snapshot.id, idempotencyKey: body,
+        rerunOfRunID: nil, kind: kind, targetLanguage: nil, status: .completed,
+        providerProfileID: nil, providerKind: nil, providerBaseURL: nil, providerAPIMode: nil,
+        model: nil, createdAtMilliseconds: at, startedAtMilliseconds: at, finishedAtMilliseconds: at,
+        failureCode: nil, failureRetryable: nil, usageCost: RunUsageCost()
+      )
+      let artifact = HistoryArtifact(
+        id: ArtifactID(), runID: value.id, contentFormat: .markdown, completeness: .complete,
+        bodyText: body, createdAtMilliseconds: at, updatedAtMilliseconds: at
+      )
+      return .init(run: value, artifact: artifact)
+    }
+    let detail = HistoryDetailProjection(
+      task: task, snapshots: [snapshot],
+      runs: [run(.summarize, body: "旧总结", at: 1), run(.summarize, body: "新总结", at: 2), run(.translate, body: "译文一句", at: 3)]
+    )
+    let body = HistoryViewModel.exportBody(from: detail)
+    XCTAssertTrue(body.contains("原文很长"))
+    XCTAssertTrue(body.contains("## 总结\n\n新总结"))
+    XCTAssertTrue(body.contains("## 译文\n\n译文一句"))
+    XCTAssertFalse(body.contains("旧总结"))
+  }
+
+  /// 引用卡的机器标记在 Markdown、纯文本、PDF 里都变成可读文字。
+  @MainActor
+  func testQuotedTweetMarkerBecomesReadableText() throws {
+    let markdown = """
+    # 帖子
+
+    正文。
+
+    <!--LDQUOTE author="StepFun (@StepFun_ai)" url="https://x.com/StepFun_ai/status/1"-->
+    引用里的话。
+    <!--/LDQUOTE-->
+    """
+    let presented = ReadingDocumentExport.presentingMachineMarkers(markdown)
+    XCTAssertFalse(presented.contains("LDQUOTE"))
+    XCTAssertTrue(presented.contains("引用 StepFun (@StepFun_ai)"))
+    XCTAssertTrue(presented.contains("引用里的话。"))
+    XCTAssertTrue(presented.contains("https://x.com/StepFun_ai/status/1"))
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "linkdigest-note:abc", canonicalizationVersion: 1,
+      createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    )
+    let snapshot = ContentSnapshot(
+      id: ContentSnapshotID(), taskID: task.id, sequence: 1,
+      envelopeCreatedAtMilliseconds: 10, capturedAtMilliseconds: 10,
+      sourceKind: "user_note", sourceURL: task.canonicalURL, title: "帖子",
+      platform: "note", captureMethod: "user_note", completeness: "complete",
+      bodyText: markdown, characterCount: markdown.count, bodySHA256: String(repeating: "b", count: 64),
+      sourceLabel: "笔记", usedCookie: false
+    )
+    let context = ReadingDocumentExport.ExportColophonContext(
+      detail: HistoryDetailProjection(task: task, snapshots: [snapshot], runs: []), mindMap: nil
+    )
+    let plain = ReadingDocumentExport.cleanTextExport(composedMarkdown: markdown, format: .plainText, context: context)
+    XCTAssertFalse(plain.contains("LDQUOTE"))
+    XCTAssertTrue(plain.contains("引用里的话。"))
+    let styled = ReadingDocumentExport.styledDocument(
+      composedMarkdown: markdown, context: context, readingFont: .sans, localImageURLs: []
+    )
+    XCTAssertFalse(styled.string.contains("LDQUOTE"))
+    XCTAssertTrue(styled.string.contains("引用里的话。"))
+  }
+
+  /// 含阿拉伯字母的段落从右往左，中文段落保持从左往右。
+  func testArabicParagraphUsesRightToLeft() {
+    let styled = ReadingDocumentExport.attributedDocument(
+      markdown: "Charm loves open source\n\nنحنُ نحب المصادر المفتوحة",
+      readingFont: .sans
+    )
+    let text = styled.string as NSString
+    let arabic = text.range(of: "نحب").location
+    let english = text.range(of: "Charm").location
+    let arabicStyle = styled.attribute(.paragraphStyle, at: arabic, effectiveRange: nil) as? NSParagraphStyle
+    let englishStyle = styled.attribute(.paragraphStyle, at: english, effectiveRange: nil) as? NSParagraphStyle
+    XCTAssertEqual(arabicStyle?.baseWritingDirection, .rightToLeft)
+    XCTAssertNotEqual(englishStyle?.baseWritingDirection, .rightToLeft)
+  }
+
   func testPreparedExportDropsARepeatedOpeningTitle() {
     let title = "Claude Code 工程师刚放出一条 28 分钟实操视频，干货密度有点夸张："
     let body = """

@@ -97,7 +97,7 @@ enum ReadingDocumentExport {
     format: HistoryExportFormat,
     context: ExportColophonContext
   ) -> String {
-    let presented = cleaningExportCommentHeaders(composedMarkdown)
+    let presented = cleaningExportCommentHeaders(presentingMachineMarkers(composedMarkdown))
     let content: String
     switch format {
     case .plainText:
@@ -156,7 +156,7 @@ enum ReadingDocumentExport {
     readingFont: ResolvedReadingFont,
     localImageURLs: [URL]
   ) -> NSAttributedString {
-    let body = MarkdownNoteFrontmatter.parse(composedMarkdown).body
+    let body = MarkdownNoteFrontmatter.parse(presentingMachineMarkers(composedMarkdown)).body
     let document = NSMutableAttributedString(attributedString: attributedDocument(
       markdown: body.isEmpty ? composedMarkdown : body,
       readingFont: readingFont,
@@ -521,6 +521,9 @@ enum ReadingDocumentExport {
     paragraph.headIndent = headIndent
     paragraph.firstLineHeadIndent = firstLineIndent
     paragraph.lineSpacing = lineSpacing
+    if markdown.unicodeScalars.contains(where: { (0x0600...0x06FF).contains($0.value) }) {
+      paragraph.baseWritingDirection = .rightToLeft
+    }
     result.append(NSAttributedString(string: "\n"))
     if result.length > 0 {
       result.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: result.length))
@@ -624,6 +627,42 @@ enum ReadingDocumentExport {
       if split.rest.isEmpty { return indent + split.code }
       return indent + split.code + " " + split.rest
     }.joined(separator: "\n")
+  }
+
+  /// 引用卡的机器标记换成可读的一段：作者、正文、图片和原帖链接。
+  /// PDF 和 Word 原来会把它画成卡片，Markdown 里却留着 `<!--LDQUOTE-->`。
+  static func presentingMachineMarkers(_ markdown: String) -> String {
+    guard markdown.contains("<!--LDQUOTE ") else { return markdown }
+    var result = ""
+    var rest = markdown[...]
+    while let start = rest.range(of: "<!--LDQUOTE "),
+          let end = rest.range(of: "<!--/LDQUOTE-->", range: start.upperBound..<rest.endIndex) {
+      result += rest[..<start.lowerBound]
+      let block = String(rest[start.lowerBound..<end.upperBound])
+      result += readableQuotedTweet(block)
+      rest = rest[end.upperBound...]
+    }
+    result += rest
+    return result
+  }
+
+  private static func readableQuotedTweet(_ block: String) -> String {
+    guard let headerEnd = block.range(of: "-->"),
+          let footer = block.range(of: "<!--/LDQUOTE-->") else { return "" }
+    let header = block[..<headerEnd.lowerBound]
+    let inner = block[headerEnd.upperBound..<footer.lowerBound]
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    func attribute(_ name: String) -> String? {
+      guard let start = header.range(of: "\(name)=\"") else { return nil }
+      guard let close = header.range(of: "\"", range: start.upperBound..<header.endIndex) else { return nil }
+      let value = header[start.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespaces)
+      return value.isEmpty ? nil : String(value)
+    }
+    var lines: [String] = []
+    if let author = attribute("author") { lines.append("**引用 \(author)：**") }
+    if !inner.isEmpty { lines.append(inner) }
+    if let url = attribute("url") { lines.append(url) }
+    return lines.joined(separator: "\n\n")
   }
 
   /// md / txt：评论头去掉「回复层级 N」，机器时间改成本地「yyyy-MM-dd HH:mm」。
