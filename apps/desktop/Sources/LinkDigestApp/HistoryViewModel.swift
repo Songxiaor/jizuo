@@ -6738,32 +6738,43 @@ final class HistoryViewModel {
   }
 
   /// 用户已经选好路径。再点一次导出会取消上一份，避免两份一起写同一个路径。
-  /// 生成在后台；失败不写出文件，走现有的保存失败提示。
+  /// 排版必须留在主线程：`NSLayoutManager` 和系统的 Word 转换不能丢到后台。
+  /// 失败不写出文件，走现有的保存失败提示。
   func startStyledExport(_ job: StyledExportJob) {
     styledExportTask?.cancel()
     let token = UUID()
     styledExportToken = token
     isStyledExportRunning = true
     isExportSaveFailurePresented = false
-    styledExportTask = Task { [weak self] in
-      let outcome = await Task.detached(priority: .userInitiated) {
-        () -> Result<Data, Error> in
-        do {
-          return .success(try ReadingDocumentExport.backgroundData(for: job))
-        } catch {
-          return .failure(error)
-        }
-      }.value
-      guard !Task.isCancelled, let self, self.styledExportToken == token else { return }
+    styledExportTask = Task { @MainActor [weak self] in
+      await Task.yield()
+      guard let self, self.styledExportToken == token else { return }
+      let data: Data?
+      switch job.kind {
+      case .pdf:
+        data = ReadingDocumentExport.pdfData(from: ReadingDocumentExport.styledDocument(
+          composedMarkdown: job.markdown,
+          context: job.context,
+          readingFont: job.readingFont,
+          localImageURLs: job.localImageURLs
+        ))
+      case .docx:
+        data = try? ReadingDocumentExport.docxData(from: ReadingDocumentExport.styledDocument(
+          composedMarkdown: job.markdown,
+          context: job.context,
+          readingFont: job.readingFont,
+          localImageURLs: job.localImageURLs
+        ))
+      }
+      guard self.styledExportToken == token else { return }
       self.isStyledExportRunning = false
-      switch outcome {
-      case let .success(data):
-        do {
-          try ReadingDocumentExport.writePreparedExport(data, to: job.destination)
-        } catch {
-          self.failExportSave()
-        }
-      case .failure:
+      guard let data, !data.isEmpty else {
+        self.failExportSave()
+        return
+      }
+      do {
+        try ReadingDocumentExport.writePreparedExport(data, to: job.destination)
+      } catch {
         self.failExportSave()
       }
     }

@@ -6301,8 +6301,8 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  /// PDF / Word 先弹保存框，用户选定路径后再在后台生成。
-  /// 主线程只画题跋的章；分页和 Word 打包不占住界面。
+  /// PDF / Word 先弹保存框。用户选定路径后，再用原来的排版生成。
+  /// 排版对象不能离开主线程，所以生成仍在主线程，但已经不挡保存框出现。
   /// 纯文本导出仍走 `exportCleanText`，不改它的保存框时序。
   private func exportStyledDocument(_ kind: StyledExportKind) {
     guard let composed = model.composeExportMarkdown() else {
@@ -6320,15 +6320,13 @@ private struct HistoryDetailView: View, Equatable {
     let imageURLs = localImageURLs
     MenuSavePanel.present(panel) { url in
       guard let url else { return }
-      let seal = ReadingDocumentExport.exportSealImage(context: context, readingFont: font)
       let job = StyledExportJob(
         kind: kind,
         destination: url,
         markdown: markdown,
+        context: context,
         readingFont: font,
-        localImageURLs: imageURLs,
-        colophonText: context.isOwnWriting ? nil : context.text,
-        sealPNG: seal
+        localImageURLs: imageURLs
       )
       historyModel.startStyledExport(job)
     }
