@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 import LinkDigestCore
@@ -3610,5 +3611,58 @@ final class ProcessStepFailureVisibilityTests: XCTestCase {
     let body = source[bodyStart.lowerBound..<bodyEnd.lowerBound]
     XCTAssertTrue(body.contains("displayedSubtitle(state: state, subtitle: subtitle)"))
     XCTAssertTrue(body.contains("Text(shown)"), "失败原因要画成正文，不能只留在 .help")
+  }
+}
+
+@MainActor
+final class MenuSavePanelTests: XCTestCase {
+  func testSavePanelOpensAfterTheMenuActionReturns() {
+    let panel = NSSavePanel()
+    let expected = URL(fileURLWithPath: "/tmp/linkdigest-export.txt")
+    var ranDuringCall = false
+    let original = MenuSavePanel.run
+    MenuSavePanel.run = { _ in
+      ranDuringCall = true
+      return expected
+    }
+    defer { MenuSavePanel.run = original }
+    var received: URL?
+    let done = expectation(description: "panel")
+    MenuSavePanel.present(panel) { url in
+      received = url
+      done.fulfill()
+    }
+    XCTAssertFalse(ranDuringCall, "菜单动作还没返回就不能弹保存框")
+    wait(for: [done], timeout: 1)
+    XCTAssertEqual(received, expected)
+  }
+}
+
+@MainActor
+final class ReadingTextDeleteCommandTests: XCTestCase {
+  override func tearDown() {
+    HistoryDeleteCommandRouter.shared.handler = nil
+    super.tearDown()
+  }
+
+  func testReadOnlyTextSendsEditMenuDeleteToTheTrashConfirmation() {
+    let view = SelectableReadingTextView.SelfSizingTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 40))
+    view.isEditable = false
+    view.string = "只读正文"
+    var calls = 0
+    HistoryDeleteCommandRouter.shared.handler = { calls += 1 }
+    view.delete(nil)
+    XCTAssertEqual(calls, 1)
+    XCTAssertEqual(view.string, "只读正文")
+  }
+
+  func testEditableTextDoesNotTrashTheItem() {
+    let view = SelectableReadingTextView.SelfSizingTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 40))
+    view.isEditable = true
+    view.string = "可写"
+    var calls = 0
+    HistoryDeleteCommandRouter.shared.handler = { calls += 1 }
+    view.delete(nil)
+    XCTAssertEqual(calls, 0)
   }
 }

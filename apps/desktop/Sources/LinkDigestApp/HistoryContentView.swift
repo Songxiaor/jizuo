@@ -339,6 +339,12 @@ struct HistoryContentView: View {
       // 上一条 / 下一条原来挂在详情「⋯」菜单的菜单项上，快捷键跟着菜单走；菜单精简后改由菜单栏承担。
       .focusedSceneValue(\.selectPreviousItem, model.canSelectPrevious ? RunCurrentAction { model.selectAdjacent(offset: -1) } : nil)
       .focusedSceneValue(\.selectNextItem, model.canSelectNext ? RunCurrentAction { model.selectAdjacent(offset: 1) } : nil)
+      // 只读正文会吃掉菜单栏「编辑 → 删除」。这里把同一条确认交给那个文本视图。
+      .background(HistoryDeleteCommandBridge(
+        token: historyDeleteCommandToken,
+        enabled: model.canDelete,
+        action: { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) }
+      ))
       // Esc 和 ⌘[ 是同一件事：退一层。专注阅读里原来没有任何出口（只在「更多」菜单里，
       // 删掉正在读的那条后「更多」也灰了，只能退出 App）。
       .onExitCommand { if canGoBack { goBack() } }
@@ -513,7 +519,7 @@ struct HistoryContentView: View {
           .alert("无法删除这条历史记录", isPresented: $model.isDeleteFailurePresented) {
             Button("知道了") { model.dismissDeleteFailure() }
           } message: { Text("资料库里什么都没删，请稍后重试。") }
-          .alert("删除结果", isPresented: $model.isDeleteOutcomePresented) {
+          .alert(model.deleteOutcomeTitle, isPresented: $model.isDeleteOutcomePresented) {
             Button("知道了") { model.dismissDeleteOutcome() }
           } message: { Text(model.deleteOutcomeMessage) }
           .sheet(isPresented: $isNewSparkPresented) { newSparkSheet }
@@ -829,6 +835,13 @@ struct HistoryContentView: View {
     if model.imageTextRecognitionState == .recognizing,
        let taskID = model.imageTextRecognitionTaskID { result.insert(taskID) }
     return result
+  }
+
+  /// 选中项或「正在生成、不能删」的集合一变，就换成新的删除动作。
+  private var historyDeleteCommandToken: String {
+    let selected = model.selectedTaskIDs.map(\.rawValue).sorted().joined(separator: ",")
+    let protected = protectedTaskIDs.map(\.rawValue).sorted().joined(separator: ",")
+    return "\(model.canDelete)|\(selected)|\(protected)"
   }
 
   /// 「往库里放东西」的入口：链接、博主主页、本地文件、笔记。放在列表列头——
@@ -6253,7 +6266,10 @@ private struct HistoryDetailView: View, Equatable {
   /// 干净正文导出（md / txt）：与阅读区一致，不含 Core 档案元数据。
   /// 拼装逻辑在 `ReadingDocumentExport`（与界面共用，可测试）；这里只负责弹面板落盘。
   private func exportCleanText(_ format: HistoryExportFormat) {
-    guard let composed = model.composeExportMarkdown() else { return }
+    guard let composed = model.composeExportMarkdown() else {
+      model.failExportSave()
+      return
+    }
     let ext = format == .plainText ? "txt" : "md"
     let finalContent = ReadingDocumentExport.cleanTextExport(
       composedMarkdown: composed.markdown,
@@ -6264,12 +6280,18 @@ private struct HistoryDetailView: View, Equatable {
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = "\(composed.baseFilename).\(ext)"
-    guard panel.runModal() == .OK, let url = panel.url else { return }
-    do { try data.write(to: url) } catch { model.failExportSave() }
+    let historyModel = model
+    MenuSavePanel.present(panel) { url in
+      guard let url else { return }
+      do { try data.write(to: url) } catch { historyModel.failExportSave() }
+    }
   }
 
   private func exportStyledDocument(_ kind: StyledExportKind) {
-    guard let composed = model.composeExportMarkdown() else { return }
+    guard let composed = model.composeExportMarkdown() else {
+      model.failExportSave()
+      return
+    }
     let attributed = ReadingDocumentExport.styledDocument(
       composedMarkdown: composed.markdown,
       context: exportColophonContext,
@@ -6289,8 +6311,11 @@ private struct HistoryDetailView: View, Equatable {
     panel.canCreateDirectories = true
     panel.allowedContentTypes = [kind.contentType]
     panel.nameFieldStringValue = "\(composed.baseFilename).\(kind.fileExtension)"
-    guard panel.runModal() == .OK, let url = panel.url else { return }
-    do { try data.write(to: url) } catch { model.failExportSave() }
+    let historyModel = model
+    MenuSavePanel.present(panel) { url in
+      guard let url else { return }
+      do { try data.write(to: url) } catch { historyModel.failExportSave() }
+    }
   }
 
   /// Capsule tool strip under the title — product control, not system Disclosure.
@@ -10883,6 +10908,48 @@ private func historyStatus(_ status: RunStatus) -> String { switch status { case
 private func historyTokenBreakdown(_ usage: RunUsageCost?) -> String? {
   guard let usage, usage.inputTokens != nil || usage.outputTokens != nil else { return nil }
   return "输入 \(usage.inputTokens.map(String.init) ?? "—") / 输出 \(usage.outputTokens.map(String.init) ?? "—")"
+}
+
+/// 菜单栏「编辑 → 删除」在只读正文成为第一响应者时，系统会把动作交给文本视图，
+/// 文本视图什么都不做。详情把「移到回收站」的确认放进这里，文本视图再转交。
+@MainActor final class HistoryDeleteCommandRouter {
+  static let shared = HistoryDeleteCommandRouter()
+  var handler: (() -> Void)?
+}
+
+/// 跟着选中项更新删除动作。不能只在出现时登记一次：当时的闭包会抓住旧的选中集。
+private struct HistoryDeleteCommandBridge: View {
+  let token: String
+  let enabled: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Color.clear
+      .frame(width: 0, height: 0)
+      .accessibilityHidden(true)
+      .onAppear { publish() }
+      .onChange(of: token) { _, _ in publish() }
+      .onDisappear { HistoryDeleteCommandRouter.shared.handler = nil }
+  }
+
+  private func publish() {
+    HistoryDeleteCommandRouter.shared.handler = enabled ? action : nil
+  }
+}
+
+/// 从 SwiftUI 菜单里同步 `runModal()`，菜单还没收完，保存框会被立刻取消，窗口不出现。
+/// 等这一轮菜单事件结束再弹。测试可以换掉 `run`，不必真的打开系统保存框。
+@MainActor
+enum MenuSavePanel {
+  static var run: (NSSavePanel) -> URL? = { panel in
+    panel.runModal() == .OK ? panel.url : nil
+  }
+
+  static func present(_ panel: NSSavePanel, completion: @escaping @MainActor (URL?) -> Void) {
+    Task { @MainActor in
+      completion(run(panel))
+    }
+  }
 }
 
 /// Menu-command handle for focusing the sidebar search field (⌘F). Always

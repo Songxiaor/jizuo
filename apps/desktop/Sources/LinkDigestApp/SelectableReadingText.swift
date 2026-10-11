@@ -764,6 +764,16 @@ struct SelectableReadingTextView: NSViewRepresentable {
       return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
     }
 
+    /// 只读正文也实现了 `delete:`，所以菜单栏「编辑 → 删除」是亮的，但系统实现不改任何一个字。
+    /// 有选中条目时交给和详情「移到回收站」同一条确认。正在编辑的正文仍按字符删。
+    override func delete(_ sender: Any?) {
+      if !isEditable, let handler = HistoryDeleteCommandRouter.shared.handler {
+        handler()
+        return
+      }
+      super.delete(sender)
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
       // 必须在 super 之前读旧宽度：super 之后 frame.width 已经是新值。
       let widthChanged = abs(newSize.width - frame.width) > 0.5

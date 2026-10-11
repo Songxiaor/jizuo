@@ -91,6 +91,27 @@ final class HistoryTrashTests: XCTestCase {
     }
   }
 
+  /// 恢复只清掉删除标记。标签还挂在这条上，也不能把没有引用的标签行删掉。
+  func testRestoreKeepsTheTagsOnTheItem() throws {
+    try withRepository { repository, _ in
+      let item = try repository.acceptCapture(.init(
+        document: capture(url: "https://example.test/tagged", title: "带标签", body: "正文"),
+        receivedAtMilliseconds: 1_000
+      ))
+      _ = try repository.addTags(["夜测标签"], to: item.taskID)
+      try repository.moveToTrash(taskIDs: [item.taskID])
+      let whileTrashed = try repository.detail(taskID: item.taskID).tags.map(\.name)
+      XCTAssertTrue(whileTrashed.contains("夜测标签"), "进回收站时标签不该先被摘掉：\(whileTrashed)")
+
+      let restored = try repository.restoreFromTrash(taskIDs: [item.taskID])
+      XCTAssertEqual(restored, [item.taskID])
+      let after = try repository.detail(taskID: item.taskID).tags.map(\.name)
+      XCTAssertTrue(after.contains("夜测标签"), "恢复之后标签还在：\(after)")
+      let count = try repository.navigationCounts().tags.first { $0.tag.name == "夜测标签" }?.count
+      XCTAssertEqual(count, 1, "侧栏标签计数要跟着回来")
+    }
+  }
+
   func testSearchCannotFindTrashedTask() throws {
     try withRepository { repository, _ in
       let removed = try repository.acceptCapture(.init(

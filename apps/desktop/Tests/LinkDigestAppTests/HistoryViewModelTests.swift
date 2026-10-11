@@ -2298,6 +2298,55 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertNotNil(model.faviconImageURL(for: fresh))
   }
 
+  /// 回收站里点「恢复」只把条目放回来。提示标题不能写成「删除结果」，标签也不能少。
+  func testRestoreSaysRecoveredAndKeepsTags() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-restore-tags-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-10-11T00:00:00Z",
+        origin: .manualLink,
+        url: "https://example.test/restore-tags",
+        title: "要恢复的",
+        platform: "generic",
+        method: "rendered_dom",
+        text: "正文还在。",
+        completeness: "complete",
+        capturedAt: "2026-10-11T00:00:00Z",
+        sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+    _ = try repository.addTags(["夜测标签"], to: accepted.taskID)
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskIDs.contains(accepted.taskID) && model.canDelete }
+
+    model.requestDeletion()
+    XCTAssertTrue(model.isDeleteConfirmationPresented)
+    XCTAssertEqual(model.deletionConfirmationTitle, "移到回收站？")
+    model.confirmDeletion()
+    await waitUntil(timeout: .seconds(3)) { model.trashCount() == 1 && !model.isDeleting }
+
+    model.selectScope(.trash)
+    await waitUntil(timeout: .seconds(3)) {
+      model.selectedScope == .trash && model.rows.contains { $0.taskID == accepted.taskID }
+    }
+    model.restoreFromTrash(taskIDs: [accepted.taskID])
+    await waitUntil(timeout: .seconds(3)) { model.isDeleteOutcomePresented }
+
+    XCTAssertEqual(model.deleteOutcomeTitle, "已恢复")
+    XCTAssertTrue(model.deleteOutcomeMessage.hasPrefix("已恢复"), model.deleteOutcomeMessage)
+    XCTAssertFalse(model.deleteOutcomeMessage.contains("已删除"))
+    let names = try repository.detail(taskID: accepted.taskID).tags.map(\.name)
+    XCTAssertTrue(names.contains("夜测标签"), "恢复没有删标签：\(names)")
+  }
+
   private func waitUntil(timeout: Duration = .seconds(1), file: StaticString = #filePath, line: UInt = #line, _ condition: @escaping @MainActor () -> Bool) async {
     let clock = ContinuousClock(), deadline = clock.now + timeout
     while !condition() && clock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }

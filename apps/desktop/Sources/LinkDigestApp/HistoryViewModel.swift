@@ -1057,6 +1057,7 @@ final class HistoryViewModel {
   var isDeleteFailurePresented = false
   var isProtectedDeletionAlertPresented = false
   var isDeleteOutcomePresented = false
+  private(set) var deleteOutcomeTitle = ""
   private(set) var deleteOutcomeMessage = ""
   private(set) var isDeleting = false
   var isBatchSummaryConfirmationPresented = false
@@ -2191,7 +2192,7 @@ final class HistoryViewModel {
     listErrorCode = nil; detailErrorCode = nil; deleteErrorCode = nil; tagErrorCode = nil
     pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []; pendingDeletionIsPermanent = false
     isDeleteConfirmationPresented = false; isDeleteFailurePresented = false; isProtectedDeletionAlertPresented = false
-    isDeleteOutcomePresented = false; deleteOutcomeMessage = ""
+    isDeleteOutcomePresented = false; deleteOutcomeTitle = ""; deleteOutcomeMessage = ""
     isLoadingNextPage = false; isDeleting = false
     batchSummaryTask?.cancel(); batchSummaryTask = nil; batchSummaryProgress = nil
     autoTitleLocalizationTask?.cancel(); autoTitleLocalizationTask = nil
@@ -6757,7 +6758,7 @@ final class HistoryViewModel {
   }
   func dismissDeleteFailure() { isDeleteFailurePresented = false }
   func dismissProtectedDeletionAlert() { isProtectedDeletionAlertPresented = false }
-  func dismissDeleteOutcome() { isDeleteOutcomePresented = false; deleteOutcomeMessage = "" }
+  func dismissDeleteOutcome() { isDeleteOutcomePresented = false; deleteOutcomeTitle = ""; deleteOutcomeMessage = "" }
 
   func confirmDeletion(protectedTaskIDs: Set<TaskID> = []) {
     guard !pendingDeletionTaskIDs.isEmpty, let history, !isReadOnly, !isDeleting else {
@@ -8739,6 +8740,9 @@ final class HistoryViewModel {
         var parts = ["\(verb) \(batch.deletedTaskIDs.count) 条"]
         if failedCount > 0 { parts.append("\(failedCount) 条失败") }
         if protectedCount > 0 { parts.append("\(protectedCount) 条正在生成，已跳过") }
+        // 恢复成功时正文本来就是「已恢复 N 条」，标题却写「删除结果」。
+        // 走查里这扇窗被读成「删了标签」。标签一行都没动，标题不能再说删除。
+        deleteOutcomeTitle = restoredFromTrash ? "已恢复" : "删除结果"
         deleteOutcomeMessage = parts.joined(separator: "，") + "。"
         isDeleteOutcomePresented = true
       }
