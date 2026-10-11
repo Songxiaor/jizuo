@@ -714,18 +714,6 @@ struct HistoryContentView: View {
         // 添加去列表列头。顶栏只留「当前这一条」的操作。
         // 批量总结进行中：进度和停止按钮必须一直可见，否则「跑了十几分钟、
         // 现在到哪了、能不能停」全靠猜。
-        if model.isStyledExportRunning {
-          HStack(spacing: 7) {
-            ProgressView().controlSize(.small)
-            Text("正在导出")
-              .lineLimit(1)
-          }
-            .themedFont(.callout, weight: .medium)
-            .foregroundStyle(theme.secondaryText)
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(theme.info.opacity(0.10), in: Capsule())
-            .accessibilityIdentifier("styled-export-progress")
-        }
         if model.isBatchSummarizing {
           HStack(spacing: 7) {
             ProgressView().controlSize(.small)

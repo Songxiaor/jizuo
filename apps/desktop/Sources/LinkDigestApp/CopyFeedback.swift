@@ -6,6 +6,8 @@ import SwiftUI
 @MainActor final class CopyFeedbackController: ObservableObject {
   static let shared = CopyFeedbackController()
   @Published private(set) var isVisible = false
+  @Published private(set) var message = "已复制"
+  @Published private(set) var symbol = "checkmark.circle.fill"
   private var hideTask: Task<Void, Never>?
 
   /// 写剪贴板并弹提示；所有 App 内复制动作统一走这里。
@@ -21,10 +23,34 @@ import SwiftUI
   /// 一来这里包一层、视图上再挂一个是双重动画；二来「减弱动态效果」是
   /// 环境值，只有视图取得到，controller 里包死的曲线绕不过那个设置。
   func flash() {
+    show("已复制", symbol: "checkmark.circle.fill", autoHideAfter: .milliseconds(1_200))
+  }
+
+  /// PDF / Word 选定路径后先显示这句。主线程接着就要去生成，所以不放转圈。
+  func showGenerating(_ kind: StyledExportKind) {
+    let name = kind == .pdf ? "PDF" : "Word"
+    show("正在生成 \(name)…", symbol: "doc", autoHideAfter: nil)
+  }
+
+  /// 文件已经写好。沿用同一颗药丸，换成完成的说法。
+  func showExported(_ kind: StyledExportKind) {
+    let name = kind == .pdf ? "PDF" : "Word"
+    show("已导出 \(name)", symbol: "checkmark.circle.fill", autoHideAfter: .milliseconds(1_200))
+  }
+
+  func hide() {
     hideTask?.cancel()
+    isVisible = false
+  }
+
+  private func show(_ message: String, symbol: String, autoHideAfter: Duration?) {
+    hideTask?.cancel()
+    self.message = message
+    self.symbol = symbol
     isVisible = true
+    guard let autoHideAfter else { return }
     hideTask = Task { [weak self] in
-      try? await Task.sleep(for: .milliseconds(1_200))
+      try? await Task.sleep(for: autoHideAfter)
       guard !Task.isCancelled else { return }
       self?.isVisible = false
     }
@@ -40,7 +66,7 @@ struct CopyFeedbackOverlay: View {
     VStack {
       Spacer()
       if controller.isVisible {
-        Label("已复制", systemImage: "checkmark.circle.fill")
+        Label(controller.message, systemImage: controller.symbol)
           .themedFont(.callout, weight: .medium)
           .padding(.vertical, 8).padding(.horizontal, 16)
           .background(.regularMaterial, in: Capsule())

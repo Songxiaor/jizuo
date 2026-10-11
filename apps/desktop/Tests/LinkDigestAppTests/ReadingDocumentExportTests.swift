@@ -311,12 +311,55 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertTrue(generated.contains("styledDocument("))
     XCTAssertTrue(generated.contains("pdfData(from:"))
     XCTAssertTrue(generated.contains("docxData(from:"))
+    XCTAssertLessThan(
+      generated.range(of: "showGenerating")?.lowerBound ?? generated.endIndex,
+      generated.range(of: "await Task.yield")?.lowerBound ?? generated.startIndex
+    )
+    XCTAssertLessThan(
+      generated.range(of: "await Task.yield")?.lowerBound ?? generated.endIndex,
+      generated.range(of: "pdfData(from:")?.lowerBound ?? generated.startIndex
+    )
     let plain = try XCTUnwrap(source.range(of: "private func exportCleanText"))
     let plainBody = source[plain.lowerBound..<styled.lowerBound]
     XCTAssertLessThan(
       plainBody.range(of: "cleanTextExport")?.lowerBound ?? plainBody.endIndex,
       plainBody.range(of: "MenuSavePanel.present")?.lowerBound ?? plainBody.startIndex
     )
+  }
+
+  /// 选定路径后先显示「正在生成」，让出一拍给界面画出来，完成后再换成「已导出」。
+  /// 失败时收起这句，改走原来的保存失败说明。生成本身不放转圈。
+  func testGeneratingNoticeAppearsBeforeTheFileAndFailureUsesTheExistingAlert() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryViewModel.swift"),
+      encoding: .utf8
+    )
+    let start = try XCTUnwrap(source.range(of: "func startStyledExport"))
+    let body = source[start.lowerBound...].prefix(2_200)
+    XCTAssertLessThan(
+      body.range(of: "showGenerating")?.lowerBound ?? body.endIndex,
+      body.range(of: "pdfData(from:")?.lowerBound ?? body.startIndex
+    )
+    XCTAssertLessThan(
+      body.range(of: "writePreparedExport")?.lowerBound ?? body.endIndex,
+      body.range(of: "showExported")?.lowerBound ?? body.startIndex
+    )
+    XCTAssertTrue(body.contains("CopyFeedbackController.shared.hide()"))
+    XCTAssertTrue(body.contains("failExportSave()"))
+    XCTAssertFalse(body.contains("ProgressView"))
+    let feedback = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/CopyFeedback.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(feedback.contains("正在生成"))
+    XCTAssertTrue(feedback.contains("已导出"))
+    XCTAssertTrue(feedback.contains("PDF"))
+    XCTAssertTrue(feedback.contains("Word"))
+    XCTAssertFalse(feedback.contains("ProgressView"))
   }
 
   /// 保存框之后生成的文件必须和原来的排版一致：白底、时间戳仍是浅色、段落仍有间距。

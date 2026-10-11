@@ -6746,6 +6746,7 @@ final class HistoryViewModel {
     styledExportToken = token
     isStyledExportRunning = true
     isExportSaveFailurePresented = false
+    CopyFeedbackController.shared.showGenerating(job.kind)
     styledExportTask = Task { @MainActor [weak self] in
       await Task.yield()
       guard let self, self.styledExportToken == token else { return }
@@ -6769,12 +6770,15 @@ final class HistoryViewModel {
       guard self.styledExportToken == token else { return }
       self.isStyledExportRunning = false
       guard let data, !data.isEmpty else {
+        CopyFeedbackController.shared.hide()
         self.failExportSave()
         return
       }
       do {
         try ReadingDocumentExport.writePreparedExport(data, to: job.destination)
+        CopyFeedbackController.shared.showExported(job.kind)
       } catch {
+        CopyFeedbackController.shared.hide()
         self.failExportSave()
       }
     }
