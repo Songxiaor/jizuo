@@ -2444,8 +2444,20 @@ enum MarkdownPresentation {
     }.joined(separator: "`")
   }
 
+  /// 没有本地缓存的图片不能嵌进 PDF / Word。留下说明或链接，不留一块空白。
   private static func removingImageTokens(_ text: String) -> String {
-    replacing(#"!\[[^\]]*\]\([^)\n]*\)"#, in: text, with: "")
+    guard let expression = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(([^)\n]*)\)"#) else { return text }
+    let matches = expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed()
+    var result = text
+    for match in matches {
+      guard let whole = Range(match.range, in: result) else { continue }
+      let alt = Range(match.range(at: 1), in: result).map { String(result[$0]) } ?? ""
+      let source = Range(match.range(at: 2), in: result).map { String(result[$0]) } ?? ""
+      let label = alt.trimmingCharacters(in: .whitespaces)
+      let replacement = label.isEmpty ? "[图片 \(source)]" : "[图片 \(label)]"
+      result.replaceSubrange(whole, with: replacement)
+    }
+    return result
   }
 
   private static func replacingLinks(_ text: String) -> String {

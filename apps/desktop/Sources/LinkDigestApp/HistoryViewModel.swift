@@ -6713,24 +6713,56 @@ final class HistoryViewModel {
     return (base, lines.joined(separator: "\n"))
   }
 
-  /// 正文导出要带上读者在 App 里看得到的各层：配文、转写，以及最新一份总结和译文。
+  /// 正文导出的顺序：总结、原文、译文、评论。
+  /// 没有总结或译文就不出现空标题。评论只在最后出现一次；
+  /// 译文里如果又带了一遍评论，挪到「评论（译文）」，不再整段重复。
   /// 「全部数据」仍走原来的 JSON，这里不改它。
   nonisolated static func exportBody(from detail: HistoryDetailProjection) -> String {
-    var sections = [LayeredSourceDocument.modelInput(from: detail.snapshots)]
-    func latest(_ kind: RunKind, heading: String) {
-      guard let artifact = detail.runs.reversed().first(where: {
+    func latest(_ kind: RunKind) -> String? {
+      guard let body = detail.runs.reversed().first(where: {
         $0.run.kind == kind && !($0.artifact?.bodyText.isEmpty ?? true)
-      })?.artifact else { return }
-      let body = artifact.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !body.isEmpty else { return }
-      sections.append("## \(heading)\n\n\(body)")
+      })?.artifact?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty else { return nil }
+      return body
     }
-    latest(.summarize, heading: "总结")
-    latest(.translate, heading: "译文")
-    return sections
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
-      .joined(separator: "\n\n")
+    let source = splittingComments(from: LayeredSourceDocument.modelInput(from: detail.snapshots))
+    let translation = latest(.translate).map(splittingComments(from:))
+    var sections: [String] = []
+    if let summary = latest(.summarize) {
+      sections.append("## 总结\n\n\(demotingHeadings(summary))")
+    }
+    if !source.article.isEmpty { sections.append(source.article) }
+    if let article = translation?.article, !article.isEmpty {
+      sections.append("## 译文\n\n\(demotingHeadings(article))")
+    }
+    if !source.comments.isEmpty {
+      var comments = source.comments
+      if let translated = translation?.comments, !translated.isEmpty {
+        comments += "\n\n### 评论（译文）\n\n" + demotingHeadings(translated, levels: 1)
+      }
+      sections.append(comments)
+    }
+    return sections.joined(separator: "\n\n")
+  }
+
+  /// 总结和译文里的标题降一级，让「总结 / 原文 / 译文 / 评论」保持同级。
+  private nonisolated static func demotingHeadings(_ markdown: String, levels: Int = 1) -> String {
+    markdown.components(separatedBy: "\n").map { line in
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      guard trimmed.hasPrefix("#"), !trimmed.hasPrefix("####") else { return line }
+      let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+      return indent + String(repeating: "#", count: levels) + trimmed
+    }.joined(separator: "\n")
+  }
+
+  /// 原文或译文里的「## 评论」整段拆出来。认不出评论结构就整篇当正文。
+  private nonisolated static func splittingComments(from markdown: String) -> (article: String, comments: String) {
+    guard let range = MarkdownPresentation.structuredCommentRange(in: markdown) else {
+      return (markdown.trimmingCharacters(in: .whitespacesAndNewlines), "")
+    }
+    return (
+      markdown[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines),
+      markdown[range].trimmingCharacters(in: .whitespacesAndNewlines)
+    )
   }
 
   private func yamlQuoted(_ value: String) -> String {

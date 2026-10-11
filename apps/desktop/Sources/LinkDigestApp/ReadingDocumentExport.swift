@@ -193,8 +193,9 @@ enum ReadingDocumentExport {
     }
     guard onlyTail else { return }
     let previous = filled[filled.count - 2]
-    // 让出约四行正文；末页本来只有一行落款，放得下。
-    previous.size = CGSize(width: previous.size.width, height: max(contentHeight * 0.5, contentHeight - 96))
+    // 末页只有题跋时，把上一页让出大约四成。一行落款让 96 点就够，
+    // 但末尾是大图时 96 点带不动，题跋仍会单独占一页。
+    previous.size = CGSize(width: previous.size.width, height: contentHeight * 0.6)
     layoutManager.ensureLayout(for: last)
   }
 

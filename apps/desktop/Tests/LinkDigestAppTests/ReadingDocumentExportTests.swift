@@ -139,7 +139,7 @@ final class ReadingDocumentExportTests: XCTestCase {
       envelopeCreatedAtMilliseconds: 10, capturedAtMilliseconds: 10,
       sourceKind: "browser_capture", sourceURL: task.canonicalURL, title: "例",
       platform: "generic", captureMethod: "browser_capture", completeness: "complete",
-      bodyText: "原文很长", characterCount: 4, bodySHA256: String(repeating: "a", count: 64),
+      bodyText: "原文很长\n\n## 评论（已保存 1 条）\n\n- **甲** · 赞 1 · 2026-10-03T23:30:06.000Z · [原评论](https://example.com/c/1) · 回复层级 0\n  原评一句", characterCount: 90, bodySHA256: String(repeating: "a", count: 64),
       sourceLabel: "网页", usedCookie: false
     )
     func run(_ kind: RunKind, body: String, at: Int64) -> HistoryDetailProjection.RunDetail {
@@ -158,13 +158,26 @@ final class ReadingDocumentExportTests: XCTestCase {
     }
     let detail = HistoryDetailProjection(
       task: task, snapshots: [snapshot],
-      runs: [run(.summarize, body: "旧总结", at: 1), run(.summarize, body: "新总结", at: 2), run(.translate, body: "译文一句", at: 3)]
+      runs: [
+        run(.summarize, body: "旧总结", at: 1),
+        run(.summarize, body: "## 要点\n\n新总结", at: 2),
+        run(.translate, body: "译文一句\n\n## 评论（已保存 1 条）\n\n- **甲** · 赞 1 · 2026-10-03T23:30:06.000Z · [原评论](https://example.com/c/1) · 回复层级 0\n  译评一句", at: 3),
+      ]
     )
     let body = HistoryViewModel.exportBody(from: detail)
-    XCTAssertTrue(body.contains("原文很长"))
-    XCTAssertTrue(body.contains("## 总结\n\n新总结"))
-    XCTAssertTrue(body.contains("## 译文\n\n译文一句"))
+    let summary = try XCTUnwrap(body.range(of: "## 总结"))
+    let article = try XCTUnwrap(body.range(of: "原文很长"))
+    let translation = try XCTUnwrap(body.range(of: "## 译文"))
+    let comments = try XCTUnwrap(body.range(of: "## 评论"))
+    XCTAssertLessThan(summary.lowerBound, article.lowerBound)
+    XCTAssertLessThan(article.lowerBound, translation.lowerBound)
+    XCTAssertLessThan(translation.lowerBound, comments.lowerBound)
+    XCTAssertEqual(body.components(separatedBy: "\n").filter { $0.hasPrefix("## 评论") }.count, 1)
+    XCTAssertTrue(body.contains("### 要点"))
+    XCTAssertTrue(body.contains("### 评论（译文）"))
+    XCTAssertTrue(body.contains("译评一句"))
     XCTAssertFalse(body.contains("旧总结"))
+    XCTAssertFalse(body[translation.upperBound..<comments.lowerBound].contains("译评一句"))
   }
 
   /// 引用卡的机器标记在 Markdown、纯文本、PDF 里都变成可读文字。
