@@ -279,4 +279,178 @@ final class ReadingDocumentExportTests: XCTestCase {
     attachment.bounds = CGRect(x: 0, y: 0, width: width, height: height)
     return NSAttributedString(attachment: attachment)
   }
+
+  /// 保存框先出现：PDF / Word 入口在弹框之前不再生成整份文件。
+  /// 纯文本导出仍在弹框前写好内容，这条不能跟着改。
+  func testStyledExportPresentsTheSavePanelBeforeGenerating() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    let styled = try XCTUnwrap(source.range(of: "private func exportStyledDocument"))
+    let next = source.range(of: "private static let noteTitleFontSize", range: styled.upperBound..<source.endIndex)?.lowerBound
+      ?? source.endIndex
+    let body = source[styled.lowerBound..<next]
+    XCTAssertLessThan(
+      body.range(of: "MenuSavePanel.present")?.lowerBound ?? body.endIndex,
+      body.range(of: "startStyledExport")?.lowerBound ?? body.startIndex
+    )
+    XCTAssertFalse(body.contains("pdfData(from:"))
+    XCTAssertFalse(body.contains("docxData(from:"))
+    let plain = try XCTUnwrap(source.range(of: "private func exportCleanText"))
+    let plainBody = source[plain.lowerBound..<styled.lowerBound]
+    XCTAssertLessThan(
+      plainBody.range(of: "cleanTextExport")?.lowerBound ?? plainBody.endIndex,
+      plainBody.range(of: "MenuSavePanel.present")?.lowerBound ?? plainBody.startIndex
+    )
+  }
+
+  func testBackgroundPDFAndDocxCarryTheBodyAndStayOffTheMainActorPath() throws {
+    let job = StyledExportJob(
+      kind: .pdf,
+      destination: URL(fileURLWithPath: "/tmp/unused.pdf"),
+      markdown: markdown + "\n\n见 [集中帖](https://example.test/a)。",
+      readingFont: .sans,
+      localImageURLs: [],
+      colophonText: "丙午年九月廿八日　记",
+      sealPNG: nil
+    )
+    let pdf = try ReadingDocumentExport.backgroundData(for: job)
+    XCTAssertTrue(pdf.starts(with: Array("%PDF".utf8)))
+    let pdfText = String(decoding: pdf, as: UTF8.self)
+    XCTAssertGreaterThan(pdfText.components(separatedBy: "/Type /Page").count - 1, 0)
+    let long = Array(repeating: "这是一段用于分页测试的正文，长度足够把多页填满。", count: 400).joined(separator: "\n\n")
+    var longJob = job
+    longJob.markdown = long
+    longJob.colophonText = "丙午年九月廿八日　记"
+    let longPDF = try ReadingDocumentExport.backgroundData(for: longJob)
+    let longText = String(decoding: longPDF, as: UTF8.self)
+    XCTAssertGreaterThan(longText.components(separatedBy: "/Type /Page").count - 1, 1)
+    var word = job
+    word.kind = .docx
+    let docx = try ReadingDocumentExport.backgroundData(for: word)
+    XCTAssertTrue(docx.starts(with: [0x50, 0x4B]))
+    let unpacked = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-bg-docx-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: unpacked, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: unpacked) }
+    let zipURL = unpacked.appendingPathComponent("in.docx")
+    try docx.write(to: zipURL)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+    process.arguments = ["-q", "-o", zipURL.path, "-d", unpacked.path]
+    try process.run()
+    process.waitUntilExit()
+    let xml = try String(contentsOf: unpacked.appendingPathComponent("word/document.xml"), encoding: .utf8)
+    XCTAssertTrue(xml.contains("一、标题层级"))
+    XCTAssertTrue(xml.contains("<w:b/>"))
+    XCTAssertTrue(xml.contains("丙午年九月廿八日"))
+    XCTAssertFalse(xml.contains("**加粗**"))
+  }
+
+  /// 手动计时，不进日常测试。设 LINKDIGEST_EXPORT_MEASURE=1 才跑。
+  /// 正文从隔离副本只读取出，结果写到 /tmp，不碰正式库。
+  func testMeasureLongArticleExportWhenRequested() throws {
+    guard ProcessInfo.processInfo.environment["LINKDIGEST_EXPORT_MEASURE"] == "1" else {
+      throw XCTSkip("手动计时")
+    }
+    let markdown = try String(
+      contentsOf: URL(fileURLWithPath: "/tmp/linkdigest-export-measure/long.md"),
+      encoding: .utf8
+    )
+    let out = URL(fileURLWithPath: "/tmp/linkdigest-export-measure", isDirectory: true)
+    let clock = ContinuousClock()
+    func ms(_ duration: Duration) -> String {
+      String(format: "%.1f", Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15)
+    }
+    let oldStart = clock.now
+    let attributed = ReadingDocumentExport.attributedDocument(markdown: markdown, readingFont: .sans)
+    let composed = clock.now
+    let pdf = try XCTUnwrap(ReadingDocumentExport.pdfData(from: attributed))
+    let pdfDone = clock.now
+    let docx = try ReadingDocumentExport.docxData(from: attributed)
+    let docxDone = clock.now
+    try pdf.write(to: out.appendingPathComponent("old.pdf"))
+    try docx.write(to: out.appendingPathComponent("old.docx"))
+    var job = StyledExportJob(
+      kind: .pdf,
+      destination: out.appendingPathComponent("new.pdf"),
+      markdown: markdown,
+      readingFont: .sans,
+      localImageURLs: [],
+      colophonText: "丙午年九月廿八日　记",
+      sealPNG: nil
+    )
+    let newPDFStart = clock.now
+    try ReadingDocumentExport.writeBackgroundExport(job)
+    let newPDFDone = clock.now
+    job.kind = .docx
+    job.destination = out.appendingPathComponent("new.docx")
+    let newDocxStart = clock.now
+    try ReadingDocumentExport.writeBackgroundExport(job)
+    let newDocxDone = clock.now
+    let newPDF = try Data(contentsOf: out.appendingPathComponent("new.pdf"))
+    let marker = Data("/Type /Page".utf8)
+    var pages = 0
+    var cursor = newPDF.startIndex
+    while let found = newPDF[cursor...].range(of: marker) {
+      pages += 1
+      cursor = found.upperBound
+    }
+    print("MEASURE chars \(markdown.count)")
+    print("MEASURE old-compose-ms \(ms(composed - oldStart))")
+    print("MEASURE old-pdf-ms \(ms(pdfDone - composed)) bytes \(pdf.count)")
+    print("MEASURE old-docx-ms \(ms(docxDone - pdfDone)) bytes \(docx.count)")
+    print("MEASURE old-before-panel-ms \(ms(docxDone - oldStart))")
+    print("MEASURE new-pdf-ms \(ms(newPDFDone - newPDFStart)) bytes \(newPDF.count) pages \(pages)")
+    print("MEASURE new-docx-ms \(ms(newDocxDone - newDocxStart))")
+  }
+
+  func testOrphanColophonPullsFourLinesFromThePreviousPage() {
+    let pages = ReadingDocumentExport.pagesAfterPullingOrphanTail(
+      lineCounts: [40, 1],
+      lastPageIsColophonOnly: true
+    )
+    XCTAssertEqual(pages, [36, 5])
+    XCTAssertEqual(
+      ReadingDocumentExport.pagesAfterPullingOrphanTail(lineCounts: [40, 8], lastPageIsColophonOnly: false),
+      [40, 8]
+    )
+  }
+
+  func testBackgroundExportWritesOnlyAfterSuccess() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-bg-write-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let destination = directory.appendingPathComponent("稿.pdf")
+    var job = StyledExportJob(
+      kind: .pdf,
+      destination: destination,
+      markdown: markdown,
+      readingFont: .sans,
+      localImageURLs: [],
+      colophonText: nil,
+      sealPNG: nil
+    )
+    try ReadingDocumentExport.writeBackgroundExport(job)
+    let written = try Data(contentsOf: destination)
+    XCTAssertTrue(written.starts(with: Array("%PDF".utf8)))
+    var leftovers = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+    XCTAssertEqual(leftovers.map(\.lastPathComponent), ["稿.pdf"])
+
+    job.kind = .docx
+    job.destination = directory.appendingPathComponent("坏.docx")
+    // 坏图走现有嵌入失败：故意给一张解不开的图，不能留下缺图文件。
+    let broken = directory.appendingPathComponent("broken.png")
+    try Data("not-a-png".utf8).write(to: broken)
+    job.markdown = "前文 ![](https://x.test/broken.png)"
+    job.localImageURLs = [broken]
+    XCTAssertThrowsError(try ReadingDocumentExport.writeBackgroundExport(job))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: job.destination.path))
+    leftovers = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+    XCTAssertEqual(Set(leftovers.map { $0.lastPathComponent }), ["稿.pdf", "broken.png"])
+  }
 }

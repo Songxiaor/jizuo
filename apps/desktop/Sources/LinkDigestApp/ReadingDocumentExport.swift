@@ -11,7 +11,7 @@ enum ReadingDocumentExportError: Error {
   case docxImageEmbeddingFailed
 }
 
-enum StyledExportKind: String, CaseIterable {
+enum StyledExportKind: String, CaseIterable, Sendable {
   case pdf
   case docx
 
@@ -29,6 +29,20 @@ enum StyledExportKind: String, CaseIterable {
     case .docx: UTType(filenameExtension: "docx") ?? .data
     }
   }
+}
+
+/// 保存框关掉之后交给后台的一份导出。里面只有纯数据和已经画好的章，
+/// 后台不再读界面，也不再碰 `NSLayoutManager` 或系统的 Word 转换。
+struct StyledExportJob: Sendable {
+  var kind: StyledExportKind
+  var destination: URL
+  var markdown: String
+  var readingFont: ResolvedReadingFont
+  var localImageURLs: [URL]
+  /// 外部内容的题跋正文；笔记为 nil。
+  var colophonText: String?
+  /// 主线程用 `ImageRenderer` 画好的章。没有章时为 nil。
+  var sealPNG: Data?
 }
 
 enum ReadingDocumentExport {
@@ -135,6 +149,28 @@ enum ReadingDocumentExport {
       return NSAttributedString(string: "\n" + line, attributes: [.paragraphStyle: style])
     }
     return result
+  }
+
+  /// 题跋的章，单独渲成一张 PNG。这一步必须留在主线程：`ImageRenderer` 碰界面。
+  /// 后台任务只拿这张图，不再读界面状态。
+  @MainActor
+  static func exportSealImage(
+    context: ExportColophonContext,
+    readingFont: ResolvedReadingFont
+  ) -> Data? {
+    guard !context.isOwnWriting else { return nil }
+    _ = readingFont
+    let seals = HStack(spacing: 5) {
+      ForEach(context.records) { record in
+        SealMark(glyph: record.step.glyph, size: 22, color: ExportPalette.seal, style: .stamped, rotation: record.step.rotation)
+      }
+      SealMark(glyph: context.glyph, size: 30, color: ExportPalette.seal, style: .stamped, rotation: -0.8)
+    }
+    .padding(2)
+    let renderer = ImageRenderer(content: seals)
+    renderer.scale = 3
+    guard let image = renderer.nsImage else { return nil }
+    return pngData(from: image)
   }
 
   /// PDF / Word 的完整富文本：正文排版稿 + （外部内容）题跋与印章。
@@ -1070,5 +1106,718 @@ enum ReadingDocumentExport {
     try process.run()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else { throw ReadingDocumentExportError.docxImageEmbeddingFailed }
+  }
+
+  // MARK: - 后台生成（保存框关掉之后）
+
+  /// A4 与四边页边，和原来 `pdfData` 用的同一组数字。
+  static let pdfPageSize = CGSize(width: 595.2, height: 841.8)
+  static let pdfPageMargin: CGFloat = 56
+  /// 题跋独占最后一页时，从上一页末尾让过来的行数。
+  static let tailLinesPulledOntoLastPage = 4
+
+  /// 生成成功才一次写完。失败抛错，调用方不留半份文件。
+  static func writeBackgroundExport(_ job: StyledExportJob) throws {
+    try writePreparedExport(try backgroundData(for: job), to: job.destination)
+  }
+
+  /// 数据已经生成完。写盘单独留在调用方确认「这仍是最新一次导出」之后。
+  static func writePreparedExport(_ data: Data, to destination: URL) throws {
+    let temporary = destination.deletingLastPathComponent()
+      .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).partial")
+    do {
+      try data.write(to: temporary, options: .atomic)
+      if FileManager.default.fileExists(atPath: destination.path) {
+        _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+      } else {
+        try FileManager.default.moveItem(at: temporary, to: destination)
+      }
+    } catch {
+      try? FileManager.default.removeItem(at: temporary)
+      throw error
+    }
+  }
+
+  static func backgroundData(for job: StyledExportJob) throws -> Data {
+    let document = try backgroundDocument(for: job)
+    switch job.kind {
+    case .pdf:
+      guard let data = pdfData(document: document), !data.isEmpty else {
+        throw ReadingDocumentExportError.docxImageEmbeddingFailed
+      }
+      return data
+    case .docx:
+      return try docxData(document: document)
+    }
+  }
+
+  /// 测试用：给定行高，断言「最后一页只剩题跋」时会把前一页末尾四行挪过来。
+  static func pagesAfterPullingOrphanTail(
+    lineCounts: [Int],
+    lastPageIsColophonOnly: Bool
+  ) -> [Int] {
+    guard lastPageIsColophonOnly, lineCounts.count >= 2 else { return lineCounts }
+    var pages = lineCounts
+    let pulled = min(tailLinesPulledOntoLastPage, pages[pages.count - 2])
+    pages[pages.count - 2] -= pulled
+    pages[pages.count - 1] += pulled
+    return pages
+  }
+
+  private struct BackgroundRun {
+    var text: String
+    var font: CTFont
+    var color: CGColor
+    var link: URL?
+    var bold: Bool
+    var italic: Bool
+    var underline: Bool
+    var monospace: Bool
+  }
+
+  private struct BackgroundBlock {
+    var runs: [BackgroundRun]
+    var spacingBefore: CGFloat
+    var spacingAfter: CGFloat
+    var lineSpacing: CGFloat
+    var indent: CGFloat
+    var alignment: CTTextAlignment
+    var image: CGImage?
+    var imageSize: CGSize
+    var keepsWithPreviousPage: Bool
+  }
+
+  private struct BackgroundDocument {
+    var blocks: [BackgroundBlock]
+    var images: [EmbeddedDocxImage]
+  }
+
+  fileprivate struct LaidLine {
+    var blockIndex: Int
+    var line: CTLine
+    var height: CGFloat
+    var width: CGFloat
+    var image: CGImage?
+    var imageSize: CGSize
+    var indent: CGFloat
+    var spacingBefore: CGFloat
+    var keepsWithPreviousPage: Bool
+    var links: [(URL, CGRect)]
+    /// 图片独占一段时，占位行只有一个空格，不当成正文画。
+    var drawsText: Bool { image == nil || width >= 8 }
+  }
+
+  private static func backgroundDocument(for job: StyledExportJob) throws -> BackgroundDocument {
+    let body = MarkdownNoteFrontmatter.parse(job.markdown).body
+    let source = body.isEmpty ? job.markdown : body
+    var blocks: [BackgroundBlock] = []
+    var images: [EmbeddedDocxImage] = []
+    let segments = LocalMarkdownImageLayout.segments(markdown: source, localImageURLs: job.localImageURLs)
+    if job.localImageURLs.isEmpty {
+      blocks.append(contentsOf: try textBlocks(
+        markdown: source, readingFont: job.readingFont, images: &images, localImageURLs: job.localImageURLs
+      ))
+    } else {
+      for segment in segments {
+        switch segment {
+        case let .text(chunk):
+          if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            blocks.append(contentsOf: try textBlocks(
+              markdown: chunk, readingFont: job.readingFont, images: &images, localImageURLs: job.localImageURLs
+            ))
+          }
+        case let .image(url):
+          if let block = try imageBlock(url: url, images: &images) { blocks.append(block) }
+        case let .gallery(urls):
+          for url in urls {
+            if let block = try imageBlock(url: url, images: &images) { blocks.append(block) }
+          }
+        case let .video(video):
+          let label = video.title?.isEmpty == false ? video.title! : video.platformLabel
+          let markdown = video.openURL.map { "[\(label)](\($0.absoluteString))" } ?? label
+          blocks.append(contentsOf: try textBlocks(markdown: markdown, readingFont: job.readingFont, images: &images))
+        case let .quotedTweet(quote):
+          if let author = quote.author {
+            blocks.append(contentsOf: try textBlocks(markdown: "**引用 \(author)：**", readingFont: job.readingFont, images: &images))
+          }
+          let quoted = quote.text.components(separatedBy: "\n").map { $0.isEmpty ? ">" : "> \($0)" }.joined(separator: "\n")
+          blocks.append(contentsOf: try textBlocks(markdown: quoted, readingFont: job.readingFont, images: &images))
+          for url in quote.images {
+            if let block = try imageBlock(url: url, images: &images) { blocks.append(block) }
+          }
+          if let url = quote.url {
+            blocks.append(contentsOf: try textBlocks(markdown: url.absoluteString, readingFont: job.readingFont, images: &images))
+          }
+        }
+      }
+    }
+    if let text = job.colophonText {
+      let runs = [run(text + "  ", readingFont: job.readingFont, size: 11, color: secondaryColor())]
+      var image: CGImage?
+      var imageSize = CGSize.zero
+      if let png = job.sealPNG, let cg = cgImage(png: png) {
+        image = cg
+        imageSize = CGSize(width: CGFloat(cg.width) / 3, height: CGFloat(cg.height) / 3)
+        images.append(EmbeddedDocxImage(png: png, widthPt: imageSize.width, heightPt: imageSize.height))
+      }
+      blocks.append(BackgroundBlock(
+        runs: runs, spacingBefore: 28, spacingAfter: 0, lineSpacing: 2,
+        indent: 0, alignment: .right, image: image, imageSize: imageSize,
+        keepsWithPreviousPage: true
+      ))
+    }
+    return BackgroundDocument(blocks: blocks, images: images)
+  }
+
+  private static func textBlocks(
+    markdown: String,
+    readingFont: ResolvedReadingFont,
+    images: inout [EmbeddedDocxImage],
+    localImageURLs: [URL] = []
+  ) throws -> [BackgroundBlock] {
+    var blocks: [BackgroundBlock] = []
+    for block in MarkdownPresentation.blocks(from: markdown) {
+      switch block {
+      case let .heading(level, text):
+        let size: CGFloat = [1: 19, 2: 16, 3: 14][level] ?? 13.5
+        blocks.append(paragraphBlock(
+          markdown: text, readingFont: readingFont, size: size,
+          weight: level == 1 ? .bold : .semibold,
+          spacingBefore: 14, spacingAfter: 6
+        ))
+      case let .paragraph(text):
+        let cleaned = MarkdownPresentation.droppingUnresolvedImages(text)
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { continue }
+        if let split = splitTimecode(trimmed), !trimmed.contains("\n") {
+          var runs = [run(split.code, readingFont: readingFont, size: bodySize, color: secondaryColor(), monospace: true)]
+          if !split.rest.isEmpty {
+            runs.append(run(" " + split.rest, readingFont: readingFont, size: bodySize, color: labelColor()))
+          }
+          blocks.append(BackgroundBlock(
+            runs: runs, spacingBefore: 0, spacingAfter: 6, lineSpacing: 2,
+            indent: 0, alignment: .left, image: nil, imageSize: .zero, keepsWithPreviousPage: false
+          ))
+        } else {
+          blocks.append(paragraphBlock(markdown: cleaned, readingFont: readingFont, spacingAfter: 10))
+        }
+      case let .list(items):
+        for item in items {
+          let cleaned = MarkdownPresentation.droppingUnresolvedImages(item.text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          if cleaned.isEmpty { continue }
+          let marker = String(repeating: "    ", count: item.depth) + (item.depth == 0 ? "• " : "◦ ")
+          blocks.append(paragraphBlock(
+            markdown: cleaned, readingFont: readingFont, prefix: marker,
+            spacingAfter: 4, indent: CGFloat(14 + item.depth * 14)
+          ))
+        }
+      case let .orderedList(start, items):
+        for (index, item) in items.enumerated() {
+          let cleaned = MarkdownPresentation.droppingUnresolvedImages(item)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          if cleaned.isEmpty { continue }
+          blocks.append(paragraphBlock(
+            markdown: cleaned, readingFont: readingFont, prefix: "\(start + index). ",
+            spacingAfter: 4, indent: 14
+          ))
+        }
+      case let .taskList(items):
+        for item in items {
+          let cleaned = MarkdownPresentation.droppingUnresolvedImages(item.text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          if cleaned.isEmpty { continue }
+          blocks.append(paragraphBlock(
+            markdown: cleaned, readingFont: readingFont, prefix: item.isDone ? "☑ " : "☐ ",
+            spacingAfter: 4, indent: 14
+          ))
+        }
+      case .divider:
+        blocks.append(plainBlock(
+          String(repeating: "─", count: 24), readingFont: readingFont,
+          spacingBefore: 8, spacingAfter: 8
+        ))
+      case let .quote(_, text):
+        blocks.append(paragraphBlock(
+          markdown: text, readingFont: readingFont, color: secondaryColor(),
+          spacingBefore: 6, spacingAfter: 6, indent: 18
+        ))
+      case let .callout(kind, title, text, _):
+        let label = title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title
+        blocks.append(paragraphBlock(
+          markdown: text.isEmpty ? label : "\(label)  \(text)",
+          readingFont: readingFont, color: secondaryColor(),
+          spacingBefore: 6, spacingAfter: 6, indent: 18
+        ))
+      case let .comments(section):
+        blocks.append(plainBlock(
+          section.countTitle, readingFont: readingFont, size: 16, weight: .semibold,
+          spacingBefore: 14, spacingAfter: 8
+        ))
+        for item in section.items {
+          let indent = CGFloat(min(item.depth, 3)) * 18
+          var metadata = item.displayAuthor
+          if let score = item.score { metadata += " · \(score) 分" }
+          if let likes = item.likes { metadata += " · 赞 \(likes)" }
+          if let published = item.published {
+            metadata += " · \(CommentPublishedTime.localStamp(published))"
+          }
+          blocks.append(plainBlock(
+            metadata, readingFont: readingFont, color: secondaryColor(), weight: .semibold,
+            spacingBefore: 4, spacingAfter: 3, indent: indent
+          ))
+          if !item.body.isEmpty {
+            let segments = LocalMarkdownImageLayout.segments(
+              markdown: item.body, localImageURLs: localImageURLs, appendsUnusedLocalImages: false
+            )
+            let pieces = segments.isEmpty ? [.text(item.body)] : segments
+            for piece in pieces {
+              switch piece {
+              case let .text(text):
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                blocks.append(contentsOf: try textBlocks(
+                  markdown: text, readingFont: readingFont, images: &images, localImageURLs: localImageURLs
+                ).map { block in
+                  var shifted = block
+                  shifted.indent += indent
+                  return shifted
+                })
+              case let .image(url):
+                if let block = try imageBlock(url: url, images: &images) { blocks.append(block) }
+              case let .gallery(urls):
+                for url in urls {
+                  if let block = try imageBlock(url: url, images: &images) { blocks.append(block) }
+                }
+              default:
+                break
+              }
+            }
+          }
+        }
+      case let .table(headers, rows, _):
+        blocks.append(plainBlock(
+          headers.joined(separator: " · "), readingFont: readingFont, weight: .semibold,
+          spacingBefore: 8, spacingAfter: 4
+        ))
+        for row in rows {
+          blocks.append(plainBlock(
+            row.joined(separator: " · "), readingFont: readingFont,
+            spacingAfter: 3, indent: 12
+          ))
+        }
+      case let .code(_, content):
+        blocks.append(plainBlock(
+          content, readingFont: readingFont, size: codeSize, monospace: true,
+          spacingBefore: 8, spacingAfter: 8, indent: 12, lineSpacing: 2
+        ))
+      }
+    }
+    return blocks
+  }
+
+  private static func imageBlock(url: URL, images: inout [EmbeddedDocxImage]) throws -> BackgroundBlock? {
+    let data: Data
+    do {
+      data = try Data(contentsOf: url)
+    } catch {
+      throw ReadingDocumentExportError.docxImageEmbeddingFailed
+    }
+    guard let cg = cgImage(data: data) else {
+      throw ReadingDocumentExportError.docxImageEmbeddingFailed
+    }
+    let pixelWidth = CGFloat(cg.width)
+    let pixelHeight = CGFloat(cg.height)
+    guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+    let maxWidth: CGFloat = 460
+    let scale = min(1, maxWidth / pixelWidth)
+    let size = CGSize(width: pixelWidth * scale, height: pixelHeight * scale)
+    guard let png = pngData(cgImage: cg) else { return nil }
+    images.append(EmbeddedDocxImage(png: png, widthPt: size.width, heightPt: size.height))
+    return BackgroundBlock(
+      runs: [], spacingBefore: 8, spacingAfter: 8, lineSpacing: 0,
+      indent: 0, alignment: .center, image: cg, imageSize: size, keepsWithPreviousPage: false
+    )
+  }
+
+  private static func paragraphBlock(
+    markdown: String,
+    readingFont: ResolvedReadingFont,
+    prefix: String = "",
+    size: CGFloat = bodySize,
+    weight: NSFont.Weight = .regular,
+    color: CGColor? = nil,
+    spacingBefore: CGFloat = 0,
+    spacingAfter: CGFloat = 10,
+    indent: CGFloat = 0,
+    lineSpacing: CGFloat = 4
+  ) -> BackgroundBlock {
+    var runs: [BackgroundRun] = []
+    if !prefix.isEmpty {
+      runs.append(run(prefix, readingFont: readingFont, size: size, weight: weight, color: color ?? labelColor()))
+    }
+    runs.append(contentsOf: inlineRuns(markdown, readingFont: readingFont, size: size, weight: weight, color: color ?? labelColor()))
+    return BackgroundBlock(
+      runs: runs, spacingBefore: spacingBefore, spacingAfter: spacingAfter, lineSpacing: lineSpacing,
+      indent: indent, alignment: .left, image: nil, imageSize: .zero, keepsWithPreviousPage: false
+    )
+  }
+
+  private static func plainBlock(
+    _ text: String,
+    readingFont: ResolvedReadingFont,
+    size: CGFloat = bodySize,
+    color: CGColor? = nil,
+    weight: NSFont.Weight = .regular,
+    monospace: Bool = false,
+    spacingBefore: CGFloat = 0,
+    spacingAfter: CGFloat = 10,
+    indent: CGFloat = 0,
+    lineSpacing: CGFloat = 4
+  ) -> BackgroundBlock {
+    BackgroundBlock(
+      runs: [run(text, readingFont: readingFont, size: size, weight: weight, color: color ?? labelColor(), monospace: monospace)],
+      spacingBefore: spacingBefore, spacingAfter: spacingAfter, lineSpacing: lineSpacing,
+      indent: indent, alignment: .left, image: nil, imageSize: .zero, keepsWithPreviousPage: false
+    )
+  }
+
+  private static func inlineRuns(
+    _ markdown: String,
+    readingFont: ResolvedReadingFont,
+    size: CGFloat,
+    weight: NSFont.Weight,
+    color: CGColor
+  ) -> [BackgroundRun] {
+    let source = MarkdownPresentation.droppingUnresolvedImages(markdown)
+    let parsed = MarkdownPresentation.inlineAttributed(source)
+    let characters = String(parsed.characters)
+    guard !characters.isEmpty else { return [] }
+    var runs: [BackgroundRun] = []
+    for piece in parsed.runs {
+      let text = String(parsed[piece.range].characters)
+      if text.isEmpty { continue }
+      let intent = piece.inlinePresentationIntent
+      let bold = intent?.contains(.stronglyEmphasized) == true || weight == .bold || weight == .semibold
+      let italic = intent?.contains(.emphasized) == true
+      let code = intent?.contains(.code) == true
+      let link = piece.link
+      runs.append(run(
+        text, readingFont: readingFont, size: code ? min(codeSize, size) : size, weight: weight,
+        color: link == nil ? color : linkColor(), bold: bold, italic: italic,
+        underline: link != nil, monospace: code, link: link
+      ))
+    }
+    return runs
+  }
+
+  private static func run(
+    _ text: String,
+    readingFont: ResolvedReadingFont,
+    size: CGFloat,
+    weight: NSFont.Weight = .regular,
+    color: CGColor,
+    bold: Bool = false,
+    italic: Bool = false,
+    underline: Bool = false,
+    monospace: Bool = false,
+    link: URL? = nil
+  ) -> BackgroundRun {
+    let resolvedBold = bold || weight == .bold || weight == .semibold
+    return BackgroundRun(
+      text: text,
+      font: ctFont(readingFont: readingFont, size: size, bold: resolvedBold, italic: italic, monospace: monospace),
+      color: color, link: link, bold: resolvedBold, italic: italic, underline: underline, monospace: monospace
+    )
+  }
+
+  private static func ctFont(
+    readingFont: ResolvedReadingFont,
+    size: CGFloat,
+    bold: Bool,
+    italic: Bool,
+    monospace: Bool
+  ) -> CTFont {
+    if monospace {
+      return CTFontCreateWithName("Menlo" as CFString, size, nil)
+    }
+    let ns = font(readingFont, size: size, weight: bold ? .semibold : .regular)
+    var traits = CTFontSymbolicTraits()
+    if bold { traits.insert(.boldTrait) }
+    if italic { traits.insert(.italicTrait) }
+    let base = CTFontCreateWithName(ns.fontName as CFString, size, nil)
+    if traits.isEmpty { return base }
+    return CTFontCreateCopyWithSymbolicTraits(base, size, nil, traits, traits) ?? base
+  }
+
+  private static func labelColor() -> CGColor {
+    CGColor(srgbRed: 0x37 / 255, green: 0x35 / 255, blue: 0x2F / 255, alpha: 1)
+  }
+
+  private static func secondaryColor() -> CGColor {
+    CGColor(srgbRed: 0x6F / 255, green: 0x6E / 255, blue: 0x6A / 255, alpha: 1)
+  }
+
+  private static func linkColor() -> CGColor {
+    CGColor(srgbRed: 0x2B / 255, green: 0x4C / 255, blue: 0x7E / 255, alpha: 1)
+  }
+
+  private static func attributedLine(_ block: BackgroundBlock, width: CGFloat) -> NSAttributedString {
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = block.lineSpacing
+    paragraph.alignment = block.alignment == .right ? .right : (block.alignment == .center ? .center : .left)
+    let result = NSMutableAttributedString()
+    for piece in block.runs {
+      var attributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont(name: CTFontCopyPostScriptName(piece.font) as String, size: CTFontGetSize(piece.font))
+          ?? NSFont.systemFont(ofSize: CTFontGetSize(piece.font)),
+        .foregroundColor: NSColor(cgColor: piece.color) ?? NSColor.labelColor,
+        .paragraphStyle: paragraph,
+      ]
+      if piece.underline {
+        attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+      }
+      if let link = piece.link {
+        attributes[.link] = link
+      }
+      result.append(NSAttributedString(string: piece.text, attributes: attributes))
+    }
+    return result
+  }
+
+  private static func layLines(_ document: BackgroundDocument, contentWidth: CGFloat) -> [LaidLine] {
+    var lines: [LaidLine] = []
+    for (index, block) in document.blocks.enumerated() {
+      if let image = block.image, block.runs.isEmpty {
+        lines.append(LaidLine(
+          blockIndex: index, line: CTLineCreateWithAttributedString(NSAttributedString(string: " ") as CFAttributedString),
+          height: block.imageSize.height + block.spacingBefore + block.spacingAfter,
+          width: block.imageSize.width, image: image, imageSize: block.imageSize,
+          indent: block.indent, spacingBefore: block.spacingBefore,
+          keepsWithPreviousPage: block.keepsWithPreviousPage, links: []
+        ))
+        continue
+      }
+      let text = attributedLine(block, width: contentWidth - block.indent)
+      let framesetter = CTFramesetterCreateWithAttributedString(text as CFAttributedString)
+      let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
+        framesetter, CFRange(location: 0, length: text.length),
+        nil, CGSize(width: max(40, contentWidth - block.indent), height: .greatestFiniteMagnitude), nil
+      )
+      var box = CGRect(origin: .zero, size: CGSize(width: max(40, contentWidth - block.indent), height: max(suggested.height, 1)))
+      guard let path = CGPath(rect: box, transform: nil) as CGPath? else { continue }
+      let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+      let frameLines = CTFrameGetLines(frame) as? [CTLine] ?? []
+      var origins = Array(repeating: CGPoint.zero, count: frameLines.count)
+      CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+      for (lineIndex, line) in frameLines.enumerated() {
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+        let height = ascent + descent + leading + block.lineSpacing
+        var links: [(URL, CGRect)] = []
+        if let runs = CTLineGetGlyphRuns(line) as? [CTRun] {
+          for glyphRun in runs {
+            let attrs = CTRunGetAttributes(glyphRun) as NSDictionary
+            guard let url = linkURL(attrs[NSAttributedString.Key.link]) else { continue }
+            var runAscent: CGFloat = 0
+            var runDescent: CGFloat = 0
+            let runWidth = CGFloat(CTRunGetTypographicBounds(glyphRun, CFRange(location: 0, length: 0), &runAscent, &runDescent, nil))
+            let x = CTLineGetOffsetForStringIndex(line, CTRunGetStringRange(glyphRun).location, nil)
+            links.append((url, CGRect(x: x, y: 0, width: runWidth, height: runAscent + runDescent)))
+          }
+        }
+        let image = lineIndex == frameLines.count - 1 ? block.image : nil
+        let extra = image == nil ? 0 : block.imageSize.height + 4
+        lines.append(LaidLine(
+          blockIndex: index, line: line,
+          height: height + extra + (lineIndex == 0 ? block.spacingBefore : 0),
+          width: width, image: image, imageSize: image == nil ? .zero : block.imageSize,
+          indent: block.indent, spacingBefore: lineIndex == 0 ? block.spacingBefore : 0,
+          keepsWithPreviousPage: block.keepsWithPreviousPage, links: links
+        ))
+        _ = origins
+        _ = box
+      }
+    }
+    return lines
+  }
+
+  private static func paginate(_ lines: [LaidLine], contentHeight: CGFloat) -> [[LaidLine]] {
+    guard !lines.isEmpty else { return [] }
+    var pages: [[LaidLine]] = [[]]
+    var used: CGFloat = 0
+    for line in lines {
+      if used > 0, used + line.height > contentHeight {
+        pages.append([])
+        used = 0
+      }
+      pages[pages.count - 1].append(line)
+      used += line.height
+      if pages.count > 2000 { break }
+    }
+    guard pages.count >= 2, let last = pages.last, !last.isEmpty,
+          last.allSatisfy(\.keepsWithPreviousPage)
+    else { return pages }
+    var previous = pages[pages.count - 2]
+    let pulled = min(tailLinesPulledOntoLastPage, previous.count)
+    guard pulled > 0 else { return pages }
+    let moved = previous.suffix(pulled)
+    previous.removeLast(pulled)
+    pages[pages.count - 2] = previous
+    pages[pages.count - 1] = Array(moved) + last
+    return pages
+  }
+
+  private static func pdfData(document: BackgroundDocument) -> Data? {
+    let page = CGRect(origin: .zero, size: pdfPageSize)
+    let content = page.insetBy(dx: pdfPageMargin, dy: pdfPageMargin)
+    let pages = paginate(layLines(document, contentWidth: content.width), contentHeight: content.height)
+    let data = NSMutableData()
+    guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
+    var media = page
+    guard let context = CGContext(consumer: consumer, mediaBox: &media, nil) else { return nil }
+    for lines in pages {
+      context.beginPDFPage(nil)
+      var cursor = content.height
+      for line in lines {
+        cursor -= line.spacingBefore
+        let textHeight = line.image == nil ? line.height - line.spacingBefore : max(1, line.height - line.spacingBefore - line.imageSize.height - 4)
+        cursor -= textHeight
+        context.saveGState()
+        context.textMatrix = .identity
+        context.translateBy(x: content.minX + line.indent, y: content.minY + cursor)
+        if line.drawsText {
+          CTLineDraw(line.line, context)
+        }
+        context.restoreGState()
+        for (url, rect) in line.links {
+          let pdfRect = CGRect(
+            x: content.minX + line.indent + rect.minX,
+            y: content.minY + cursor,
+            width: rect.width,
+            height: max(rect.height, textHeight)
+          )
+          context.setURL(url as CFURL, for: pdfRect)
+        }
+        if let image = line.image {
+          let x: CGFloat
+          if !line.drawsText {
+            x = content.minX + (content.width - line.imageSize.width) / 2
+          } else {
+            x = content.maxX - line.imageSize.width
+          }
+          let imageRect = CGRect(x: x, y: content.minY + cursor - line.imageSize.height - 2, width: line.imageSize.width, height: line.imageSize.height)
+          context.draw(image, in: imageRect)
+          cursor -= line.imageSize.height + 4
+        }
+      }
+      context.endPDFPage()
+    }
+    context.closePDF()
+    return data as Data
+  }
+
+  private static func docxData(document: BackgroundDocument) throws -> Data {
+    let xml = documentXML(document)
+    let raw = try minimalDocx(documentXML: xml)
+    guard !document.images.isEmpty else { return raw }
+    return try embeddingImages(document.images, into: raw)
+  }
+
+  private static func documentXML(_ document: BackgroundDocument) -> String {
+    var imageIndex = 0
+    var paragraphs: [String] = []
+    for block in document.blocks {
+      let align = block.alignment == .right ? "right" : (block.alignment == .center ? "center" : "left")
+      let before = Int(block.spacingBefore * 20)
+      let after = Int(block.spacingAfter * 20)
+      let indent = Int(block.indent * 20)
+      var runs = ""
+      for piece in block.runs {
+        let size = Int(CTFontGetSize(piece.font) * 2)
+        var properties = "<w:sz w:val=\"\(size)\"/><w:szCs w:val=\"\(size)\"/>"
+        if piece.bold { properties += "<w:b/>" }
+        if piece.italic { properties += "<w:i/>" }
+        if piece.underline { properties += "<w:u w:val=\"single\"/>" }
+        if piece.monospace { properties += "<w:rFonts w:ascii=\"Menlo\" w:hAnsi=\"Menlo\"/>" }
+        let text = xmlEscaped(piece.text)
+        let inner = "<w:r><w:rPr>\(properties)</w:rPr><w:t xml:space=\"preserve\">\(text)</w:t></w:r>"
+        if piece.link != nil {
+          runs += "<w:hyperlink r:id=\"rIdLink\(paragraphs.count)\(runs.count)\" w:history=\"1\">\(inner)</w:hyperlink>"
+        } else {
+          runs += inner
+        }
+      }
+      if block.image != nil, imageIndex < document.images.count {
+        runs += drawingRun(index: imageIndex, image: document.images[imageIndex])
+        imageIndex += 1
+      }
+      paragraphs.append("""
+      <w:p><w:pPr><w:jc w:val=\"\(align)\"/><w:spacing w:before=\"\(before)\" w:after=\"\(after)\"/><w:ind w:left=\"\(indent)\"/></w:pPr>\(runs)</w:p>
+      """)
+    }
+    return """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>\(paragraphs.joined())<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body></w:document>
+    """
+  }
+
+  private static func minimalDocx(documentXML: String) throws -> Data {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-docx-new-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let word = root.appendingPathComponent("word", isDirectory: true)
+    let rels = root.appendingPathComponent("_rels", isDirectory: true)
+    let wordRels = word.appendingPathComponent("_rels", isDirectory: true)
+    try FileManager.default.createDirectory(at: wordRels, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: rels, withIntermediateDirectories: true)
+    try documentXML.write(to: word.appendingPathComponent("document.xml"), atomically: true, encoding: .utf8)
+    try """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>
+    """.write(to: root.appendingPathComponent("[Content_Types].xml"), atomically: true, encoding: .utf8)
+    try """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>
+    """.write(to: rels.appendingPathComponent(".rels"), atomically: true, encoding: .utf8)
+    try """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>
+    """.write(to: wordRels.appendingPathComponent("document.xml.rels"), atomically: true, encoding: .utf8)
+    let out = FileManager.default.temporaryDirectory.appendingPathComponent("jizuo-docx-out-\(UUID().uuidString).docx")
+    defer { try? FileManager.default.removeItem(at: out) }
+    try runTool("/usr/bin/zip", ["-qr", "-X", out.path, "."], directory: root)
+    guard let packed = try? Data(contentsOf: out), packed.starts(with: [0x50, 0x4B]) else {
+      throw ReadingDocumentExportError.docxImageEmbeddingFailed
+    }
+    return packed
+  }
+
+  private static func xmlEscaped(_ text: String) -> String {
+    text
+      .replacingOccurrences(of: "&", with: "&amp;")
+      .replacingOccurrences(of: "<", with: "&lt;")
+      .replacingOccurrences(of: ">", with: "&gt;")
+  }
+
+  private static func cgImage(png: Data) -> CGImage? {
+    cgImage(data: png)
+  }
+
+  private static func cgImage(data: Data) -> CGImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    return CGImageSourceCreateImageAtIndex(source, 0, nil)
+  }
+
+  private static func pngData(cgImage: CGImage) -> Data? {
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+      return nil
+    }
+    CGImageDestinationAddImage(destination, cgImage, nil)
+    guard CGImageDestinationFinalize(destination) else { return nil }
+    return data as Data
   }
 }

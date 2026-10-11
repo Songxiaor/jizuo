@@ -1069,6 +1069,8 @@ final class HistoryViewModel {
   var isBatchTranslationOutcomePresented = false
   private(set) var batchTranslationOutcomeMessage = ""
   private(set) var isPreparingExport = false
+  /// PDF / Word 正在后台生成。保存框已经关掉，界面只留这一行状态。
+  private(set) var isStyledExportRunning = false
   private(set) var exportFile: HistoryExportFile?
   var isExportPanelPresented = false
   var isExportPreparationFailurePresented = false
@@ -1763,6 +1765,7 @@ final class HistoryViewModel {
   private var detailRequestID = UUID()
   private var deleteRequestID = UUID()
   private var exportRequestID = UUID()
+  private var styledExportToken = UUID()
   private(set) var pendingDeletionTaskIDs: Set<TaskID> = []
   private(set) var pendingProtectedDeletionTaskIDs: Set<TaskID> = []
   /// 「这一次删除是不是彻底删除」在**弹确认框的那一刻**就定下来。
@@ -1779,6 +1782,7 @@ final class HistoryViewModel {
   private var imageBackfillAttemptedSnapshotIDs: Set<ContentSnapshotID> = []
   @ObservationIgnored private var deleteTask: Task<Void, Never>?
   @ObservationIgnored private var exportTask: Task<Void, Never>?
+  @ObservationIgnored private var styledExportTask: Task<Void, Never>?
   @ObservationIgnored private var faviconTask: Task<Void, Never>?
   @ObservationIgnored private var browserDeclaredFaviconTasks: [TaskID: Task<Void, Never>] = [:]
   @ObservationIgnored private var tagsTask: Task<Void, Never>?
@@ -1852,7 +1856,7 @@ final class HistoryViewModel {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); batchTranslationTask?.cancel(); autoTitleLocalizationTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); styledExportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); batchTranslationTask?.cancel(); autoTitleLocalizationTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -6731,6 +6735,38 @@ final class HistoryViewModel {
     exportFile = nil
     isExportPanelPresented = false
     isExportSaveFailurePresented = true
+  }
+
+  /// 用户已经选好路径。再点一次导出会取消上一份，避免两份一起写同一个路径。
+  /// 生成在后台；失败不写出文件，走现有的保存失败提示。
+  func startStyledExport(_ job: StyledExportJob) {
+    styledExportTask?.cancel()
+    let token = UUID()
+    styledExportToken = token
+    isStyledExportRunning = true
+    isExportSaveFailurePresented = false
+    styledExportTask = Task { [weak self] in
+      let outcome = await Task.detached(priority: .userInitiated) {
+        () -> Result<Data, Error> in
+        do {
+          return .success(try ReadingDocumentExport.backgroundData(for: job))
+        } catch {
+          return .failure(error)
+        }
+      }.value
+      guard !Task.isCancelled, let self, self.styledExportToken == token else { return }
+      self.isStyledExportRunning = false
+      switch outcome {
+      case let .success(data):
+        do {
+          try ReadingDocumentExport.writePreparedExport(data, to: job.destination)
+        } catch {
+          self.failExportSave()
+        }
+      case .failure:
+        self.failExportSave()
+      }
+    }
   }
   func dismissExportPreparationFailure() { isExportPreparationFailurePresented = false }
   func dismissExportSaveFailure() { isExportSaveFailurePresented = false }

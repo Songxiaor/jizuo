@@ -714,6 +714,18 @@ struct HistoryContentView: View {
         // 添加去列表列头。顶栏只留「当前这一条」的操作。
         // 批量总结进行中：进度和停止按钮必须一直可见，否则「跑了十几分钟、
         // 现在到哪了、能不能停」全靠猜。
+        if model.isStyledExportRunning {
+          HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text("正在导出")
+              .lineLimit(1)
+          }
+            .themedFont(.callout, weight: .medium)
+            .foregroundStyle(theme.secondaryText)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(theme.info.opacity(0.10), in: Capsule())
+            .accessibilityIdentifier("styled-export-progress")
+        }
         if model.isBatchSummarizing {
           HStack(spacing: 7) {
             ProgressView().controlSize(.small)
@@ -6289,23 +6301,11 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
+  /// PDF / Word 先弹保存框，用户选定路径后再在后台生成。
+  /// 主线程只画题跋的章；分页和 Word 打包不占住界面。
+  /// 纯文本导出仍走 `exportCleanText`，不改它的保存框时序。
   private func exportStyledDocument(_ kind: StyledExportKind) {
     guard let composed = model.composeExportMarkdown() else {
-      model.failExportSave()
-      return
-    }
-    let attributed = ReadingDocumentExport.styledDocument(
-      composedMarkdown: composed.markdown,
-      context: exportColophonContext,
-      readingFont: readingFont,
-      localImageURLs: localImageURLs
-    )
-    let data: Data?
-    switch kind {
-    case .pdf: data = ReadingDocumentExport.pdfData(from: attributed)
-    case .docx: data = try? ReadingDocumentExport.docxData(from: attributed)
-    }
-    guard let data, !data.isEmpty else {
       model.failExportSave()
       return
     }
@@ -6314,9 +6314,23 @@ private struct HistoryDetailView: View, Equatable {
     panel.allowedContentTypes = [kind.contentType]
     panel.nameFieldStringValue = "\(composed.baseFilename).\(kind.fileExtension)"
     let historyModel = model
+    let markdown = composed.markdown
+    let context = exportColophonContext
+    let font = readingFont
+    let imageURLs = localImageURLs
     MenuSavePanel.present(panel) { url in
       guard let url else { return }
-      do { try data.write(to: url) } catch { historyModel.failExportSave() }
+      let seal = ReadingDocumentExport.exportSealImage(context: context, readingFont: font)
+      let job = StyledExportJob(
+        kind: kind,
+        destination: url,
+        markdown: markdown,
+        readingFont: font,
+        localImageURLs: imageURLs,
+        colophonText: context.isOwnWriting ? nil : context.text,
+        sealPNG: seal
+      )
+      historyModel.startStyledExport(job)
     }
   }
 
