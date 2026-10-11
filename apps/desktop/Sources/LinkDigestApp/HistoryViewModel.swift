@@ -6725,23 +6725,55 @@ final class HistoryViewModel {
       return body
     }
     let source = splittingComments(from: LayeredSourceDocument.modelInput(from: detail.snapshots))
+    let summary = latest(.summarize)
     let translation = latest(.translate).map(splittingComments(from:))
+    let hasDerivedSection = summary != nil || translation?.article.isEmpty == false
     var sections: [String] = []
-    if let summary = latest(.summarize) {
+    if let summary {
       sections.append("## 总结\n\n\(demotingHeadings(summary))")
     }
-    if !source.article.isEmpty { sections.append(source.article) }
+    if !source.article.isEmpty {
+      sections.append(sectionBody(source.article, heading: "原文", labeled: hasDerivedSection))
+    }
     if let article = translation?.article, !article.isEmpty {
-      sections.append("## 译文\n\n\(demotingHeadings(article))")
+      sections.append(sectionBody(article, heading: "译文", labeled: true))
     }
     if !source.comments.isEmpty {
       var comments = source.comments
       if let translated = translation?.comments, !translated.isEmpty {
-        comments += "\n\n### 评论（译文）\n\n" + demotingHeadings(translated, levels: 1)
+        comments += "\n\n" + translatedCommentSection(translated)
       }
       sections.append(comments)
     }
     return sections.joined(separator: "\n\n")
+  }
+
+  /// 有总结或译文时，原文才加「## 原文」。开头与文档标题相同的那行去掉，其余标题降一级。
+  private nonisolated static func sectionBody(_ markdown: String, heading: String, labeled: Bool) -> String {
+    let title = markdownTitle(markdown)
+    var body = CapturedSourceBodyPresentation.strippingFirstEchoedHeading(title: title, from: markdown)
+    body = demotingHeadings(body)
+    guard labeled else { return body }
+    return "## \(heading)\n\n\(body)"
+  }
+
+  private nonisolated static func markdownTitle(_ markdown: String) -> String {
+    for line in markdown.components(separatedBy: "\n") {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      guard trimmed.hasPrefix("# ") else { continue }
+      return String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+    }
+    return ""
+  }
+
+  /// 「评论（译文）」和译文自带的评论计数标题合成一条，不再上下叠两个标题。
+  private nonisolated static func translatedCommentSection(_ markdown: String) -> String {
+    var lines = markdown.components(separatedBy: "\n")
+    let heading = lines.first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("## 评论") }
+    lines.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("## 评论") }
+    let count = heading?.replacingOccurrences(of: "## 评论", with: "").trimmingCharacters(in: .whitespaces) ?? ""
+    let title = count.isEmpty ? "### 评论（译文）" : "### 评论（译文，\(count.dropFirst().dropLast())）"
+    return title + "\n\n" + demotingHeadings(lines.joined(separator: "\n"), levels: 1)
   }
 
   /// 总结和译文里的标题降一级，让「总结 / 原文 / 译文 / 评论」保持同级。
