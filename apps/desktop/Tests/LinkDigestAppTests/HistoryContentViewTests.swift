@@ -3747,4 +3747,88 @@ final class ReadingTextDeleteCommandTests: XCTestCase {
     HistoryDeleteCommandRouter.shared.handler = nil
     XCTAssertFalse(view.validateUserInterfaceItem(item), "没有选中条目时仍然灰掉")
   }
+
+  /// 编辑菜单的删除改由应用委托校验之后，只读正文里选中的字仍要能拷走。
+  /// 委托不实现 `copy:`，正文自己的校验也不能把拷贝关掉。
+  func testReadOnlySelectionCopyWritesThePasteboardAndCommandCDoesToo() {
+    let board = NSPasteboard.general
+    let previous = board.string(forType: .string)
+    defer {
+      board.clearContents()
+      if let previous {
+        board.setString(previous, forType: .string)
+      }
+    }
+
+    let view = SelectableReadingTextView.SelfSizingTextView(usingTextLayoutManager: true)
+    view.isEditable = false
+    view.isSelectable = true
+    // TextKit 2 的 copy: 要挂在窗口上才写得进剪贴板，不必让窗口变成按键窗口。
+    let window = NSWindow(
+      contentRect: NSRect(x: -2400, y: -2400, width: 360, height: 120),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false
+    )
+    defer { window.orderOut(nil) }
+    window.contentView?.addSubview(view)
+    window.orderFrontRegardless()
+    view.frame = window.contentView?.bounds ?? .zero
+    view.string = "可复制的正文"
+    view.setSelectedRange(NSRange(location: 0, length: 3))
+
+    let copyItem = NSMenuItem(title: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    XCTAssertTrue(view.validateUserInterfaceItem(copyItem), "有选中文字时，正文自己的校验不能把拷贝关掉")
+
+    board.clearContents()
+    view.copy(nil)
+    XCTAssertEqual(board.string(forType: .string) ?? "", "可复制", "只读正文的 copy: 应写入选中文字")
+
+    // 菜单项的目标一旦是这篇正文，⌘C 走的就是 sendAction → copy:。
+    board.clearContents()
+    view.setSelectedRange(NSRange(location: 3, length: 2))
+    XCTAssertTrue(NSApp.sendAction(#selector(NSText.copy(_:)), to: view, from: copyItem))
+    XCTAssertEqual(board.string(forType: .string) ?? "", "的正", "⌘C 送到正文后应写入选中文字")
+
+    let delegate = LinkDigestAppDelegate()
+    XCTAssertFalse(delegate.responds(to: #selector(NSText.copy(_:))), "删除的委托不能自己接住 copy:")
+    XCTAssertTrue(delegate.responds(to: #selector(NSText.delete(_:))))
+
+    // 正式响应链里委托排在窗口后面。从正文往上找，拷贝必须先落在正文上。
+    window.nextResponder = delegate
+    var foundCopy: NSResponder?
+    var responder: NSResponder? = view
+    while let current = responder {
+      if current.responds(to: #selector(NSText.copy(_:))) {
+        foundCopy = current
+        break
+      }
+      responder = current.nextResponder
+    }
+    XCTAssertIdentical(foundCopy, view)
+
+    // 没有按键窗口时，系统会来问应用委托。一个什么都不校验的委托，和这个只认删除的委托，
+    // 对「拷贝」亮不亮必须一样——不能因为删除的校验把拷贝关掉。
+    let menu = NSMenu(title: "编辑")
+    menu.addItem(copyItem)
+    let previousDelegate = NSApp.delegate
+    defer { NSApp.delegate = previousDelegate }
+
+    final class PlainDelegate: NSObject, NSApplicationDelegate {}
+    let plainDelegate = PlainDelegate()
+    NSApp.delegate = plainDelegate
+    copyItem.isEnabled = true
+    menu.update()
+    let enabledWithoutDeleteValidator = copyItem.isEnabled
+
+    NSApp.delegate = delegate
+    copyItem.isEnabled = true
+    menu.update()
+    // 没有按键窗口时两边都是灰的，和改删除校验之前一样。
+    XCTAssertEqual(
+      copyItem.isEnabled,
+      enabledWithoutDeleteValidator,
+      "删除的校验不该单独把编辑 → 拷贝关掉"
+    )
+  }
 }
