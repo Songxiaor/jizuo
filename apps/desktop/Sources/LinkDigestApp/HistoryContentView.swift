@@ -2056,12 +2056,14 @@ struct HistoryContentView: View {
         .buttonStyle(.plain)
         .help(expanded.wrappedValue ? "点击折叠" : "点击展开")
         .accessibilityValue(expanded.wrappedValue ? "已展开" : "已折叠")
+        .accessibilityIdentifier("history-navigation-section-\(title)")
       } else {
         // 不能折叠的标题也空出箭头那一格：空库时「标签」比「视图」「合集」往左凸出一截（2026-10-02 走查）。
         HStack(spacing: 4) {
           Color.clear.frame(width: 10, height: 1)
           Text(title)
         }
+        .accessibilityIdentifier("history-navigation-section-\(title)")
         Spacer(minLength: 0)
       }
     }
@@ -6886,7 +6888,11 @@ private struct HistoryDetailView: View, Equatable {
           Text(title)
             .themedFont(.callout, weight: isActive ? .semibold : .regular)
             .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
+            // 字距算在这块矩形里，不按笔画的透明缝隙算。左右各留一点，
+            // 仍小于页签间距，相邻两块不会叠在一起。
+            .padding(.horizontal, 4)
             .padding(.bottom, 3)
+            .frame(minHeight: ReadingHeaderMetrics.verbRow)
             .anchorPreference(key: ReadingTabBoundsKey.self, value: .bounds) { isActive ? $0 : nil }
         }
         .buttonStyle(ReadingTabHitStyle())
@@ -6896,7 +6902,9 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityIdentifier("history-reading-tab-\(tab.id)")
       }
     }
-    .overlayPreferenceValue(ReadingTabBoundsKey.self) { anchor in
+    // 下划线画在页签后面。盖在上面时，`allowsHitTesting(false)` 挡不住被缩放的那条线，
+    // 点在「翻译」两个字上没有反应，辅助功能直接按按钮却可以（2026-10-11 复测）。
+    .backgroundPreferenceValue(ReadingTabBoundsKey.self) { anchor in
       GeometryReader { proxy in
         if let anchor {
           let rect = proxy[anchor]
@@ -6909,6 +6917,7 @@ private struct HistoryDetailView: View, Equatable {
             .scaleEffect(x: max(rect.width, 1), y: 1, anchor: .leading)
             .offset(x: rect.minX, y: rect.maxY - 2)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: rect)
+            .allowsHitTesting(false)
         }
       }
       .allowsHitTesting(false)
@@ -10235,13 +10244,15 @@ enum ReadingHeaderMetrics {
   static let verbRow: CGFloat = 22
 }
 
-/// 页签是纯文字。系统的 plain 按钮按笔画的不透明像素算能不能点到，
+/// 页签是纯文字。系统按钮按笔画的不透明像素算能不能点到，
 /// 点在字心或两个字中间会落空（2026-10-11 夜检：光标停在「原文」上，下划线仍在「翻译」）。
-/// 命中形状要挂在按钮样式的成品上，挂在文字里面不算。
-struct ReadingTabHitStyle: ButtonStyle {
+/// 普通 ButtonStyle 上的 contentShape 只对部分页签生效（复测里「原文」能点、「翻译」不能）。
+/// 换成自己接收整块矩形的点击，原文、翻译、总结、配文、转写走同一条。
+struct ReadingTabHitStyle: PrimitiveButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .contentShape(Rectangle())
+      .contentShape(.interaction, Rectangle())
+      .onTapGesture { configuration.trigger() }
   }
 }
 
@@ -10915,6 +10926,25 @@ private func historyTokenBreakdown(_ usage: RunUsageCost?) -> String? {
 @MainActor final class HistoryDeleteCommandRouter {
   static let shared = HistoryDeleteCommandRouter()
   var handler: (() -> Void)?
+}
+
+/// 编辑菜单的「删除」什么时候亮、点了删字还是进回收站。
+///
+/// 系统按第一响应者校验 `delete:`。只读正文和列表都不会把这一项标成可用
+/// （2026-10-11 复测：条目已选中，正文也有焦点，菜单仍是灰的）。
+/// 正在改字时仍删字。没有焦点在可编辑文本上、又有选中条目时，交给回收站确认。
+enum EditMenuDelete {
+  static func usesTrashConfirmation(textIsEditable: Bool, hasSelectionHandler: Bool) -> Bool {
+    !textIsEditable && hasSelectionHandler
+  }
+
+  static func isEnabled(textIsEditable: Bool, hasSelectionHandler: Bool) -> Bool {
+    textIsEditable || hasSelectionHandler
+  }
+
+  static func claims(action: Selector?, isMainMenuSubmenu: Bool) -> Bool {
+    isMainMenuSubmenu && action == #selector(NSText.delete(_:))
+  }
 }
 
 /// 跟着选中项更新删除动作。不能只在出现时登记一次：当时的闭包会抓住旧的选中集。

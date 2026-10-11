@@ -518,6 +518,51 @@ final class HistoryContentViewTests: XCTestCase {
     let hold = section(in: memory, from: "func holdVisibleOffset()", to: "func remember(expanding:")
     XCTAssertTrue(hold.contains("holdAnchoredRow"))
     XCTAssertTrue(hold.contains("SidebarRowAnchor.candidates"))
+    XCTAssertTrue(hold.contains("deadline: .now() + 1.0"), "0.4 秒松手时，列表换 id 后的回顶已经落定")
+    XCTAssertFalse(hold.contains("deadline: .now() + 0.4"))
+  }
+
+  /// 复测：来源在屏幕 y=314，收起后跳到 497，差 183pt，就是偏移被写成 0。
+  /// 列表换 id 时文档高度会先掉到跟可视区一样高，这时不能夹。排完后仍比窗口高，就留在 183。
+  func testCollapsingSourceDoesNotCommitTheTopWhileTheListRelayouts() {
+    XCTAssertTrue(
+      SidebarScrollRestore.shouldWaitForSectionLayout(
+        previousOffset: 183,
+        documentHeight: 740,
+        viewportHeight: 740,
+        previousDocumentHeight: 1_400
+      )
+    )
+    XCTAssertFalse(
+      SidebarScrollRestore.shouldWaitForSectionLayout(
+        previousOffset: 183,
+        documentHeight: 1_100,
+        viewportHeight: 740,
+        previousDocumentHeight: 1_400
+      )
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 183, documentHeight: 1_100, viewportHeight: 740),
+      183,
+      "内容仍比窗口高时，来源不该从 314 掉回 497"
+    )
+    XCTAssertFalse(
+      SidebarScrollRestore.shouldWaitForSectionLayout(
+        previousOffset: 0,
+        documentHeight: 700,
+        viewportHeight: 740,
+        previousDocumentHeight: 1_400
+      ),
+      "本来就在顶部，不用等"
+    )
+    let platforms = (0..<4).map {
+      SidebarVisibleRow(id: "history-navigation-platform-\($0)", distanceFromClipCenter: CGFloat($0), windowY: 400)
+    }
+    let header = SidebarVisibleRow(id: "history-navigation-section-来源", distanceFromClipCenter: 200, windowY: 314)
+    let kept = SidebarRowAnchor.includingSectionHeader(platforms + [header], limit: 4).map(\.id)
+    XCTAssertTrue(kept.contains(header.id), "收起后平台行没了，标题还在，必须能按它拉回原位")
+    let source = historyContentViewSource()
+    XCTAssertTrue(source.contains("history-navigation-section-\\(title)"))
   }
 
   /// 「停止」只在这一轮翻译还在跑时出现，不看正文长短。短帖两秒就结束，按钮来不及出现。
@@ -1885,12 +1930,25 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertTrue(tabsOnly.contains(".buttonStyle(ReadingTabHitStyle())"))
     XCTAssertFalse(tabsOnly.contains(".buttonStyle(.plain)"), "plain 只按笔画命中")
+    XCTAssertEqual(tabsOnly.components(separatedBy: "Button {").count - 1, 1, "每个页签共用同一个按钮，不能给「翻译」单独做一套")
     XCTAssertTrue(tabsOnly.contains(".accessibilityLabel(title)"))
     XCTAssertTrue(tabsOnly.contains(".accessibilityElement(children: .contain)"))
+    XCTAssertTrue(tabsOnly.contains(".backgroundPreferenceValue(ReadingTabBoundsKey.self)"), "下划线要画在页签后面")
+    XCTAssertFalse(tabsOnly.contains(".overlayPreferenceValue(ReadingTabBoundsKey.self)"), "盖在上面的下划线会吃掉「翻译」的点击")
     XCTAssertTrue(tabsOnly.contains(".allowsHitTesting(false)"), "下划线那层不能挡住页签")
-    let hitStyle = section(in: source, from: "struct ReadingTabHitStyle: ButtonStyle", to: "enum LiveSummaryBody")
+    let hitStyle = section(in: source, from: "struct ReadingTabHitStyle: PrimitiveButtonStyle", to: "enum LiveSummaryBody")
     XCTAssertTrue(hitStyle.contains("configuration.label"))
-    XCTAssertTrue(hitStyle.contains(".contentShape(Rectangle())"))
+    XCTAssertTrue(hitStyle.contains(".contentShape(.interaction, Rectangle())"))
+    XCTAssertTrue(hitStyle.contains("configuration.trigger()"))
+    // 原文、翻译、总结、配文、转写都进上面这一个按钮，名字从同一处取。
+    let titles = section(in: source, from: "private func readingTabTitle(", to: "private func selectReadingTab")
+    XCTAssertTrue(titles.contains("\"原文\""))
+    XCTAssertTrue(titles.contains("\"翻译\""))
+    XCTAssertTrue(titles.contains("\"总结\""))
+    XCTAssertTrue(titles.contains("tabTitle"))
+    let layers = section(in: source, from: "var tabTitle: String", to: "init?(heading: String)")
+    XCTAssertTrue(layers.contains("\"配文\""))
+    XCTAssertTrue(layers.contains("\"转写\""))
 
     // 译文内部仍按层切换（翻译是整份文档一次翻完的），控件保持轻量。
     let layerPicker = section(
@@ -3664,5 +3722,29 @@ final class ReadingTextDeleteCommandTests: XCTestCase {
     HistoryDeleteCommandRouter.shared.handler = { calls += 1 }
     view.delete(nil)
     XCTAssertEqual(calls, 0)
+  }
+
+  func testEditMenuDeleteEnablesForASelectionAndStaysACharacterDeleteWhileEditing() {
+    // 列表有焦点、或只读正文有焦点：有选中条目就亮，点了进回收站确认。
+    XCTAssertTrue(EditMenuDelete.isEnabled(textIsEditable: false, hasSelectionHandler: true))
+    XCTAssertTrue(EditMenuDelete.usesTrashConfirmation(textIsEditable: false, hasSelectionHandler: true))
+    // 正在改字：菜单可以亮，但删的是字，不是这一条。
+    XCTAssertTrue(EditMenuDelete.isEnabled(textIsEditable: true, hasSelectionHandler: true))
+    XCTAssertFalse(EditMenuDelete.usesTrashConfirmation(textIsEditable: true, hasSelectionHandler: true))
+    // 没选中：保持灰色。
+    XCTAssertFalse(EditMenuDelete.isEnabled(textIsEditable: false, hasSelectionHandler: false))
+    XCTAssertFalse(EditMenuDelete.usesTrashConfirmation(textIsEditable: false, hasSelectionHandler: false))
+    XCTAssertTrue(EditMenuDelete.claims(action: #selector(NSText.delete(_:)), isMainMenuSubmenu: true))
+    XCTAssertFalse(EditMenuDelete.claims(action: #selector(NSText.delete(_:)), isMainMenuSubmenu: false))
+    XCTAssertFalse(EditMenuDelete.claims(action: #selector(NSText.copy(_:)), isMainMenuSubmenu: true))
+
+    let view = SelectableReadingTextView.SelfSizingTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 40))
+    view.isEditable = false
+    view.string = "只读正文"
+    let item = NSMenuItem(title: "删除", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+    HistoryDeleteCommandRouter.shared.handler = {}
+    XCTAssertTrue(view.validateUserInterfaceItem(item), "只读正文聚焦、条目已选中时，编辑菜单的删除不能是灰的")
+    HistoryDeleteCommandRouter.shared.handler = nil
+    XCTAssertFalse(view.validateUserInterfaceItem(item), "没有选中条目时仍然灰掉")
   }
 }

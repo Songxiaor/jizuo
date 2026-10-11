@@ -764,11 +764,26 @@ struct SelectableReadingTextView: NSViewRepresentable {
       return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
     }
 
-    /// 只读正文也实现了 `delete:`，所以菜单栏「编辑 → 删除」是亮的，但系统实现不改任何一个字。
-    /// 有选中条目时交给和详情「移到回收站」同一条确认。正在编辑的正文仍按字符删。
+    /// 只实现 `delete:` 不会把菜单项点亮：系统仍按「能不能改字」把它灰掉
+    /// （2026-10-11 复测）。有选中条目时只读正文要把「编辑 → 删除」标成可用，
+    /// 点了交给和详情「移到回收站」同一条确认。正在编辑的正文仍按字符删。
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+      if item.action == #selector(NSText.delete(_:)),
+         EditMenuDelete.usesTrashConfirmation(
+           textIsEditable: isEditable,
+           hasSelectionHandler: HistoryDeleteCommandRouter.shared.handler != nil
+         ) {
+        return true
+      }
+      return super.validateUserInterfaceItem(item)
+    }
+
     override func delete(_ sender: Any?) {
-      if !isEditable, let handler = HistoryDeleteCommandRouter.shared.handler {
-        handler()
+      if EditMenuDelete.usesTrashConfirmation(
+        textIsEditable: isEditable,
+        hasSelectionHandler: HistoryDeleteCommandRouter.shared.handler != nil
+      ) {
+        HistoryDeleteCommandRouter.shared.handler?()
         return
       }
       super.delete(sender)

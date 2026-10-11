@@ -1160,7 +1160,7 @@ final class AppViewModel {
 /// 桌面上就堆起几个汲作窗口。回链要做的事是「定位到已经开着的那个窗口里的
 /// 某一条」，那是应用级事件，不该经过场景。
 @MainActor
-final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
+final class LinkDigestAppDelegate: NSResponder, NSApplicationDelegate {
   private var handler: ((URL) -> Void)?
   /// App 冷启动时，系统可能在界面接好之前就把 URL 递进来。先存着，
   /// 等历史就绪再消费——否则那一次点击会静默丢失。
@@ -1170,6 +1170,32 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   /// 占两行，点了还会多出一条空标签栏（2026-10-02 菜单走查）。
   func applicationWillFinishLaunching(_ notification: Notification) {
     NSWindow.allowsAutomaticWindowTabbing = false
+  }
+
+  /// 列表是第一响应者时，`delete:` 沿响应链走到这里。只读正文自己会接住。
+  /// 只在主窗口、而且有选中条目时亮，点了进回收站确认。设置窗口里的删除不从这里走。
+  @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    guard item.action == #selector(NSText.delete(_:)) else { return false }
+    return MainActor.assumeIsolated {
+      EditMenuDelete.isEnabled(
+        textIsEditable: false,
+        hasSelectionHandler: Self.mainWindowCanDeleteSelection
+      )
+    }
+  }
+
+  @objc func delete(_ sender: Any?) {
+    MainActor.assumeIsolated {
+      guard Self.mainWindowCanDeleteSelection else { return }
+      HistoryDeleteCommandRouter.shared.handler?()
+    }
+  }
+
+  @MainActor private static var mainWindowCanDeleteSelection: Bool {
+    let key = NSApp.keyWindow
+    let isMain = key?.identifier?.rawValue.hasPrefix(LinkDigestApp.mainWindowID) == true
+    let editing = (key?.firstResponder as? NSTextView)?.isEditable == true
+    return isMain && !editing && HistoryDeleteCommandRouter.shared.handler != nil
   }
 
   func setHandler(_ handler: @escaping (URL) -> Void) {
