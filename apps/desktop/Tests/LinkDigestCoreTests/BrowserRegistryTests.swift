@@ -7,20 +7,27 @@ import XCTest
 /// 改之前这里是 `enum { chrome, brave, edge }`——写死三个，加一个浏览器要改代码、改枚举、
 /// 再补一份一模一样的模板和哈希。现在是数据：`allKnown` 里放几条就支持几个。
 ///
-/// 当前有意只放 Chrome 和 Edge。这不是技术限制——是每加一个都得真的验一遍扩展、native
-/// host 和送达记录，没验过的支持不算支持。
+/// 2026-10-12 起加 ego：Syc 日常用的就是它（界面走查 #18），档案目录 `Chromium`
+/// 没被别家占用、扩展手动装过、收据显示送达正常。仍要求每加一个都真的验一遍——
+/// 没验过的不进表。
 final class BrowserRegistryTests: XCTestCase {
   /// `id` 会被写进收据。改一个就等于让旧收据里的那条认不出来。
   func testStableIDs() {
     XCTAssertEqual(BrowserSupportBrowser.chrome.id, "chrome")
     XCTAssertEqual(BrowserSupportBrowser.edge.id, "edge")
     XCTAssertEqual(BrowserSupportBrowser.brave.id, "brave")
+    XCTAssertEqual(BrowserSupportBrowser.ego.id, "ego")
   }
 
-  /// 支持面只有 Chrome。这条不是为了锁死数量，是为了让「悄悄多支持了一个」必须显式改
-  /// 测试——支持一个浏览器意味着验过它，不是把名字列进表里。
-  func testOnlyChromeIsOffered() {
-    XCTAssertEqual(BrowserSupportBrowser.allKnown.map(\.id), ["chrome"])
+  /// 支持面是 Chrome 和 ego。这条不是为了锁死数量，是为了让「悄悄多支持了一个」
+  /// 必须显式改测试——支持一个浏览器意味着验过它，不是把名字列进表里。
+  ///
+  /// ego 的加入经过界面走查（2026-10-12 #18）：Syc 日常用的就是它，原来设置页
+  /// 只列 Chrome 是漏识别。
+  func testKnownBrowsersAreChromeAndEgo() {
+    XCTAssertEqual(BrowserSupportBrowser.allKnown.map(\.id), ["chrome", "ego"])
+    XCTAssertEqual(BrowserSupportBrowser.ego.supportDirectoryRelativePath, "Chromium")
+    XCTAssertEqual(BrowserSupportBrowser.ego.appBundleName, "ego lite")
   }
 
   /// Edge 不是「忘了加」，是被 macOS 挡住的：它的档案目录第一段就是 app 名，写入时逐段
