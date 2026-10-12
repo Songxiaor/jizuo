@@ -114,6 +114,13 @@ struct BrowserSupportSettingsView: View {
               }
             }
           }
+          // 没出现在上面的浏览器（Chromium 内核但没列进档案表的）也能用，
+          // 只是「连接」这一步要自己动手——方法一样，点「打开扩展文件夹」就能装。
+          // 不点名具体浏览器：浏览器名一律从 `BrowserRegistry` 读（有测试盯着）。
+          Text("用上面没列出的浏览器：照同一三步手动装一次扩展即可，不用点「连接」。")
+            .themedFont(.footnote)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("browser-support-manual-hint")
 
           Divider()
 

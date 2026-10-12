@@ -51,6 +51,12 @@ extension BrowserSupportBrowser {
   public static let edge = Self(
     id: "edge", displayName: "Microsoft Edge", supportDirectoryRelativePath: "Microsoft Edge",
     appBundleName: "Microsoft Edge")
+  /// EGO（ego lite）：包名带空格、档案目录固定叫 `Chromium`（沿 Chromium 默认目录，
+  /// 没换自己的名字）。2026-10-12 走查：Syc 日常用的就是它，「已装的浏览器」不能只
+  /// 列 Chrome 一家。id 用 `ego`，写进收据后是稳定键。
+  public static let ego = Self(
+    id: "ego", displayName: "ego", supportDirectoryRelativePath: "Chromium",
+    appBundleName: "ego lite")
 
   /// 当前支持的浏览器。
   ///
@@ -61,7 +67,7 @@ extension BrowserSupportBrowser {
   /// 逐段打开目录会被系统拒（EPERM，且不弹授权框），让用户在文件面板里授权也不管用。
   /// Chrome 走的是 `Google/Chrome`——第一段是厂商目录，不在那条保护规则里。这不是我们
   /// 做对了什么，是目录命名的运气。
-  public static let allKnown: [BrowserSupportBrowser] = [.chrome]
+  public static let allKnown: [BrowserSupportBrowser] = [.chrome, .ego]
 
   /// 曾经支持、现在不再提供的浏览器。
   ///

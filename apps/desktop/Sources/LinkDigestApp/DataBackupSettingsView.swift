@@ -147,7 +147,7 @@ struct DataBackupSettingsView: View {
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
-        title: "备份恢复",
+        title: "备份",
         symbol: "clock.arrow.circlepath",
         caption: "随时存一份，也能换回旧的",
         fill: SettingsCategoryChip.fill(for: "dataBackup", theme: appTheme)
@@ -174,7 +174,7 @@ struct DataBackupSettingsView: View {
             }
             SettingsActionRow(showsProgress: model.isWorking) {
               Button("打开位置") { model.revealBackupsFolder() }
-                .buttonStyle(.appQuiet)
+                .buttonStyle(.appNormal)
                 .accessibilityIdentifier("data-backup-reveal")
               Button(model.isWorking ? "处理中…" : "立即备份") { model.backupNow() }
                 .buttonStyle(.appProminent(appTheme.accent))

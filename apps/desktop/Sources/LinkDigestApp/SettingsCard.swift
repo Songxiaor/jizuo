@@ -211,6 +211,7 @@ struct SettingsPlainPage<Content: View>: View {
       VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
         content()
       }
+      .tint(theme.accent)
     } else {
       ScrollViewReader { proxy in
         ScrollView {
@@ -227,6 +228,9 @@ struct SettingsPlainPage<Content: View>: View {
       }
       .background(theme.isNative ? Color.clear : theme.canvas)
       .settingsDetailContentMargins()
+      // 显式下发一次：设置页的 Toggle 隔着 NavigationSplitView / ScrollView 有时拿不到
+      // 窗口根部的 tint，开着只剩灰轨道（2026-10-12 #17）。靛青送到这一层，整页开关都亮。
+      .tint(theme.accent)
     }
   }
 
@@ -639,6 +643,12 @@ extension View {
   func settingsControlWidth() -> some View {
     frame(width: DesignTokens.Layout.settingsControlWidth, alignment: .trailing)
   }
+
+  /// 比标准列更宽的下拉：模型名这类长内容独占一行、用满卡宽（见「默认模型」）。
+  /// 不换行截第二行——模型全名一眼要看得全。
+  func settingsWideControlWidth() -> some View {
+    frame(maxWidth: .infinity, alignment: .trailing)
+  }
 }
 
 /// 卡片里的一行提示条：错误、警告或「暂不可用」的原因。
@@ -726,6 +736,9 @@ struct SettingsActionRow<Actions: View>: View {
 struct SettingsMenuLabel: View {
   let title: String
   var subtitle: String? = nil
+  /// true 时占满父视图给的宽度（用于「默认模型」这类独行长下拉）；
+  /// false 保持标准 240pt 列宽（多级下拉在一列里对齐）。
+  var fillsWidth = false
 
   var body: some View {
     HStack(spacing: DesignTokens.Space.sm) {
@@ -751,7 +764,8 @@ struct SettingsMenuLabel: View {
     }
     .padding(.horizontal, DesignTokens.Space.sm)
     .frame(height: 22)
-    .frame(width: DesignTokens.Layout.settingsControlWidth, alignment: .leading)
+    .frame(width: fillsWidth ? nil : DesignTokens.Layout.settingsControlWidth, alignment: .leading)
+    .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.sm + 1, style: .continuous)
         .fill(Color.primary.opacity(0.05))
@@ -784,6 +798,8 @@ struct SettingsMenuPicker<Value: Hashable>: View {
   var sectionTitles: [String?] = []
   @Binding var selection: Value
   var identifier: String? = nil
+  /// true 时按钮占满父视图宽度（「默认模型」这类独行长下拉）；false 保持 240pt 标准列。
+  var fillsWidth = false
   @State private var isPresented = false
 
   private var selected: Option? {
@@ -794,7 +810,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
     Button {
       isPresented = true
     } label: {
-      SettingsMenuLabel(title: selected?.title ?? "", subtitle: selected?.subtitle)
+      SettingsMenuLabel(title: selected?.title ?? "", subtitle: selected?.subtitle, fillsWidth: fillsWidth)
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier(identifier ?? "")

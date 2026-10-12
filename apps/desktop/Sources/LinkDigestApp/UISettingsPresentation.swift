@@ -6,8 +6,10 @@ import LinkDigestCore
 /// 只放界面用字，不碰偏好键、保存或网络。集中在一处是为了避免
 /// 「总结与翻译」这类标题和独立翻译配置各写一份后互相打架。
 enum UISettingsPresentation {
-  static let modelServicesCardTitle = "模型服务"
-  static let modelServicesSummary = "按服务商分组"
+  // 页标题已经叫「模型服务」，卡片标题再说一遍是重复；这张卡装的是「已添加的模型」。
+  static let modelServicesCardTitle = "已添加的模型"
+  // 副标题说清这张卡的摆法，「添加模型…」与列表里的「模型」词一致，不与「服务商」混用。
+  static let modelServicesSummary = "加过的模型按服务商分组，同一家在下面收拢"
   static let modelServicesDetails = "密钥只存在本机钥匙串"
   /// 2026-10-04 起叫「默认模型」：总结用它，校对、翻译、脑图没单独选时也跟着它，原名只说了四分之一。
   static let summaryAssignmentTitle = "默认模型"

@@ -55,9 +55,15 @@ public struct CapturePreferencesStore: Sendable {
   }
 
   /// 扩展认识的评论平台（键名与扩展 `CommentPlatform` 一致）和设置页上的名字。
+  ///
+  /// 顺序与主界面侧栏的平台顺序一致（走查命名对照表 2026-10-12）：原来按字母
+  /// 排，和侧栏不一致看起来像两份清单。「community」显示名和侧栏统一叫
+  /// 「Discourse」（原「论坛」——同一个东西两个词）。公众号不支持抓评论，
+  /// 不在列表里——它不出现在「按平台」，不是漏了。
   public static let commentPlatforms: [(key: String, title: String)] = [
-    ("douyin", "抖音"), ("xiaohongshu", "小红书"), ("zhihu", "知乎"), ("bilibili", "B 站"),
-    ("x", "X"), ("youtube", "YouTube"), ("reddit", "Reddit"), ("community", "论坛"),
+    ("x", "X"), ("douyin", "抖音"), ("bilibili", "B 站"), ("youtube", "YouTube"),
+    ("community", "Discourse"), ("reddit", "Reddit"), ("xiaohongshu", "小红书"),
+    ("zhihu", "知乎"),
   ]
   /// 按平台设成这个值表示「不抓评论」。
   public static let commentsDisabled = 0

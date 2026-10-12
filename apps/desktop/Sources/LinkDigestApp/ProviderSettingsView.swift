@@ -39,7 +39,10 @@ struct ProviderSettingsView: View {
       case .browserSupport, .siteLogin, .comments: (.capture, rawValue)
       case .mediaStorage: (.record, rawValue)
       case .proof, .summary, .translation, .mindMap: (.processing, rawValue)
-      case .knowledgeVault, .semanticSearch: (.dataBackup, rawValue)
+      // 2026-10-12「备份恢复」一拆二：知识库自己一页；按意思搜挪进「AI 模型与工序」
+      // （它就是一项本机 AI 功能，和备份无关）。旧链接仍落到对应那页那一节。
+      case .knowledgeVault: (.knowledgeVault, nil)
+      case .semanticSearch: (.processing, rawValue)
       default: (self, nil)
       }
     }
@@ -72,7 +75,9 @@ struct ProviderSettingsView: View {
       switch self {
       case .service: return "模型服务"
       case .generation: return "处理流程"
-      case .processing: return "AI 处理"
+      // 2026-10-12 改名「AI 模型与工序」：和「处理流程」只差两个字，原来叫「AI 处理」
+      // 容易当成同一件事的两种叫法（走查命名对照表）。
+      case .processing: return "AI 模型与工序"
       default: break
       }
       return legacyTitle
@@ -85,10 +90,11 @@ struct ProviderSettingsView: View {
       case .capture, .record, .proof, .summary, .translation, .mindMap, .processing: ""
       case .comments: "评论"
       case .appearance: "外观"
+      // 2026-10-12「备份恢复」一拆二：备份恢复只管备份；知识库自己一页管导出到 Obsidian。
+      case .dataBackup: "备份"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库"
       case .semanticSearch: "按意思搜"
-      case .dataBackup: "备份恢复"
       case .companionSync: "手机同步"
       case .siteLogin: "网站登录"
       case .browserSupport: "浏览器"
@@ -164,7 +170,7 @@ struct ProviderSettingsView: View {
   private static let sidebarSections: [(title: String?, tabs: [SettingsTab])] = [
     (nil, [.generation]),
     ("工序", [.capture, .record, .processing]),
-    ("通用", [.service, .appearance, .dataBackup, .mcp, .updates]),
+    ("通用", [.service, .appearance, .knowledgeVault, .dataBackup, .mcp, .updates]),
     ("高级", [.companionSync, .labs]),
   ]
 
@@ -187,6 +193,11 @@ struct ProviderSettingsView: View {
 
   private static let outputLanguagePresets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch"]
   private static let customOutputLanguageTag = "__custom__"
+
+  /// 正文字号的读数：整数不带小数点（「15」不是「15.0」），半档才带（「15.5」）。
+  static func readingFontSizeText(_ value: Double) -> String {
+    value == value.rounded() ? String(Int(value)) : String(format: "%.1f", value)
+  }
 
   @Bindable var model: ProviderSettingsViewModel
   var appModel: AppViewModel
@@ -507,6 +518,7 @@ struct ProviderSettingsView: View {
         case .appearance: appearanceTab
         case .labs: labsTab
         case .dataBackup: dataTab
+        case .knowledgeVault: knowledgeVaultTab
         case .companionSync:
           CompanionNoteSyncSettingsView(model: companionSync)
         case .updates:
@@ -515,7 +527,7 @@ struct ProviderSettingsView: View {
         case .browserSupport, .siteLogin, .comments: captureTab
         case .mediaStorage: recordTab
         case .proof, .summary, .translation, .mindMap: processingTab
-        case .knowledgeVault, .semanticSearch: dataTab
+        case .semanticSearch: processingTab
         }
       }
       .environment(\.settingsScrollAnchor, settingsAnchor)
@@ -569,7 +581,7 @@ struct ProviderSettingsView: View {
 
   private var serviceTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .service, caption: "在这里添加服务商，选用哪个去「AI 处理」")
+      pageHeader(for: .service, caption: "在这里添加服务商；选哪个用去「AI 模型与工序」")
 
       // 还没配模型时，先告诉新手去哪拿密钥、大概花多少、不配也能用什么（2026-10-01）。
       // 配过之后推荐挪到页底，不再占首屏。
@@ -798,7 +810,8 @@ struct ProviderSettingsView: View {
     caption: "总结和脑图用它，其他没选时也用它",
     // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
     // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
-    details: "总结、脑图用它；校对和翻译没单独选时也用它。换模型只影响以后生成的。"
+    details: "总结、脑图用它；校对和翻译没单独选时也用它。换模型只影响以后生成的。",
+    controlFillsWidth: true
   ) {
     if model.libraryEntryDisplays.isEmpty {
       Text("先在下方添加模型")
@@ -808,7 +821,9 @@ struct ProviderSettingsView: View {
     } else {
       let summaryEntry = model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
       VStack(alignment: .trailing, spacing: 4) {
-        assignmentPickerButton(kind: .summary, selectedEntry: summaryEntry)
+        // 「默认模型」的下拉独占整行宽度（下方 HStack 左端是名称说明，右端整宽放下拉），
+        // 长名字（「Gemini 3.7 Flash · Google Magpie」）不再被 240pt 列宽截断。
+        assignmentPickerButton(kind: .summary, selectedEntry: summaryEntry, fillsWidth: true)
         // 总结模型用不了时，翻译、校对（默认跟着它）也一起失败：就地说清楚，给出口。
         if let summaryEntry,
            let record = model.healthRecord(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName),
@@ -997,6 +1012,9 @@ struct ProviderSettingsView: View {
     title: String,
     caption: String,
     details: String? = nil,
+    /// true：左列（名字/说明）占 200pt，右端控件吃满剩余宽度（「默认模型」用，
+    /// 长模型名不再被 240pt 标准列截断）。false：右端控件按标准 240pt 列。
+    controlFillsWidth: Bool = false,
     @ViewBuilder control: () -> Control
   ) -> some View {
     let isExpanded = expandedAssignmentDetails.contains(title)
@@ -1024,8 +1042,14 @@ struct ProviderSettingsView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(minWidth: controlFillsWidth ? 200 : nil, alignment: .leading)
         Spacer(minLength: DesignTokens.Space.md)
-        control()
+        if controlFillsWidth {
+          control()
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+          control()
+        }
       }
       if isExpanded, let details {
         Text(details)
@@ -1158,14 +1182,16 @@ struct ProviderSettingsView: View {
 
   private func assignmentPickerButton(
     kind: AssignmentPicker,
-    selectedEntry: ProviderSettingsViewModel.LibraryEntryDisplay?
+    selectedEntry: ProviderSettingsViewModel.LibraryEntryDisplay?,
+    fillsWidth: Bool = false
   ) -> some View {
     Button {
       activeAssignmentPicker = kind
     } label: {
       SettingsMenuLabel(
         title: assignmentDisplayName(kind: kind, entry: selectedEntry),
-        subtitle: assignmentDetail(kind: kind, entry: selectedEntry)
+        subtitle: assignmentDetail(kind: kind, entry: selectedEntry),
+        fillsWidth: fillsWidth
       )
     }
     .buttonStyle(.plain)
@@ -2324,25 +2350,33 @@ struct ProviderSettingsView: View {
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-          // 无衬线 / 宋体一键切换：宋体是长文最常被选的替代，不该藏在下拉的第二组里。
-          // 只在本机装了思源宋体时出现——Songti SC 在 16.5pt 上发虚，不值得给一键位。
-          if let serif = editorialSerifQuickOption {
-            HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+          // 一键切到最常用的三档。三档都是真改下面「字体」那一项——存进偏好的是
+          // 具体家族（或「跟随主题」），预览和正文按同一偏好解析，不会出现
+          // 「选了黑体但预览是宋体」这种选项和结果对不上的情况（2026-10-12 走查）。
+          //
+          // 「宋体（跟随主题）」单独成一档：默认、且跟随主题换；本机装了思源宋体时
+          // 再给一档「思源宋体」（它比系统宋体在 15pt 上站得稳，见 ReadingFontCatalog）。
+          HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
               Text("风格")
                 .themedFont(.body)
-              Spacer(minLength: DesignTokens.Space.md)
-              Picker("阅读风格", selection: Binding(
-                get: { readingFontRaw == serif ? serif : ReadingFontSelection.defaultStoredValue },
-                set: { readingFontRaw = $0 }
-              )) {
-                Text("黑体").tag(ReadingFontSelection.defaultStoredValue)
-                Text("宋体").tag(serif)
-              }
-              .pickerStyle(.segmented)
-              .labelsHidden()
-              .settingsControlWidth()
-              .accessibilityIdentifier("appearance-reading-style")
+              // 主题下「跟随主题」解析到宋体（思源宋体优先、系统宋体兜底）。
+              Text("跟随主题就是跟随上面的主题；浅色 / 深色主题都默认宋体。")
+                .themedFont(.footnote)
+                .foregroundStyle(.secondary)
             }
+            Spacer(minLength: DesignTokens.Space.md)
+            Picker("阅读风格", selection: $readingFontRaw) {
+              Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
+              Text("黑体").tag("PingFang SC")
+              if let serif = editorialSerifQuickOption {
+                Text("思源宋体").tag(serif)
+              }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("appearance-reading-style")
           }
           HStack(alignment: .center, spacing: DesignTokens.Space.md) {
             Text("字体")
@@ -2377,7 +2411,8 @@ struct ProviderSettingsView: View {
                 step: Double(ReadingFontSize.step)
               )
               .accessibilityIdentifier("appearance-reading-font-size-slider")
-              Text(String(format: "%.1f", readingFontSizeRaw))
+              // 整数显示：滑块步进 0.5，但「15.0」读起来像精度事故；半档显示成 15.5。
+              Text(Self.readingFontSizeText(readingFontSizeRaw))
                 .themedFont(.caption, monospacedDigit: true)
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .trailing)
@@ -2494,7 +2529,7 @@ struct ProviderSettingsView: View {
       SettingsPageHeader(
         title: SettingsTab.processing.title,
         symbol: SettingsTab.processing.symbol,
-        caption: "以下几步都要用 AI 模型",
+        caption: "以下几步都要用 AI 模型；按意思搜是本机模型，不外发",
         fill: sidebarChipFill(.processing)
       )
       SettingsRowGroup {
@@ -2515,7 +2550,9 @@ struct ProviderSettingsView: View {
         advancedCard(title: "高级：总结要求") { summaryPromptSection }
       }
       processingSection(.translation) {
-        stepHeader(.translation, caption: "外文标题自动译成中文", autoLabel: "翻译标题", compact: true)
+        // 开关旁统一写「自动」，和其它工序一致（原来写「翻译标题」，四种写法不一）。
+        // 这件事干什么由标题「翻译 · 译」和说明句说；开关只管「新内容进来要不要自动做」。
+        stepHeader(.translation, caption: "外文标题自动译成中文", compact: true)
         SettingsRowGroup {
           translationAssignmentRow
         }
@@ -2533,6 +2570,15 @@ struct ProviderSettingsView: View {
           SettingsInlineNotice(message: "「总结 · 摘」是手动：脑图会直接读原文，效果通常不如先总结。", tone: .warning)
         }
       }
+      // 按意思搜也是一项本机 AI 功能（2026-10-12 从备份恢复挪过来）：和上面六道
+      // 工序并列摆成一节，页面告诉用户「这里全是模型相关的事」。
+      if let service = historyModel?.semanticSearch {
+        processingSection(.semanticSearch) {
+          SettingsEmbeddedSection(anchor: SettingsTab.semanticSearch.rawValue) {
+            SemanticSearchSettingsView(service: service)
+          }
+        }
+      }
       preferencesStatusNotice
     }
   }
@@ -2546,23 +2592,22 @@ struct ProviderSettingsView: View {
     .id(tab.rawValue)
   }
 
-  /// 数据与备份：备份、知识库同步、按意思搜，加上原来在「处理流程」里的发送授权记录。
+  /// 数据与备份：备份 + 发送授权。2026-10-12 原来「备份恢复」一页装了四件事
+  /// （备份、知识库、按意思搜、发送授权），拆开后这一页只管备份与内容授权；
+  /// 知识库单成一页，按意思搜挪去「AI 模型与工序」和别的本机 AI 功能一起。
   private var dataTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .dataBackup, caption: "备份、知识库、按意思搜和发送授权")
+      pageHeader(for: .dataBackup, caption: "备份全部资料，以及内容发去服务商的授权")
       SettingsEmbeddedSection(anchor: SettingsTab.dataBackup.rawValue, showsHeader: false) {
         DataBackupSettingsView()
       }
-      SettingsEmbeddedSection(anchor: SettingsTab.knowledgeVault.rawValue) {
-        KnowledgeVaultSettingsView(model: knowledgeVault)
-      }
-      if let service = historyModel?.semanticSearch {
-        SettingsEmbeddedSection(anchor: SettingsTab.semanticSearch.rawValue) {
-          SemanticSearchSettingsView(service: service)
-        }
-      }
       sendAuthorizationSection
     }
+  }
+
+  /// 知识库（Obsidian 导出）自己一页（2026-10-12 从「备份恢复」拆出）。
+  private var knowledgeVaultTab: some View {
+    KnowledgeVaultSettingsView(model: knowledgeVault)
   }
 
   private var commentsTab: some View {
@@ -2584,7 +2629,7 @@ struct ProviderSettingsView: View {
           caption: commentLimitSaveFailed
             ? "保存失败，请重试；这次仍按之前的条数存。"
             : "下面没有单独设的平台都按这个数。",
-          details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。不够数时扩展会往下翻，够了或到底就停，再滚回原位置。"
+          details: "适用于 X、抖音、B 站、YouTube、Discourse、Reddit、小红书、知乎。不够数时扩展会往下翻，够了或到底就停，再滚回原位置。"
         ) {
           SettingsMenuPicker(
             sections: [CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "\($0) 条") }],
@@ -2594,11 +2639,18 @@ struct ProviderSettingsView: View {
           .accessibilityLabel("默认评论条数")
         }
       }
-      Text("按平台")
-        .themedFont(.caption)
-        .tracking(2)
-        .foregroundStyle(settingsTheme.secondaryText)
-        .padding(.top, DesignTokens.Space.sm)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("按平台")
+          .themedFont(.caption)
+          .tracking(2)
+          .foregroundStyle(settingsTheme.secondaryText)
+        // 与侧栏平台名保持一致（「Discourse」和侧栏同一个词，原写「论坛」）；
+        // 公众号的评论在文章页内是留言机制，扩展抓不了，所以这张清单里没有它。
+        Text("和侧栏平台同一个顺序、同一个叫法；公众号的评论抓不了，不在清单里。")
+          .themedFont(.footnote)
+          .foregroundStyle(settingsTheme.secondaryText)
+      }
+      .padding(.top, DesignTokens.Space.sm)
       SettingsRowGroup {
         ForEach(CapturePreferencesStore.commentPlatforms, id: \.key) { platform in
           SettingsRow(title: platform.title) {
