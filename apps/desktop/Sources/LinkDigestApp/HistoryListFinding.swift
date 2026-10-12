@@ -93,8 +93,23 @@ enum HistoryListFinding {
     case .today, .yesterday:
       return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
     case .lastWeek, .month:
+      let year = calendar.component(.year, from: date)
+      if year != calendar.component(.year, from: now) {
+        return "\(year)年\(parts.month ?? 0)月\(parts.day ?? 0)日"
+      }
       return "\(parts.month ?? 0)月\(parts.day ?? 0)日"
     }
+  }
+
+  /// 存下来的标题一模一样时，小字再补一个日期，不然只能靠作者分辨。
+  static func titlesNeedingDate(_ rows: [HistoryRowProjection]) -> Set<String> {
+    var counts: [String: Int] = [:]
+    for row in rows {
+      let title = row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !title.isEmpty, title != CapturedDocumentTitle.missing else { continue }
+      counts[title, default: 0] += 1
+    }
+    return Set(counts.compactMap { title, count in count > 1 ? title : nil })
   }
 
   // MARK: - 标题：跳过开头的感叹

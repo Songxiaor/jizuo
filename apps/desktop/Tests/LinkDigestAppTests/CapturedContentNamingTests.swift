@@ -311,7 +311,7 @@ final class CapturedContentNamingTests: XCTestCase {
       published: "2026-03-15T10:00:00Z"
     )
     XCTAssertEqual(withAuthor.origin, .fallback)
-    XCTAssertEqual(withAuthor.text, "阿强 · 内容 · 2026-03-15")
+    XCTAssertEqual(withAuthor.text, "无标题（阿强 · 2026年3月15日）")
 
     let platformOnly = CapturedContentNaming.name(
       title: CapturedDocumentTitle.missing,
@@ -321,7 +321,7 @@ final class CapturedContentNamingTests: XCTestCase {
       published: "2026年3月15日 10:00"
     )
     XCTAssertEqual(platformOnly.origin, .fallback)
-    XCTAssertEqual(platformOnly.text, "抖音 · 内容 · 2026年3月15日")
+    XCTAssertEqual(platformOnly.text, "无标题（抖音 · 2026年3月15日）")
 
     let noDate = CapturedContentNaming.name(
       title: nil,
@@ -331,7 +331,7 @@ final class CapturedContentNamingTests: XCTestCase {
       published: nil
     )
     XCTAssertEqual(noDate.origin, .fallback)
-    XCTAssertEqual(noDate.text, "小红 · 内容")
+    XCTAssertEqual(noDate.text, "无标题（小红）")
     XCTAssertFalse(noDate.text.contains("视频"), "不凭媒体猜测视频")
     XCTAssertFalse(CapturedContentNaming.hidesRepeatedHeading(name: noDate, body: body))
   }
@@ -376,5 +376,112 @@ final class CapturedContentNamingTests: XCTestCase {
     )
     XCTAssertEqual(name.origin, .caption)
     XCTAssertEqual(name.text, "今天的新发现。")
+  }
+
+  func testListTitleDropsMarkupAndPlaceholderTitles() {
+    let harness = CapturedContentNaming.name(
+      title: "A **harness** is the software scaffolding",
+      body: "正文。",
+      host: "example.com",
+      author: nil,
+      published: nil
+    )
+    XCTAssertEqual(harness.text, "A harness is the software scaffolding")
+    XCTAssertFalse(harness.text.contains("**"))
+
+    let quoted = CapturedContentNaming.name(
+      title: "> *“引用的一句”*",
+      body: "正文。",
+      host: "example.com",
+      author: nil,
+      published: nil
+    )
+    XCTAssertFalse(quoted.text.contains(">"))
+    XCTAssertFalse(quoted.text.contains("*"))
+    XCTAssertTrue(quoted.text.contains("引用的一句"))
+
+    let imagePost = CapturedContentNaming.name(
+      title: "抖音图文",
+      body: "# 抖音图文\n\n![](https://example.test/a.jpg)",
+      host: "douyin.com",
+      author: "不知名选手",
+      published: "2026-08-14 17:39"
+    )
+    XCTAssertEqual(imagePost.origin, .fallback)
+    XCTAssertEqual(imagePost.text, "无标题（不知名选手 · 2026年8月14日）")
+
+    let stats = CapturedContentNaming.name(
+      title: "#新手修容教程 #骨相感",
+      body: "# #新手修容教程 #骨相感\n\n## 评论\n\n- 第一条评论不该当标题",
+      host: "douyin.com",
+      author: "its蕙粉丝1345获赞6.6万相互",
+      published: "2026-09-23 15:28"
+    )
+    XCTAssertEqual(stats.text, "无标题（its蕙 · 2026年9月23日）")
+    XCTAssertFalse(stats.text.contains("获赞"))
+    XCTAssertFalse(stats.text.contains("评论"))
+  }
+
+  func testMissingXiaohongshuTitleIgnoresComments() {
+    let body = """
+    ---
+    author: "东汇达教育-史迪仔"
+    published: "2026-09-04T02:27:03.000Z"
+    ---
+
+    #薪资待遇 #体制内打工人
+
+    ![](https://example.test/a.jpg)
+
+    ## 评论（已保存 20 条）
+
+    - **田蒙笔记** · 赞 657 · 09-04广东
+      可是公务员也有月入2w的
+    """
+    let name = CapturedContentNaming.name(
+      title: "无标题",
+      body: body,
+      host: "www.xiaohongshu.com",
+      author: "东汇达教育-史迪仔",
+      published: "2026-09-04T02:27:03.000Z"
+    )
+    XCTAssertEqual(name.origin, .fallback)
+    XCTAssertEqual(name.text, "无标题（东汇达教育-史迪仔 · 2026年9月4日）")
+    XCTAssertFalse(name.text.contains("公务员"))
+  }
+
+  func testInvalidVideoTitleAddsBVIdentifier() {
+    let url = "https://www.bilibili.com/video/BV1iu4m137PY"
+    XCTAssertEqual(
+      CapturedContentNaming.invalidVideoTitle("该视频已失效", url: url),
+      "该视频已失效（BV1iu4m137PY）"
+    )
+    XCTAssertEqual(
+      CapturedContentNaming.invalidVideoTitle("视频已失效", url: "https://www.bilibili.com/video/BV1V4UYY5EhD"),
+      "视频已失效（BV1V4UYY5EhD）"
+    )
+    XCTAssertEqual(
+      CapturedContentNaming.invalidVideoTitle("正常标题", url: url),
+      "正常标题"
+    )
+  }
+
+  func testSameStoredTitleNeedsADate() {
+    func row(_ title: String) -> HistoryRowProjection {
+      HistoryRowProjection(
+        taskID: TaskID(UUID()), title: title, canonicalURL: "https://www.zhihu.com/question/1",
+        host: "zhihu.com", sourceLabel: "test", latestRunKind: nil, latestRunStatus: nil,
+        latestModel: nil, updatedAtMilliseconds: 1, latestRunAtMilliseconds: nil,
+        usageCost: .unknown, artifactPreview: nil
+      )
+    }
+    let rows = [row("如何正确使用知乎？"), row("如何正确使用知乎？"), row("另一篇")]
+    XCTAssertEqual(HistoryListFinding.titlesNeedingDate(rows), ["如何正确使用知乎？"])
+    XCTAssertTrue(HistoryListFinding.titlesNeedingDate([row("无标题"), row("无标题")]).isEmpty)
+  }
+
+  func testDouyinAuthorDropsGluedProfileStats() {
+    XCTAssertEqual(HistoryAuthorDisplay.text("its蕙粉丝1345获赞6.6万相互"), "its蕙")
+    XCTAssertEqual(HistoryAuthorDisplay.text("阿强"), "阿强")
   }
 }

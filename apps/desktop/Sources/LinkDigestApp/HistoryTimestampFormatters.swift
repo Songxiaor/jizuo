@@ -109,6 +109,63 @@ enum HistoryPublishedTimestampFormatter {
     return calendar
   }()
 
+  /// 「9月4日」；不是今年则「2016年4月7日」。认不出返回 nil，不把原文原样拼回去。
+  static func calendarDayLabel(
+    _ value: String,
+    now: Date = Date(),
+    calendar: Calendar = .autoupdatingCurrent
+  ) -> String? {
+    let (when, _) = splittingLocation(value)
+    guard let date = parsedPublishedDate(when) else { return nil }
+    return calendarDay(date, now: now, calendar: calendar)
+  }
+
+  /// 「2026-01-07 21:53・北京」里的「北京」。没有单独的地区就返回 nil。
+  static func location(in value: String) -> String? {
+    splittingLocation(value).location
+  }
+
+  /// 标题回退用的日期：始终带年份，避免跨年后同一条的名字自己变掉。
+  static func stableDayLabel(_ value: String, calendar: Calendar = .autoupdatingCurrent) -> String? {
+    let (when, _) = splittingLocation(value)
+    guard let date = parsedPublishedDate(when) else { return nil }
+    let parts = calendar.dateComponents([.year, .month, .day], from: date)
+    return "\(parts.year ?? 0)年\(parts.month ?? 1)月\(parts.day ?? 1)日"
+  }
+
+  static func calendarDay(_ date: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) -> String {
+    let parts = calendar.dateComponents([.year, .month, .day], from: date)
+    let year = parts.year ?? 0
+    let month = parts.month ?? 1
+    let day = parts.day ?? 1
+    if year == calendar.component(.year, from: now) {
+      return "\(month)月\(day)日"
+    }
+    return "\(year)年\(month)月\(day)日"
+  }
+
+  private static func parsedPublishedDate(_ value: String) -> Date? {
+    let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      .replacingOccurrences(of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$", with: "", options: .regularExpression)
+    guard !cleaned.isEmpty else { return nil }
+    return standardISO.date(from: cleaned) ?? fractionalISO.date(from: cleaned) ?? localCalendarDate(cleaned)
+  }
+
+  /// 时间和地区粘在一起时拆开。地区是末段、不含数字、又不长。
+  /// 分隔符按字面比较：知乎用的是「・」（U+30FB），不是普通间隔号。
+  private static func splittingLocation(_ value: String) -> (when: String, location: String?) {
+    let separators: [Character] = ["·", "・", "•", "|", "｜"]
+    guard let index = value.lastIndex(where: { separators.contains($0) }) else { return (value, nil) }
+    let when = value[..<index].trimmingCharacters(in: .whitespacesAndNewlines)
+    let location = value[value.index(after: index)...].trimmingCharacters(in: .whitespacesAndNewlines)
+    // 「京」这类汉字在 Unicode 里也算数字，不能用 isNumber，只认阿拉伯数字。
+    let hasASCIIDigit = { (text: String) in text.contains { $0.isASCII && $0.isNumber } }
+    guard !when.isEmpty, (1...12).contains(location.count),
+          hasASCIIDigit(when), !hasASCIIDigit(location)
+    else { return (value, nil) }
+    return (String(when), String(location))
+  }
+
   static func compactDate(_ date: Date, now: Date = Date()) -> String {
     let calendar = Calendar.autoupdatingCurrent
     if calendar.isDate(date, inSameDayAs: now) { return "今天" }

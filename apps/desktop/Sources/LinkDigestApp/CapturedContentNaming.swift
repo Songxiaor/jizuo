@@ -21,13 +21,15 @@ enum CapturedContentNaming {
     author: String?,
     published: String?
   ) -> Name {
-    let parsed = MarkdownNoteFrontmatter.parse(body ?? "")
+    // 评论区不是标题。小红书没标题时，详情以前把第一条评论当成配文，标题就被藏掉了。
+    let sourceBody = HistoryListFinding.withoutCommentSection(body) ?? body ?? ""
+    let parsed = MarkdownNoteFrontmatter.parse(sourceBody)
     let cleaned = cleanedSourceText(parsed.body, preservesSoleHeading: true)
     let platform = platformKind(host)
 
     if platform == .douyin {
-      if let text = derivedCaption(from: captionBasisTitle(title, host: host))
-        ?? derivedCaption(from: firstSubstantialParagraph(in: cleaned))
+      if let text = acceptedCaption(derivedCaption(from: captionBasisTitle(title, host: host)))
+        ?? acceptedCaption(derivedCaption(from: firstSubstantialParagraph(in: cleaned)))
       {
         return Name(text: text, origin: .caption)
       }
@@ -40,8 +42,8 @@ enum CapturedContentNaming {
       // 推文没有独立标题，列表标题就是正文开头。列表行有两行位置，按 40 字截会在
       // 半句话甚至半个单词处断掉（"…to know what …"）；放宽到 72 字并在词边界收尾。
       // 抓取端可能已把标题截到 36 字，所以优先从正文重新取，取不到再用标题。
-      if let text = derivedCaption(from: firstSubstantialParagraph(in: cleaned), limit: xCaptionCharacterLimit)
-        ?? derivedCaption(from: basis, limit: xCaptionCharacterLimit)
+      if let text = acceptedCaption(derivedCaption(from: firstSubstantialParagraph(in: cleaned), limit: xCaptionCharacterLimit))
+        ?? acceptedCaption(derivedCaption(from: basis, limit: xCaptionCharacterLimit))
       {
         return Name(text: text, origin: .caption)
       }
@@ -51,10 +53,20 @@ enum CapturedContentNaming {
       return Name(text: source, origin: .sourceTitle)
     }
 
-    if let text = derivedCaption(from: firstSubstantialParagraph(in: cleaned)) {
+    if let text = acceptedCaption(derivedCaption(from: firstSubstantialParagraph(in: cleaned))) {
       return Name(text: text, origin: .caption)
     }
     return fallbackName(host: host, author: author, published: published)
+  }
+
+  /// 失效视频没有原标题。列表里多条都叫「该视频已失效」，用地址里的 BV 号分开。
+  static func invalidVideoTitle(_ title: String, url: String) -> String {
+    let markers = ["该视频已失效", "视频已失效"]
+    guard let marker = markers.first(where: { title == $0 || title.hasPrefix($0 + "（") }) else { return title }
+    guard let match = url.range(of: #"BV[0-9A-Za-z]{10}"#, options: .regularExpression) else { return title }
+    let identifier = String(url[match])
+    if title.contains(identifier) { return title }
+    return "\(marker)（\(identifier)）"
   }
 
   /// 从一段正文里取首句当标题（卡片用）。取不到返回 nil。
@@ -104,14 +116,35 @@ private extension CapturedContentNaming {
 
   static func usableSourceTitle(_ title: String?, host: String) -> String? {
     let displayed = CapturedDocumentTitle.display(title, for: titleDisplayURL(host))
-    return displayed == CapturedDocumentTitle.missing ? nil : displayed
+    let presented = present(displayed)
+    if presented == CapturedDocumentTitle.missing || isPlaceholderDisplayTitle(presented) { return nil }
+    return presented
+  }
+
+  /// 「抖音图文」「无标题」和只有话题标签的串都不是标题。
+  static func isPlaceholderDisplayTitle(_ title: String) -> Bool {
+    let presented = present(title)
+    if presented.isEmpty || presented == CapturedDocumentTitle.missing { return true }
+    if ["抖音图文", "抖音视频", "抖音作品"].contains(presented) { return true }
+    return isHashtagOnly(presented)
+  }
+
+  static func present(_ text: String) -> String {
+    HistoryRowProjection.strippingInlineMarkup(text)
+  }
+
+  static func acceptedCaption(_ text: String?) -> String? {
+    guard let text else { return nil }
+    let presented = present(text)
+    guard !presented.isEmpty, !isPlaceholderDisplayTitle(presented) else { return nil }
+    return presented
   }
 
   /// 配文基础用去掉无标题/旧 URL 标题后的原句，不走课时名缩短。
   static func captionBasisTitle(_ title: String?, host: String) -> String? {
     guard usableSourceTitle(title, host: host) != nil else { return nil }
-    let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? nil : trimmed
+    let presented = present(title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    return presented.isEmpty ? nil : presented
   }
 
   static func derivedCaption(from raw: String?, limit: Int = captionCharacterLimit) -> String? {
@@ -249,7 +282,7 @@ private extension CapturedContentNaming {
 
   static func cleanedSourceText(_ markdown: String, preservesSoleHeading: Bool) -> String {
     let withoutImages = strippingMarkdownImages(from: markdown)
-    return strippingLeadingATXHeading(from: withoutImages, preservesSoleHeading: preservesSoleHeading)
+    return present(strippingLeadingATXHeading(from: withoutImages, preservesSoleHeading: preservesSoleHeading))
   }
 
   static func strippingMarkdownImages(from markdown: String) -> String {
@@ -351,26 +384,16 @@ private extension CapturedContentNaming {
   }
 
   static func fallbackName(host: String, author: String?, published: String?) -> Name {
-    let owner = author?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let owner = HistoryAuthorDisplay.text(author ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     let platform = HistoryPlatformDisplay.name(forHost: host)
-    let head = (owner?.isEmpty == false ? owner! : platform)
-    var text = "\(head) · 内容"
-    if let date = dateOnly(from: published) {
-      text += " · \(date)"
+    let who = owner.isEmpty ? platform : owner
+    var inside: [String] = []
+    if !who.isEmpty { inside.append(who) }
+    if let published, let date = HistoryPublishedTimestampFormatter.stableDayLabel(published) {
+      inside.append(date)
     }
+    let text = inside.isEmpty ? "无标题" : "无标题（\(inside.joined(separator: " · "))）"
     return Name(text: text, origin: .fallback)
-  }
-
-  static func dateOnly(from published: String?) -> String? {
-    let raw = published?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard !raw.isEmpty else { return nil }
-    if let match = raw.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) {
-      return String(raw[match])
-    }
-    if let match = raw.range(of: #"\d{4}年\d{1,2}月\d{1,2}日"#, options: .regularExpression) {
-      return String(raw[match])
-    }
-    return nil
   }
 
   static func normalizedWhitespace(_ text: String) -> String {

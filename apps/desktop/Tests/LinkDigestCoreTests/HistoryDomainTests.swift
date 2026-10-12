@@ -47,6 +47,10 @@ final class HistoryDomainTests: XCTestCase {
       HistoryRowProjection.sanitizedDirectoryPreview("每一套课程 # AI # 构建出 #话题 a # b", isSummary: false),
       "每一套课程 AI 构建出 #话题 a b"
     )
+    XCTAssertEqual(
+      HistoryRowProjection.sanitizedDirectoryPreview("> *“引用”* 里的 **harness**", isSummary: false),
+      "“引用” 里的 harness"
+    )
   }
 
   func testTagNormalizationAndAutomaticFirstLineLimit() {

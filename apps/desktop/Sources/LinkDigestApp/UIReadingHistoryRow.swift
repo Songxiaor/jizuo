@@ -11,6 +11,8 @@ struct UIReadingHistoryRow: View {
   let theme: HistoryThemeTokens
   /// 同一博主连续多条时，从第二条起副标题只留日期，不再每行重复作者名。
   var showsAuthor: Bool = true
+  /// 当前列表里还有另一条用了同一个标题时，小字补上日期。
+  var showsDisambiguatingDate: Bool = false
   /// 悬停动作与「按下」动作由父层注入：行只收值，不认识 ViewModel。
   ///
   /// 闭包不参与下面的 `Equatable`——它们捕获的是引用型 model 和这一行固定不变的
@@ -74,7 +76,10 @@ struct UIReadingHistoryRow: View {
   }
 
   private var rowPrimaryTitle: String {
-    HistoryReadingTitle.primaryTitle(captured: capturedTitle, artifactPreview: cleanedArtifactPreview)
+    CapturedContentNaming.invalidVideoTitle(
+      HistoryReadingTitle.primaryTitle(captured: capturedTitle, artifactPreview: cleanedArtifactPreview),
+      url: row.canonicalURL
+    )
   }
 
   private func rowPreviewLine(title rowPrimaryTitle: String) -> String? {
@@ -116,6 +121,19 @@ struct UIReadingHistoryRow: View {
 
   private var savedAtMilliseconds: Int64 { HistoryListFinding.savedAtMilliseconds(of: row) }
 
+  /// 悬停里的原帖时间：用「1月7日」，地区另写，不再留「2026-01-07 21:53・北京」。
+  private static func publishedHoverText(_ value: String?) -> String? {
+    guard let value = value?.trimmedNonEmpty else { return nil }
+    if let day = HistoryPublishedTimestampFormatter.calendarDayLabel(value) {
+      if let location = HistoryPublishedTimestampFormatter.location(in: value) {
+        return "\(day) \(location)"
+      }
+      return day
+    }
+    let text = HistoryPublishedTimestampFormatter.text(value)
+    return text == "发布时间未获取" ? nil : text
+  }
+
   /// 列表按存入时间分组，行尾时间也说存入时间；原帖发布时间放悬停里。
   private func savedTimeHelp(_ text: RowText) -> String {
     var parts = ["存于 \(HistoryRelativeTime.text(savedAtMilliseconds))"]
@@ -126,7 +144,21 @@ struct UIReadingHistoryRow: View {
   }
 
   private var rowSourceText: String {
-    row.author?.trimmedNonEmpty.map(HistoryAuthorDisplay.text) ?? HistoryPlatformDisplay.name(forHost: row.host)
+    let author = row.author?.trimmedNonEmpty.map(HistoryAuthorDisplay.text) ?? ""
+    if !author.isEmpty { return author }
+    return HistoryPlatformDisplay.name(forHost: row.host)
+  }
+
+  /// 同名标题用来分辨的日期：有发布日用发布日，否则用存入日。
+  private var disambiguatingDateText: String? {
+    guard showsDisambiguatingDate else { return nil }
+    if let published = row.published?.trimmedNonEmpty,
+       let day = HistoryPublishedTimestampFormatter.calendarDayLabel(published) {
+      return day
+    }
+    return HistoryPublishedTimestampFormatter.calendarDay(
+      Date(timeIntervalSince1970: Double(savedAtMilliseconds) / 1_000)
+    )
   }
 
   /// 一行里要显示的几段文字，每次 body 只算一遍。
@@ -162,7 +194,7 @@ struct UIReadingHistoryRow: View {
         && LocalImportDocument.placeholderRowSummary(row.sourcePreview, hasTranscript: row.hasTranscript == true) == nil
         && cleanedArtifactPreview != nil,
       visibleTags: visibleTags,
-      publishedText: row.published?.trimmedNonEmpty.map { HistoryPublishedTimestampFormatter.text($0) },
+      publishedText: Self.publishedHoverText(row.published),
       sourceText: rowSourceText,
       isAudioOnly: LocalImportDocument.isAudioOnly(host: row.host, preview: row.sourcePreview)
     )
@@ -185,7 +217,7 @@ struct UIReadingHistoryRow: View {
     } else if row.transcriptionFailed == true {
       values.append("上次转写没成功")
     } else if row.hasMedia == true {
-      values.append("有视频，还没转写")
+      values.append(text.isAudioOnly ? "有录音，还没转写" : "有视频，还没转写")
     }
     if row.hasMindMap == true { values.append("已生成脑图") }
     return values.joined(separator: "，")
@@ -264,8 +296,8 @@ struct UIReadingHistoryRow: View {
         }
         HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
           // 笔记的「作者」就是「我的笔记」，在笔记分类里每行都写一遍没有意义。
-          if showsAuthor, !row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
-            Text(text.sourceText)
+          if let sourceLine = sourceLine(text) {
+            Text(sourceLine)
               .themedFont(.caption)
               .foregroundStyle(theme.secondaryText.opacity(0.85))
               .lineLimit(1)
@@ -364,7 +396,7 @@ struct UIReadingHistoryRow: View {
             .accessibilityIdentifier("history-row-transcription-failed")
         } else if row.hasMedia == true || row.hasTranscript == true {
           Image(systemName: text.isAudioOnly ? "waveform" : "play.rectangle")
-            .accessibilityLabel(text.isAudioOnly ? "带录音" : "带视频")
+            .accessibilityLabel(text.isAudioOnly ? "有录音" : "有视频")
         }
         if row.hasMindMap == true {
           Image(systemName: "brain")
@@ -373,8 +405,34 @@ struct UIReadingHistoryRow: View {
       }
       .font(.system(size: BadgeTypography.size))
       .foregroundStyle(.tertiary)
+      .apply { icons in
+        let help = statusIconHelp(text)
+        if help.isEmpty { icons } else { icons.help(help) }
+      }
       .accessibilityIdentifier("history-row-status-badges")
     }
+  }
+
+  /// 作者行。同名时把日期接在后面；作者被收起时只留日期。
+  private func sourceLine(_ text: RowText) -> String? {
+    let showsName = showsAuthor && !row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
+    var parts: [String] = []
+    if showsName { parts.append(text.sourceText) }
+    if let date = disambiguatingDateText { parts.append(date) }
+    let line = parts.joined(separator: " · ")
+    return line.isEmpty ? nil : line
+  }
+
+  /// 行尾小图标的悬停说明。整组只挂一处，避免每一枚图标各占一块鼠标感应区。
+  private func statusIconHelp(_ text: RowText) -> String {
+    var parts: [String] = []
+    if row.transcriptionFailed == true {
+      parts.append("上次转写没成功")
+    } else if row.hasMedia == true || row.hasTranscript == true {
+      parts.append(text.isAudioOnly ? "有录音" : "有视频")
+    }
+    if row.hasMindMap == true { parts.append("已生成脑图") }
+    return parts.joined(separator: " · ")
   }
 
   /// 悬停提示：原来分散在四个小元素上的信息合成一句。
@@ -385,7 +443,7 @@ struct UIReadingHistoryRow: View {
     if row.transcriptionFailed == true {
       parts.append("上次转写没成功")
     } else if row.hasMedia == true || row.hasTranscript == true {
-      parts.append(text.isAudioOnly ? "带录音" : "带视频")
+      parts.append(text.isAudioOnly ? "有录音" : "有视频")
     }
     if row.hasMindMap == true { parts.append("已生成脑图") }
     return parts.joined(separator: " · ")
@@ -490,6 +548,7 @@ extension UIReadingHistoryRow: Equatable {
       && lhs.faviconURL == rhs.faviconURL
       && lhs.theme == rhs.theme
       && lhs.showsAuthor == rhs.showsAuthor
+      && lhs.showsDisambiguatingDate == rhs.showsDisambiguatingDate
   }
 
   static func repeatsPreviousAuthor(in rows: [HistoryRowProjection], at index: Int) -> Bool {

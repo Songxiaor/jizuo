@@ -136,8 +136,29 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     return value.isEmpty ? text : value
   }
 
+  /// 列表和标题只显示字，不显示 Markdown 记号。不改库里的原文。
+  ///
+  /// 去掉成对的加粗、斜体、行首的引用号 `>` 和标题记号 `# `。`#话题` 后面没有空格，留下。
+  public static func strippingInlineMarkup(_ raw: String) -> String {
+    var text = raw.replacingOccurrences(of: #"\*\*|__"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?m)^[ \t]*>[ \t]?"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?<![\*\w])\*([^*\n]+)\*(?!\*)"#, with: "$1", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?<![_\w])_([^_\n]+)_(?!_)"#, with: "$1", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?m)^#{1,6}[ \t]+"#, with: "", options: .regularExpression)
+    while let first = text.first, first == "*" || first == "_" || first == ">" {
+      let rest = text.dropFirst()
+      if first == ">" || rest.first != " " {
+        text = String(rest)
+      } else {
+        break
+      }
+    }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   public static func sanitizedDirectoryPreview(_ raw: String?, isSummary: Bool) -> String? {
-    guard var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+    var text = strippingInlineMarkup(raw ?? "")
+    guard !text.isEmpty else { return nil }
     // Drop common capture wrappers that leak into X/source previews.
     text = text.replacingOccurrences(of: #"(?m)^<{2,}\s*$"#, with: "", options: .regularExpression)
     text = text.replacingOccurrences(of: #"(?m)^>{2,}\s*$"#, with: "", options: .regularExpression)

@@ -99,6 +99,11 @@ struct HistoryContentView: View {
     }
   }
 
+  /// 标题完全一样的条目。小字补日期，避免两行只靠作者分辨。
+  private var rowsSharingATitle: Set<String> {
+    HistoryListFinding.titlesNeedingDate(model.rows + model.visibleRelatedRows)
+  }
+
   private var ordinaryPendingCaptures: [ManualLinkViewModel.PendingCapture] {
     manualLink.pendingCaptures.filter { $0.profileImportBatchID == nil }
   }
@@ -1291,6 +1296,9 @@ struct HistoryContentView: View {
               theme: theme,
               showsAuthor: index == section.entries.first?.index
                 || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
+              showsDisambiguatingDate: rowsSharingATitle.contains(
+                row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+              ),
               model: model,
               actions: rowActions
             )
@@ -3724,6 +3732,9 @@ struct HistoryContentView: View {
           faviconURL: model.faviconImageURL(for: row),
           theme: theme,
           showsAuthor: true,
+          showsDisambiguatingDate: rowsSharingATitle.contains(
+            row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+          ),
           onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
           onSummarize: { summarizeSingle(row) },
           onActivate: { model.selectedTaskIDs = [row.taskID] },
@@ -5043,7 +5054,12 @@ private struct HistoryDetailView: View, Equatable {
       )
       // 和列表行同一个取法：首句只是「啊啊啊啊😮😮！」时往后取一句有内容的。
       // 原来列表叫「感受一下 Muse 直出的视频！」，点开详情却叫「啊啊啊啊😮😮！」（2026-10-01 走查）。
-      guard name.origin == .caption else { return name }
+      guard name.origin == .caption else {
+        return .init(
+          text: CapturedContentNaming.invalidVideoTitle(name.text, url: sourceURL),
+          origin: name.origin
+        )
+      }
       let preview = body.map { MarkdownNoteFrontmatter.parse($0).body }
       return .init(text: HistoryListFinding.informativeCaptionTitle(caption: name.text, sourcePreview: preview), origin: .caption)
     }
@@ -7926,6 +7942,9 @@ private struct HistoryDetailView: View, Equatable {
         .opacity(isShowingUntidiedTranscript ? 0.6 : 1)
         // 评论区据此给作者本人的回复标上「作者」。
         .environment(\.commentPostAuthor, sourceFrontmatter.author)
+        .environment(\.commentCapturedAt, latestSourceSnapshot.map {
+          Date(timeIntervalSince1970: Double($0.capturedAtMilliseconds) / 1_000)
+        })
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -8541,29 +8560,42 @@ private struct HistoryDetailView: View, Equatable {
   private var sourceBylineText: String {
     var parts: [String] = []
     if let account = sourceFrontmatter.accountName?.trimmedNonEmpty {
-      parts.append(account)
+      let shown = HistoryAuthorDisplay.text(account)
+      if !shown.isEmpty { parts.append(shown) }
     }
     if let author = sourceFrontmatter.author?.trimmedNonEmpty,
        author != sourceFrontmatter.accountName {
       // 「AB Kuai.Dong (@_FORAB)」写成「AB Kuai.Dong @_FORAB」：括号在一行浅字里只是噪音。
-      parts.append(
-        HistoryAuthorDisplay.text(author)
-          .replacingOccurrences(of: #"\s*\((@[^()\s]+)\)$"#, with: " $1", options: .regularExpression)
-      )
+      let shown = HistoryAuthorDisplay.text(author)
+        .replacingOccurrences(of: #"\s*\((@[^()\s]+)\)$"#, with: " $1", options: .regularExpression)
+      if !shown.isEmpty, !parts.contains(shown) { parts.append(shown) }
     }
-    // 只写一个日期，写明是什么（2026-10-03 走查：不带前缀时像数据错了）。存入日期列表里已经有
-    // （按存入时间分组、行尾也是它），这里不再重复；两个完整时间都在悬停里（2026-10-09）。
-    // 今年的不写年份和时刻：「10月8日发布」。
-    if let published = sourceFrontmatter.published?.trimmedNonEmpty {
-      parts.append(HistoryPublishedTimestampFormatter.compactText(published) + "发布")
+    let saved = Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000)
+    let savedDay = HistoryPublishedTimestampFormatter.calendarDay(saved)
+    // 外部内容写「发布」，自己导入或录的写「存入」，笔记写「创建」。
+    // 发布日和存入日不是同一天时两个都写明，避免列表和详情各写一个、看起来对不上。
+    if isOwnWriting {
+      parts.append(savedDay + " 创建")
+    } else if isLocalImportCapture {
+      parts.append(savedDay + " 存入")
+    } else if let published = sourceFrontmatter.published?.trimmedNonEmpty,
+              let publishedDay = HistoryPublishedTimestampFormatter.calendarDayLabel(published) {
+      parts.append(publishedDay + " 发布")
+      if publishedDay != savedDay { parts.append(savedDay + " 存入") }
+      if let location = HistoryPublishedTimestampFormatter.location(in: published) {
+        parts.append(location)
+      }
     } else {
-      parts.append(
-        HistoryPublishedTimestampFormatter.compactDate(
-          Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000)
-        ) + "存入"
-      )
+      parts.append(savedDay + " 存入")
     }
     return parts.joined(separator: " · ")
+  }
+
+  /// 备忘录、语音备忘录、拖进来的文件：日期说「存入」，不说「发布」。
+  private var isLocalImportCapture: Bool {
+    if detail.snapshots.last?.sourceKind == CapturedDocument.Origin.localImport.rawValue { return true }
+    let host = URL(string: sourceURL)?.host ?? ""
+    return ContentOwnership.ownLocalHosts.contains(host)
   }
 
   private var hasCollapsedRunMetadata: Bool {
@@ -9869,10 +9901,10 @@ private struct HistoryDetailView: View, Equatable {
           } else {
             ForEach(speakers, id: \.self) { name in
               Button {
-                speakerNameDraft = name
+                speakerNameDraft = SpeakerTranscript.displayLabel(name)
                 renamingSpeaker = name
               } label: {
-                Text(name)
+                Text(SpeakerTranscript.displayLabel(name))
                   .padding(.horizontal, 8).padding(.vertical, 2)
                   .background(theme.primaryText.opacity(0.06), in: Capsule())
               }
@@ -9948,6 +9980,12 @@ private struct HistoryDetailView: View, Equatable {
 
   private func commitSpeakerRename() {
     guard let old = renamingSpeaker else { return }
+    let cleaned = speakerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 只是把「说话人 1」显示成「说话人 01」，没有真改名，就不要写回正文。
+    if cleaned.isEmpty || cleaned == old || cleaned == SpeakerTranscript.displayLabel(old) {
+      renamingSpeaker = nil
+      return
+    }
     model.renameSpeaker(detail: detail, from: old, to: speakerNameDraft)
     renamingSpeaker = nil
   }
@@ -11392,12 +11430,23 @@ extension View {
 /// 「ClaudeDevs (@ClaudeDevs)」同一个词写两遍，只留「@ClaudeDevs」（2026-10-03 走查）。
 enum HistoryAuthorDisplay {
   static func text(_ author: String) -> String {
-    guard let match = author.wholeMatch(of: /^(.+?)\s*\(@([^()\s]+)\)$/) else { return author }
+    let cleaned = strippingDouyinProfileStats(author)
+    guard let match = cleaned.wholeMatch(of: /^(.+?)\s*\(@([^()\s]+)\)$/) else { return cleaned }
     let name = String(match.1).trimmingCharacters(in: .whitespaces)
     let handle = String(match.2)
     guard name.caseInsensitiveCompare(handle) == .orderedSame
-      || name.caseInsensitiveCompare("@" + handle) == .orderedSame else { return author }
+      || name.caseInsensitiveCompare("@" + handle) == .orderedSame else { return cleaned }
     return "@" + handle
+  }
+
+  /// 抖音把「粉丝 1345 获赞 6.6万 相互」粘在昵称后面抓了进来。只去掉这段尾巴。
+  static func strippingDouyinProfileStats(_ author: String) -> String {
+    let stripped = author.replacingOccurrences(
+      of: #"粉丝\s*[\d.,]+\s*获赞\s*[\d.,]+\s*[万千亿]?\s*相互\s*$"#,
+      with: "",
+      options: .regularExpression
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    return stripped
   }
 }
 
@@ -11502,6 +11551,7 @@ private struct HistorySelectionRow: View, Equatable {
   let faviconURL: URL?
   let theme: HistoryThemeTokens
   let showsAuthor: Bool
+  let showsDisambiguatingDate: Bool
   let model: HistoryViewModel
   let actions: HistoryRowActions
 
@@ -11511,6 +11561,7 @@ private struct HistorySelectionRow: View, Equatable {
       && lhs.faviconURL == rhs.faviconURL
       && lhs.theme == rhs.theme
       && lhs.showsAuthor == rhs.showsAuthor
+      && lhs.showsDisambiguatingDate == rhs.showsDisambiguatingDate
   }
 
   var body: some View {
@@ -11520,6 +11571,7 @@ private struct HistorySelectionRow: View, Equatable {
       faviconURL: faviconURL,
       theme: theme,
       showsAuthor: showsAuthor,
+      showsDisambiguatingDate: showsDisambiguatingDate,
       onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
       onSummarize: { actions.summarize(row) },
       onActivate: { model.selectedTaskIDs = [row.taskID] },

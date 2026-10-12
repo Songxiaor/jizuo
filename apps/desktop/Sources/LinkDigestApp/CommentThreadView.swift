@@ -6,11 +6,21 @@ private struct CommentPostAuthorKey: EnvironmentKey {
   static let defaultValue: String? = nil
 }
 
+private struct CommentCapturedAtKey: EnvironmentKey {
+  static let defaultValue: Date? = nil
+}
+
 extension EnvironmentValues {
   /// 帖子作者的原始写法，如「大师的AI小灶 (@dashiAIxz)」「u/someone」「阿强」。
   var commentPostAuthor: String? {
     get { self[CommentPostAuthorKey.self] }
     set { self[CommentPostAuthorKey.self] = newValue }
+  }
+
+  /// 这条内容保存的时间。评论里的「8分钟前」是保存当时的相对时间，要按这个时刻换算。
+  var commentCapturedAt: Date? {
+    get { self[CommentCapturedAtKey.self] }
+    set { self[CommentCapturedAtKey.self] = newValue }
   }
 }
 
@@ -34,6 +44,7 @@ struct CommentThreadSectionView: View {
   @State private var visibleRootLimit = 3
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.commentPostAuthor) private var postAuthor
+  @Environment(\.commentCapturedAt) private var commentCapturedAt
 
   private let collapsedReplyLimit = 3
   private let initialRootLimit = 3
@@ -303,12 +314,13 @@ struct CommentThreadSectionView: View {
           .lineLimit(1)
       }
       if let published = item.published {
-        Text("· " + CommentPublishedTime.absoluteLabel(published))
+        let shown = CommentPublishedTime.absoluteLabel(published, capturedAt: commentCapturedAt)
+        Text("· " + shown)
           .themedFont(.caption)
           .foregroundStyle(secondaryTextColor)
           .lineLimit(1)
           .fixedSize()
-          .help(published)
+          .help(shown == published ? published : "保存时页面写的是「\(published)」")
       }
       if let likes = item.likes {
         Text("赞 \(likes)")
@@ -344,7 +356,9 @@ struct CommentThreadSectionView: View {
     if let parentAuthor = item.parentAuthor { parts.append("回复 \(parentAuthor)") }
     if let score = item.score { parts.append("\(score) 分") }
     if let likes = item.likes { parts.append("\(likes) 赞") }
-    if let published = item.published { parts.append(CommentPublishedTime.relativeLabel(published)) }
+    if let published = item.published {
+      parts.append(CommentPublishedTime.absoluteLabel(published, capturedAt: commentCapturedAt))
+    }
     return parts.joined(separator: "，")
   }
 
@@ -400,7 +414,18 @@ enum CommentPublishedTime {
 
   /// 阅读区用的本地时间：今年写「9月28日 18:41」，往年写「2025年1月8日」。
   /// 平台原样给的「01-08」这种月-日也换成「1月8日」；认不出的原样显示。
-  static func absoluteLabel(_ raw: String, now: Date = Date(), calendar: Calendar = .current) -> String {
+  ///
+  /// `capturedAt` 是这条内容保存的时刻。「8分钟前」是保存当时的相对说法，按它换算；
+  /// 不传就不猜，避免把几个月前抓的「8分钟前」算成现在。
+  static func absoluteLabel(
+    _ raw: String,
+    now: Date = Date(),
+    calendar: Calendar = .current,
+    capturedAt: Date? = nil
+  ) -> String {
+    if let capturedAt, let resolved = resolvingRelative(raw, capturedAt: capturedAt, now: now, calendar: calendar) {
+      return resolved
+    }
     if let date = parsedDate(raw) {
       let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
       if parts.year == calendar.component(.year, from: now) {
@@ -430,6 +455,67 @@ enum CommentPublishedTime {
     formatter.calendar = calendar
     formatter.dateFormat = "yyyy-MM-dd HH:mm"
     return formatter.string(from: date)
+  }
+
+  /// 把「8分钟前」「2小时前」按保存时刻换成日期。换算不到就返回 nil，调用方照原样显示。
+  private static func resolvingRelative(
+    _ raw: String,
+    capturedAt: Date,
+    now: Date,
+    calendar: Calendar
+  ) -> String? {
+    let text = raw.trimmingCharacters(in: .whitespaces)
+    if text == "刚刚" { return stamp(capturedAt, now: now, calendar: calendar, withTime: true) }
+    if text.hasPrefix("昨天") {
+      guard let date = calendar.date(byAdding: .day, value: -1, to: capturedAt) else { return nil }
+      return stamp(date, now: now, calendar: calendar, withTime: false)
+    }
+    if text.hasPrefix("前天") {
+      guard let date = calendar.date(byAdding: .day, value: -2, to: capturedAt) else { return nil }
+      return stamp(date, now: now, calendar: calendar, withTime: false)
+    }
+    guard let match = text.wholeMatch(of: /^(\d+)\s*(秒|分钟|小时|天|周|个月|年)前$/) else { return nil }
+    let amount = Int(match.1) ?? 0
+    let unit = String(match.2)
+    let date: Date?
+    let withTime: Bool
+    switch unit {
+    case "秒":
+      date = capturedAt.addingTimeInterval(TimeInterval(-amount))
+      withTime = true
+    case "分钟":
+      date = capturedAt.addingTimeInterval(TimeInterval(-amount * 60))
+      withTime = true
+    case "小时":
+      date = capturedAt.addingTimeInterval(TimeInterval(-amount * 3_600))
+      withTime = true
+    case "天":
+      date = calendar.date(byAdding: .day, value: -amount, to: capturedAt)
+      withTime = false
+    case "周":
+      date = calendar.date(byAdding: .day, value: -amount * 7, to: capturedAt)
+      withTime = false
+    case "个月":
+      date = calendar.date(byAdding: .month, value: -amount, to: capturedAt)
+      withTime = false
+    case "年":
+      date = calendar.date(byAdding: .year, value: -amount, to: capturedAt)
+      withTime = false
+    default:
+      return nil
+    }
+    guard let date else { return nil }
+    return stamp(date, now: now, calendar: calendar, withTime: withTime)
+  }
+
+  private static func stamp(_ date: Date, now: Date, calendar: Calendar, withTime: Bool) -> String {
+    let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let sameYear = parts.year == calendar.component(.year, from: now)
+    if withTime, sameYear {
+      return String(format: "%d月%d日 %02d:%02d", parts.month ?? 1, parts.day ?? 1, parts.hour ?? 0, parts.minute ?? 0)
+    }
+    if sameYear { return "\(parts.month ?? 1)月\(parts.day ?? 1)日" }
+    return "\(parts.year ?? 0)年\(parts.month ?? 1)月\(parts.day ?? 1)日"
   }
 
   private static func parsedDate(_ raw: String) -> Date? {

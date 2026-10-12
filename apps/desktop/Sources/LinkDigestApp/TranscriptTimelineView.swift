@@ -91,7 +91,7 @@ struct SpeakerTranscriptView: View {
         if index == 0, let speaker = turn.speaker {
           // 名字一行挂这一轮的时间码；名字和第一段之间只空一点。
           lines.append(TranscriptTextLine(
-            kind: .speaker, stamp: label, seekSeconds: seconds, text: speaker,
+            kind: .speaker, stamp: label, seekSeconds: seconds, text: SpeakerTranscript.displayLabel(speaker),
             spacingBefore: TranscriptGutter.turnSpacing
           ))
           lines.append(TranscriptTextLine(kind: .body, stamp: nil, seekSeconds: nil, text: paragraph, spacingBefore: 4))

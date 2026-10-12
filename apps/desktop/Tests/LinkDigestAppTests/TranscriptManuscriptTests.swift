@@ -67,6 +67,20 @@ final class TranscriptManuscriptTests: XCTestCase {
     XCTAssertEqual(CommentPublishedTime.absoluteLabel("2025-01-08T02:00:00Z", now: now, calendar: calendar), "2025年1月8日")
     XCTAssertEqual(CommentPublishedTime.absoluteLabel("01-08", now: now, calendar: calendar), "1月8日")
     XCTAssertEqual(CommentPublishedTime.absoluteLabel("3 天前", now: now, calendar: calendar), "3 天前")
+    let captured = calendar.date(from: DateComponents(year: 2026, month: 10, day: 2, hour: 14, minute: 30))!
+    XCTAssertEqual(
+      CommentPublishedTime.absoluteLabel("8分钟前", now: now, calendar: calendar, capturedAt: captured),
+      "10月2日 14:22"
+    )
+    XCTAssertEqual(
+      CommentPublishedTime.absoluteLabel("2小时前", now: now, calendar: calendar, capturedAt: captured),
+      "10月2日 12:30"
+    )
+    let old = calendar.date(from: DateComponents(year: 2024, month: 3, day: 2, hour: 9))!
+    XCTAssertEqual(
+      CommentPublishedTime.absoluteLabel("3天前", now: now, calendar: calendar, capturedAt: old),
+      "2024年2月28日"
+    )
   }
 
   func testColophonUsesChineseDates() {
