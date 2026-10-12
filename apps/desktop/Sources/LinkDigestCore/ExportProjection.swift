@@ -140,20 +140,63 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   ///
   /// 去掉成对的加粗、斜体、行首的引用号 `>` 和标题记号 `# `。`#话题` 后面没有空格，留下。
   public static func strippingInlineMarkup(_ raw: String) -> String {
-    var text = raw.replacingOccurrences(of: #"\*\*|__"#, with: "", options: .regularExpression)
+    // 只去掉成对、紧贴文字的记号。`**kwargs` 没有成对的后半，`__name__` 是代码里的名字，都留下。
+    var text = strippingPairedMarker(raw, marker: "*", keepASCIIIdentifier: false)
+    text = strippingPairedMarker(text, marker: "_", keepASCIIIdentifier: true)
     text = text.replacingOccurrences(of: #"(?m)^[ \t]*>[ \t]?"#, with: "", options: .regularExpression)
     text = text.replacingOccurrences(of: #"(?<![\*\w])\*([^*\n]+)\*(?!\*)"#, with: "$1", options: .regularExpression)
     text = text.replacingOccurrences(of: #"(?<![_\w])_([^_\n]+)_(?!_)"#, with: "$1", options: .regularExpression)
     text = text.replacingOccurrences(of: #"(?m)^#{1,6}[ \t]+"#, with: "", options: .regularExpression)
-    while let first = text.first, first == "*" || first == "_" || first == ">" {
-      let rest = text.dropFirst()
-      if first == ">" || rest.first != " " {
-        text = String(rest)
-      } else {
-        break
-      }
+    while text.hasPrefix(">") {
+      text = String(text.dropFirst())
     }
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// `marker` 传一个字符，函数按两个连用的记号处理（`**` 或 `__`）。
+  /// 记号外面挨着字母或数字时不动；`keepASCIIIdentifier` 时，包住的如果只是一段英文标识符也不动。
+  private static func strippingPairedMarker(
+    _ text: String,
+    marker: Character,
+    keepASCIIIdentifier: Bool
+  ) -> String {
+    let chars = Array(text)
+    var result: [Character] = []
+    var index = 0
+    func isASCIIWord(_ character: Character) -> Bool {
+      character.isASCII && (character.isLetter || character.isNumber || character == "_")
+    }
+    while index < chars.count {
+      let opens = index + 1 < chars.count && chars[index] == marker && chars[index + 1] == marker
+      let beforeIsWord = index > 0 && isASCIIWord(chars[index - 1])
+      if opens && !beforeIsWord {
+        var cursor = index + 2
+        var close: Int?
+        while cursor + 1 < chars.count {
+          if chars[cursor] == "\n" { break }
+          if chars[cursor] == marker && chars[cursor + 1] == marker {
+            close = cursor
+            break
+          }
+          cursor += 1
+        }
+        if let close, close > index + 2 {
+          let inside = chars[(index + 2)..<close]
+          let afterIndex = close + 2
+          let afterIsWord = afterIndex < chars.count && isASCIIWord(chars[afterIndex])
+          let tight = inside.first?.isWhitespace == false && inside.last?.isWhitespace == false
+          let identifier = inside.allSatisfy(isASCIIWord)
+          if !afterIsWord && tight && !(keepASCIIIdentifier && identifier) {
+            result.append(contentsOf: inside)
+            index = afterIndex
+            continue
+          }
+        }
+      }
+      result.append(chars[index])
+      index += 1
+    }
+    return String(result)
   }
 
   public static func sanitizedDirectoryPreview(_ raw: String?, isSummary: Bool) -> String? {
@@ -176,8 +219,8 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
       options: [.regularExpression, .caseInsensitive]
     )
     if isSummary { text = strippingSummaryPreamble(text) }
-    // 卡片预览是纯文字：加粗的 ** / __ 和行首 # 原样露出来只是噪音。
-    text = text.replacingOccurrences(of: #"\*\*|__"#, with: "", options: .regularExpression)
+    // 开头的标题记号在折叠成一行之后不再位于行首，上面那次清不到，这里再去一次。
+    // 成对的 ** / __ 已经在 strippingInlineMarkup 里按规则去掉，不能再整段删除。
     text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
     if !isSummary {
       // Dense markdown image/link dumps compress to readable labels, keep bare URLs short.

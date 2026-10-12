@@ -1254,6 +1254,8 @@ struct HistoryContentView: View {
         }
       case .loaded, .loading, .failed, .idle, .empty:
         ScrollViewReader { batchScroll in
+          // 同名标题只算一次。写在每一行里的话，每一行都要把全部标题再数一遍。
+          let sharedTitles = rowsSharingATitle
           List(selection: $model.selectedTaskIDs) {
           if !visibleProfileImportBatches.isEmpty {
             Section {
@@ -1296,7 +1298,7 @@ struct HistoryContentView: View {
               theme: theme,
               showsAuthor: index == section.entries.first?.index
                 || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
-              showsDisambiguatingDate: rowsSharingATitle.contains(
+              showsDisambiguatingDate: sharedTitles.contains(
                 row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
               ),
               model: model,
@@ -3724,7 +3726,8 @@ struct HistoryContentView: View {
   /// 「按意思搜」补充的一组：不含搜索词、但讲的是相近的事（2026-09-29）。
   /// 行的样子和上面的列表完全一样，只多一个组标题说明它们为什么出现。
   private var relatedRowsSection: some View {
-    Section {
+    let sharedTitles = rowsSharingATitle
+    return Section {
       ForEach(model.visibleRelatedRows, id: \.taskID) { row in
         UIReadingHistoryRow(
           row: row,
@@ -3732,7 +3735,7 @@ struct HistoryContentView: View {
           faviconURL: model.faviconImageURL(for: row),
           theme: theme,
           showsAuthor: true,
-          showsDisambiguatingDate: rowsSharingATitle.contains(
+          showsDisambiguatingDate: sharedTitles.contains(
             row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
           ),
           onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
@@ -8578,12 +8581,16 @@ private struct HistoryDetailView: View, Equatable {
       parts.append(savedDay + " 创建")
     } else if isLocalImportCapture {
       parts.append(savedDay + " 存入")
-    } else if let published = sourceFrontmatter.published?.trimmedNonEmpty,
-              let publishedDay = HistoryPublishedTimestampFormatter.calendarDayLabel(published) {
-      parts.append(publishedDay + " 发布")
-      if publishedDay != savedDay { parts.append(savedDay + " 存入") }
-      if let location = HistoryPublishedTimestampFormatter.location(in: published) {
-        parts.append(location)
+    } else if let published = sourceFrontmatter.published?.trimmedNonEmpty {
+      if let publishedDay = HistoryPublishedTimestampFormatter.calendarDayLabel(published) {
+        parts.append(publishedDay + " 发布")
+        if publishedDay != savedDay { parts.append(savedDay + " 存入") }
+        if let location = HistoryPublishedTimestampFormatter.location(in: published) {
+          parts.append(location)
+        }
+      } else {
+        // 「编辑于 2026-01-07」「3天前」认不出具体哪一天时，不要把发布时间整段藏掉。
+        parts.append(HistoryPublishedTimestampFormatter.compactText(published) + " 发布")
       }
     } else {
       parts.append(savedDay + " 存入")
@@ -11442,7 +11449,7 @@ enum HistoryAuthorDisplay {
   /// 抖音把「粉丝 1345 获赞 6.6万 相互」粘在昵称后面抓了进来。只去掉这段尾巴。
   static func strippingDouyinProfileStats(_ author: String) -> String {
     let stripped = author.replacingOccurrences(
-      of: #"粉丝\s*[\d.,]+\s*获赞\s*[\d.,]+\s*[万千亿]?\s*相互\s*$"#,
+      of: #"粉丝\s*[\d.,]+\s*[万千亿wW]?\s*获赞\s*[\d.,]+\s*[万千亿wW]?\s*(相互关注|相互|已关注|回关|关注)?\s*$"#,
       with: "",
       options: .regularExpression
     ).trimmingCharacters(in: .whitespacesAndNewlines)

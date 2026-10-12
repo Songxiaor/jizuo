@@ -51,6 +51,9 @@ final class HistoryDomainTests: XCTestCase {
       HistoryRowProjection.sanitizedDirectoryPreview("> *“引用”* 里的 **harness**", isSummary: false),
       "“引用” 里的 harness"
     )
+    let code = "if __name__ == \"__main__\":\n    print(**kwargs)"
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup(code), code)
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("这是 **加粗** 和 __强调__"), "这是 加粗 和 强调")
   }
 
   func testTagNormalizationAndAutomaticFirstLineLimit() {

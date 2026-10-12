@@ -128,9 +128,22 @@ enum HistoryPublishedTimestampFormatter {
   /// 标题回退用的日期：始终带年份，避免跨年后同一条的名字自己变掉。
   static func stableDayLabel(_ value: String, calendar: Calendar = .autoupdatingCurrent) -> String? {
     let (when, _) = splittingLocation(value)
-    guard let date = parsedPublishedDate(when) else { return nil }
+    guard let date = parsedPublishedDate(when) ?? embeddedPublishedDate(when) else { return nil }
     let parts = calendar.dateComponents([.year, .month, .day], from: date)
     return "\(parts.year ?? 0)年\(parts.month ?? 1)月\(parts.day ?? 1)日"
+  }
+
+  /// 「发布于 2026-09-23」这类带前缀的句子里，抽出里面的日期。整句能直接解析时不走这里。
+  private static func embeddedPublishedDate(_ value: String) -> Date? {
+    if let match = value.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression),
+       let date = parsedPublishedDate(String(value[match])) {
+      return date
+    }
+    if let match = value.range(of: #"\d{4}年\d{1,2}月\d{1,2}日"#, options: .regularExpression),
+       let date = parsedPublishedDate(String(value[match])) {
+      return date
+    }
+    return nil
   }
 
   static func calendarDay(_ date: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) -> String {

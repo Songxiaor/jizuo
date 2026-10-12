@@ -391,7 +391,6 @@ struct UIReadingHistoryRow: View {
           // 同一个位置、同样的淡色，只换个图形：不给失败条目加醒目标记，
           // 多半只是没有中文人声（英文、纯音乐），「全部转写」会跳过它。
           Image(systemName: "waveform.slash")
-            .help("上次转写没成功，常见原因是没有中文人声；「全部转写」会跳过它，可以点开单独重试")
             .accessibilityLabel("上次转写没成功")
             .accessibilityIdentifier("history-row-transcription-failed")
         } else if row.hasMedia == true || row.hasTranscript == true {
@@ -427,7 +426,7 @@ struct UIReadingHistoryRow: View {
   private func statusIconHelp(_ text: RowText) -> String {
     var parts: [String] = []
     if row.transcriptionFailed == true {
-      parts.append("上次转写没成功")
+      parts.append("上次转写没成功，常见原因是没有中文人声；「全部转写」会跳过它，可以点开单独重试")
     } else if row.hasMedia == true || row.hasTranscript == true {
       parts.append(text.isAudioOnly ? "有录音" : "有视频")
     }

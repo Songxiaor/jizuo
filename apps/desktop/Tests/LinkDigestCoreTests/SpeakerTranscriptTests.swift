@@ -109,6 +109,7 @@ final class SpeakerTranscriptTests: XCTestCase {
   func testDefaultSpeakerNamesUseTwoDigits() {
     XCTAssertEqual(SpeakerTranscript.defaultName(1), "说话人 01")
     XCTAssertEqual(SpeakerTranscript.displayLabel("说话人 1"), "说话人 01")
+    XCTAssertEqual(SpeakerTranscript.displayLabel("说话人1"), "说话人 01")
     XCTAssertEqual(SpeakerTranscript.displayLabel("说话人 01"), "说话人 01")
     XCTAssertEqual(SpeakerTranscript.displayLabel("张总"), "张总")
     XCTAssertEqual(SpeakerTranscript.defaultName(12), "说话人 12")

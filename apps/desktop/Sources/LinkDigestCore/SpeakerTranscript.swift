@@ -68,7 +68,7 @@ public enum SpeakerTranscript {
 
   /// 旧稿写成「说话人 1」，新稿写成「说话人 01」。阅读时统一成两位，不改已存的正文。
   public static func displayLabel(_ stored: String) -> String {
-    guard let match = stored.wholeMatch(of: /^说话人\s+(\d+)$/),
+    guard let match = stored.wholeMatch(of: /^说话人\s*(\d+)$/),
           let number = Int(match.1), number >= 0, number < 100
     else { return stored }
     return defaultName(number)

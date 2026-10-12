@@ -482,6 +482,36 @@ final class CapturedContentNamingTests: XCTestCase {
 
   func testDouyinAuthorDropsGluedProfileStats() {
     XCTAssertEqual(HistoryAuthorDisplay.text("its蕙粉丝1345获赞6.6万相互"), "its蕙")
+    XCTAssertEqual(HistoryAuthorDisplay.text("某某粉丝2.3万获赞10万相互"), "某某")
+    XCTAssertEqual(HistoryAuthorDisplay.text("某某粉丝1345获赞6.6万"), "某某")
     XCTAssertEqual(HistoryAuthorDisplay.text("阿强"), "阿强")
+  }
+
+  func testEmptyTitleSkipsSectionHeadings() {
+    let name = CapturedContentNaming.name(
+      title: "",
+      body: "# 无标题\n\n## 摘要\n\n这是正文第一句。",
+      host: "example.com",
+      author: nil,
+      published: nil
+    )
+    XCTAssertEqual(name.text, "这是正文第一句。")
+    XCTAssertEqual(name.origin, .caption)
+  }
+
+  func testPlaceholderTitlesDoNotGetAnotherDate() {
+    func row(_ title: String) -> HistoryRowProjection {
+      HistoryRowProjection(
+        taskID: TaskID(UUID()), title: title, canonicalURL: "https://www.douyin.com/note/1",
+        host: "douyin.com", sourceLabel: "test", latestRunKind: nil, latestRunStatus: nil,
+        latestModel: nil, updatedAtMilliseconds: 1, latestRunAtMilliseconds: nil,
+        usageCost: .unknown, artifactPreview: nil
+      )
+    }
+    XCTAssertTrue(HistoryListFinding.titlesNeedingDate([row("抖音图文"), row("抖音图文")]).isEmpty)
+  }
+
+  func testStableDayLabelReadsAPrefixedDate() {
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.stableDayLabel("发布于 2026-09-23"), "2026年9月23日")
   }
 }

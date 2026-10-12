@@ -79,13 +79,19 @@ enum CapturedContentNaming {
     firstSentence(from: text)
   }
 
+  /// 存下来的标题是占位词时，列表不要再按这个原标题补日期。
+  static func skipsDateDisambiguation(_ title: String) -> Bool {
+    isPlaceholderDisplayTitle(title)
+  }
+
   /// 仅当配文名称就是去图片/合成标题后的全文时，阅读区才藏掉重复标题。
   static func hidesRepeatedHeading(name: Name, body: String) -> Bool {
     guard name.origin == .caption else { return false }
     let cleaned = cleanedSourceText(MarkdownNoteFrontmatter.parse(body).body, preservesSoleHeading: true)
-    let normalizedBody = normalizedWhitespace(cleaned)
+    // 比较时才去掉格式记号。清洗阶段就剥掉的话，「## 摘要」会变成普通的「摘要」，被当成标题。
+    let normalizedBody = normalizedWhitespace(present(cleaned))
     guard !normalizedBody.isEmpty else { return false }
-    return normalizedBody == normalizedWhitespace(name.text)
+    return normalizedBody == normalizedWhitespace(present(name.text))
   }
 }
 
@@ -282,7 +288,9 @@ private extension CapturedContentNaming {
 
   static func cleanedSourceText(_ markdown: String, preservesSoleHeading: Bool) -> String {
     let withoutImages = strippingMarkdownImages(from: markdown)
-    return present(strippingLeadingATXHeading(from: withoutImages, preservesSoleHeading: preservesSoleHeading))
+    // 不在这里剥格式。整篇剥掉以后，「## 摘要」不再是标题行，无标题条目会把小节名当成标题；
+    // `***` / `___` 分隔线也会被削成单个记号。展示用的那一次清理由 acceptedCaption 做。
+    return strippingLeadingATXHeading(from: withoutImages, preservesSoleHeading: preservesSoleHeading)
   }
 
   static func strippingMarkdownImages(from markdown: String) -> String {
