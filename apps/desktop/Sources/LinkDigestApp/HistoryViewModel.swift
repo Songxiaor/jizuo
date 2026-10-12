@@ -297,9 +297,12 @@ private actor HistoryRepositoryWorker {
   func creatorPage(
     _ history: HistoryApplicationService,
     cursor: CreatorPageCursor?,
-    searchText: String
+    searchText: String,
+    loadsAllPages: Bool = false
   ) -> CreatorPageResult {
-    do { return .success(try history.creatorPage(limit: 50, after: cursor, searchText: searchText)) }
+    // 「按最近保存」要在客户端一次拿全再排，单页放大到仓储的上限（200）。
+    let limit = loadsAllPages ? 200 : 50
+    do { return .success(try history.creatorPage(limit: limit, after: cursor, searchText: searchText)) }
     catch { return .failure }
   }
 
@@ -919,6 +922,19 @@ struct DetailSelectionPace: Equatable {
   }
 }
 
+/// 「全部博主」页的两种排列（2026-10-12 走查 #34）。
+enum CreatorArrangement: String, CaseIterable, Identifiable {
+  case byPlatform
+  case byRecentSave
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .byPlatform: "按平台"
+    case .byRecentSave: "按最近保存"
+    }
+  }
+}
+
 /// 用 Observation 而不是 ObservableObject：视图只在自己读过的属性变化时重绘。
 /// 原来 113 个 任一变化都让整个主界面（侧栏、列表、详情三棵树）重排，
 /// 「打开长文后点哪都顿一下」就是这么来的。
@@ -1209,9 +1225,17 @@ final class HistoryViewModel {
   private(set) var isDryRunningTopics = false
   /// 上一次试跑的结论。改配方时唯一能立刻验证的东西。
   var topicDryRunResult: String?
-  var showsAllNavigationTags = false
   /// 标签管理窗（2026-09-24）。
   var isTagManagerPresented = false
+  /// 「全部博主」的排列（2026-10-12 走查 #34）。「按最近保存」要把博主一次取完
+  /// 再排（只排已加载的一页在博主多时顺序会错，翻页还会整片重排），所以放在
+  /// 模型上而不是视图的 @State 里，reloadCreators 看得见。
+  var creatorArrangement: CreatorArrangement = .byPlatform {
+    didSet {
+      guard creatorArrangement != oldValue, isCreatorDirectoryActive else { return }
+      reloadCreators()
+    }
+  }
   /// 标签管理最近一次操作的结果，给窗里那一行提示用；失败时写明原因。
   private(set) var tagManagementMessage: String?
   private(set) var tagErrorCode: StorageErrorCode?
@@ -2202,7 +2226,7 @@ final class HistoryViewModel {
     historyReadOnlyRecoveryHint = isReadOnly ? readOnlyRecoveryHint : nil
     blockingErrorCode = unavailableCode
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; localMediaOriginalMissing = nil; originalRelocationState = .idle; faviconImageURLs = [:]; nextCursor = nil
-    availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; selectedForm = nil; showsAllNavigationTags = false; searchText = ""
+    availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; selectedForm = nil; searchText = ""
     formCountsTask?.cancel(); listFormCounts = []; formCountsBaseFilter = nil
     collectionsTask?.cancel(); selectedTaskCollectionsTask?.cancel()
     collections = []; selectedCollectionID = nil; selectedTaskCollectionIDs = []; collectionMembership = [:]; collectionPrompt = nil; collectionFeedback = nil
@@ -6096,6 +6120,12 @@ final class HistoryViewModel {
   }
 
   func selectScope(_ scope: HistoryListScope) {
+    // 重复点当前已经亮着、也没挂着别的筛选的那一行：什么都不换，正在读的那条
+    // 不该被撤掉（2026-10-13 审查）。行上还挂着标签 / 来源 / 合集时仍照常清。
+    if scope == selectedScope, selectedHosts.isEmpty, selectedTagNormalizedNames.isEmpty,
+       selectedCollectionID == nil, !isCreatorDirectoryActive, !isWorkbenchActive {
+      return
+    }
     // 点任何一个筛选项都意味着「回到看资料」，工作台该让位。
     isWorkbenchActive = false
     stopRunningBatchJobsForNavigation()
@@ -6111,23 +6141,27 @@ final class HistoryViewModel {
     if leavingPlatformGallery {
       discardVisibleList(state: .loading)
     } else {
-      clearRowsForNavigation()
+      clearRowsForNavigation(dropsSelection: true)
     }
     reload()
   }
 
   /// 切侧栏时先把旧列表撤下：新一页一两百毫秒才到，这期间标题已经是「待校对」,
   /// 下面却还是「笔记」那几条，看着像筛错了（2026-10-01 走查）。
-  /// 选中的那条和详情也一起撤：旧选中多半不在新的范围里，留着会出现「右边还挂着
-  /// 上一页那条、列表里却没有高亮行」的错位（2026-10-12 走查 #9）。新列表到手后
-  /// 自动接住第一条，详情跟着换；占位骨架 250ms 内不出现，快的时候就是一下空白换内容。
-  private func clearRowsForNavigation() {
+  /// `dropsSelection`：换范围（侧栏入口、合集）时选中的那条和详情也一起撤——
+  /// 旧选中多半不在新的范围里，留着会出现「右边还挂着上一页那条、列表里却没有
+  /// 高亮行」的错位（2026-10-12 走查 #9）。新列表到手后自动接住第一条。
+  /// 换形式、清搜索这些不换范围的路径传默认 false：正在读的那条留在屏上，
+  /// 新列表到了它会接住同一条；10-04 修过的「切换时连换四个样子」的闪烁也不再回来。
+  private func clearRowsForNavigation(dropsSelection: Bool = false) {
     rows = []
     nextCursor = nil
     listState = .loading
-    selectedTaskIDs = []
-    detail = nil
-    setDetailState(.idle)
+    if dropsSelection {
+      selectedTaskIDs = []
+      detail = nil
+      setDetailState(.idle)
+    }
   }
 
   /// 列头「显示」菜单：只看视频、录音……nil 回到全部形式。只换形式，侧栏选的东西不动。
@@ -7292,8 +7326,10 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
-      discardVisibleList(state: .loading)    } else {
-      clearRowsForNavigation()
+      discardVisibleList(state: .loading)
+    } else {
+      // 换合集是换范围：撤下旧选中，新列表到手接住第一条（走查 #9）。
+      clearRowsForNavigation(dropsSelection: true)
     }
     reload()
   }
@@ -9120,25 +9156,42 @@ final class HistoryViewModel {
     guard let history, isCreatorDirectoryActive else { return }
     let generation = configurationGeneration
     let search = creatorSearchText
+    // 「按最近保存」要把博主一次取完再排：只排已加载的一页，博主超过一页时顺序
+    // 会错，翻到下一页还会整片重排（2026-10-13 审查）。每页最多 200，最多拉 5 页。
+    let loadsAllPages = creatorArrangement == .byRecentSave
     creatorPageTask?.cancel()
     isLoadingCreatorPage = true
     creatorDirectoryLoadFailed = false
     creatorNextCursor = nil
     creatorPageTask = Task { [weak self, worker] in
-      let result = await worker.creatorPage(history, cursor: nil, searchText: search)
+      var collected: [CreatorSummary] = []
+      var cursor: CreatorPageCursor?
+      var failed = false
+      // 「按最近保存」一次取完：每页最多 200，最多拉到 creatorAllPagesLimit。
+      while collected.count < Self.creatorAllPagesLimit {
+        let result = await worker.creatorPage(history, cursor: cursor, searchText: search, loadsAllPages: loadsAllPages)
+        guard case let .success(page) = result else { failed = true; break }
+        collected.append(contentsOf: page.rows)
+        cursor = page.nextCursor
+        if cursor == nil || !loadsAllPages { break }
+      }
       guard let self, !Task.isCancelled, generation == self.configurationGeneration else { return }
       self.isLoadingCreatorPage = false
-      if case let .success(page) = result {
-        self.creatorDirectoryLoadFailed = false
-        self.creatorDirectoryRows = page.rows
-        self.creatorNextCursor = page.nextCursor
-        self.reconcileDirectorySelection()
-      } else {
+      if failed {
         self.creatorDirectoryLoadFailed = true
         self.creatorFailure = "无法载入博主列表，请稍后重试。"
+        return
       }
+      self.creatorDirectoryLoadFailed = false
+      self.creatorDirectoryRows = collected
+      // 「按最近保存」一次取完，没有下一页；「按平台」保持分页。
+      self.creatorNextCursor = loadsAllPages ? nil : cursor
+      self.reconcileDirectorySelection()
     }
   }
+
+  /// 「按最近保存」一次取完时最多拉多少位：超出这个量级就该在数据库里排，而不是在客户端。
+  static let creatorAllPagesLimit = 1_000
 
   private func reconcileDirectorySelection() {
     guard isCreatorDirectoryActive else { return }
@@ -9190,7 +9243,8 @@ final class HistoryViewModel {
   }
 
   func loadNextCreatorPageIfNeeded(after row: CreatorSummary) {
-    guard isCreatorDirectoryActive,
+    guard creatorArrangement != .byRecentSave,
+          isCreatorDirectoryActive,
           creatorDirectoryRows.last?.id == row.id,
           let cursor = creatorNextCursor,
           !isLoadingCreatorPage,

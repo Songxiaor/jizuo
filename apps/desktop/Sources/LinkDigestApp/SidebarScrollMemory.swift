@@ -40,6 +40,15 @@ enum SidebarScrollRestore {
     return documentHeight <= viewportHeight + 1
   }
 
+  /// 两张侧栏的可视区顶部不一样（三栏页让出整条工具栏，博主页的侧栏顶到工具栏底下，
+  /// 各自的 contentInsets 也可能不同），同一个偏移画出来的位置会差一截——进「全部博主」
+  /// 时整列上移、顶上的「汲作」字标被滚出屏幕（2026-10-12 走查·侧栏上移）。
+  /// 换侧栏时先把偏移换算到同一基准：新偏移 = 旧偏移 +（新基准 − 旧基准）。
+  /// 基准是量出来的（文档顶在当前窗口里的纵向位置＋当前偏移），不写拍脑袋的固定点数。
+  static func offsetAcrossViewports(previous: CGFloat, oldConstant: CGFloat, newConstant: CGFloat) -> CGFloat {
+    max(0, previous + (newConstant - oldConstant))
+  }
+
   /// 换侧栏后，让同一行回到原来的屏幕高度。
   ///
   /// AppKit 窗口坐标向上增大。滚动偏移增加时，内容在屏幕上往上走，这一行的窗口坐标也增大。
@@ -166,6 +175,23 @@ final class SidebarScrollMemory {
   private var snapshotGeneration = 0
   /// 新侧栏已挂上、还原还没做完。
   private var isAwaitingRestore = false
+  /// 换侧栏前那张列表的视口基准（见 `SidebarScrollRestore.offsetAcrossViewports`）。
+  /// 每次滚动都跟着记一份，旧列表拆掉后仍可用最后一次的值。
+  private var lastViewportConstant: CGFloat?
+  /// restore 时用的旧列表基准：优先在旧列表还活着时现场量，退回 lastViewportConstant。
+  private var restoreBaseline: CGFloat?
+
+  /// 文档顶（偏移 0 时）在窗口里的纵向位置（top-left 坐标，向下为正）加当前偏移。
+  /// 只跟列表容器几何有关，跟滚到哪无关；两张侧栏容器不同时它不同，差值就是
+  /// 同一偏移画出来会偏多少。
+  private func viewportConstant(of scrollView: NSScrollView) -> CGFloat? {
+    guard let document = scrollView.documentView else { return nil }
+    let topPoint = NSPoint(x: document.bounds.midX, y: document.isFlipped ? document.bounds.minY : document.bounds.maxY)
+    let docTopWindowY = document.convert(topPoint, to: nil).y
+    guard let windowHeight = scrollView.window?.frame.height else { return nil }
+    // 窗口坐标向上增大；换算成向下为正后再加偏移。
+    return (windowHeight - docTopWindowY) + scrollView.contentView.bounds.origin.y
+  }
 
   /// 点侧栏里的项目时调用：这一下可能让侧栏整张换掉。把当前位置定住，旧侧栏拆掉时
   /// 自己报的「滚到 0」不再覆盖它（实测从侧栏底部点「全部博主」，位置就这样丢了）。
@@ -173,6 +199,7 @@ final class SidebarScrollMemory {
   func snapshot() {
     guard let scrollView else { return }
     lastOffset = scrollView.contentView.bounds.origin.y
+    lastViewportConstant = viewportConstant(of: scrollView) ?? lastViewportConstant
     anchoredRow = SidebarRowAnchor.capture(in: scrollView)
     anchoredRows = SidebarRowAnchor.candidates(in: scrollView)
     isRestoring = true
@@ -241,6 +268,10 @@ final class SidebarScrollMemory {
 
   func attach(_ newScrollView: NSScrollView) {
     guard newScrollView !== scrollView else { return }
+    // 旧列表还在手上时先量它的视口基准；已经拆掉就用最后一次记下的值。
+    // 换侧栏时新列表的可视区几何可能不同，同一个偏移画出来的位置会偏（2026-10-12
+    // 走查·侧栏上移），restore 时按这个差把偏移换算到同一基准。
+    restoreBaseline = scrollView.flatMap { viewportConstant(of: $0) } ?? lastViewportConstant
     if let observer { NotificationCenter.default.removeObserver(observer) }
     scrollView = newScrollView
     let clip = newScrollView.contentView
@@ -255,6 +286,9 @@ final class SidebarScrollMemory {
           return
         }
         self.lastOffset = clip.bounds.origin.y
+        if let enclosing = clip.enclosingScrollView {
+          self.lastViewportConstant = self.viewportConstant(of: enclosing) ?? self.lastViewportConstant
+        }
       }
     }
     // 启动时第一张侧栏不还原：那时还没有「上次的位置」，启动另有露出选中平台的逻辑。
@@ -274,7 +308,15 @@ final class SidebarScrollMemory {
       isAwaitingRestore = false
       return
     }
-    let base = lastOffset
+    var base = lastOffset
+    // 两张侧栏的可视区几何不同：先把偏移换算到同一基准，再落。新列表的可视区
+    // 顶更高时基准更小，偏移跟着减小，内容回落到原来的屏幕高度——顶上的
+    // 「汲作」字标不再被滚出屏幕（2026-10-12 走查·侧栏上移）。
+    if let oldConstant = restoreBaseline, let newConstant = viewportConstant(of: scrollView),
+       abs(newConstant - oldConstant) > 0.5 {
+      base = SidebarScrollRestore.offsetAcrossViewports(previous: base, oldConstant: oldConstant, newConstant: newConstant)
+    }
+    restoreBaseline = nil
     let reveal = pendingReveal
     pendingReveal = nil
     scrollView.documentView?.layoutSubtreeIfNeeded()
@@ -316,14 +358,9 @@ final class SidebarScrollMemory {
     }
   }
 
-  /// 旧偏移先落到新列表上，再按锚点那一行的屏幕高度修正。
+  /// 旧偏移（已按视口基准换算）先落到新列表上，再按锚点那一行的屏幕高度修正。
   /// 最靠近中间的一行若刚被收掉，就用后面还在的一行。都找不到就保持旧偏移。
   private func holdAnchoredRow(in scrollView: NSScrollView) {
-    // 旧偏移还在顶部一个字标行内时不再校正：新列表的行整体低 26–31pt，
-    // 校正会把偏移推高，刚好把顶上的「汲作」字标推出屏幕（2026-10-12 走查 #5，
-    // 实测从约 40pt 推到 66）。顶部对顶部；锚点行差二三十 pt 不影响辨认。
-    // 阈值取一个字标行高加边距：再往下滚，字标本就不在屏上，校正无此副作用。
-    guard lastOffset > 48 else { return }
     let clip = scrollView.contentView
     let documentHeight = scrollView.documentView?.frame.height ?? 0
     if isHoldingSection, !holdCommitsShortDocument,

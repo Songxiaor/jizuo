@@ -106,6 +106,45 @@ final class CreatorPersistenceTests: XCTestCase {
     }
   }
 
+  /// 「按最近保存」的时间戳和「已保存 N 条」同一口径：放进回收站的作品不计，
+  /// 最近保存时间不因回收站里的新作品被推后（2026-10-13 审查）。
+  func testLastSavedAtExcludesTrashedWorks() throws {
+    try withCreatorRepository { repository in
+      let creator = try repository.upsertCreator(creatorCommand(
+        authorID: "MS4wLjABAAAA-recency",
+        now: 1
+      ))
+      let older = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "recency-old", key: "recency-old",
+          url: "https://www.douyin.com/video/7000000000000000101",
+          body: "older work"
+        ),
+        receivedAtMilliseconds: 10
+      ))
+      let newer = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "recency-new", key: "recency-new",
+          url: "https://www.douyin.com/video/7000000000000000102",
+          body: "newer work"
+        ),
+        receivedAtMilliseconds: 20
+      ))
+      try repository.attachCreatorWork(creatorID: creator.id, taskID: older.taskID)
+      try repository.attachCreatorWork(creatorID: creator.id, taskID: newer.taskID)
+
+      let before = try repository.creatorPage(limit: 10, after: nil, searchText: "")
+        .rows.first { $0.id == creator.id }
+      XCTAssertEqual(before?.lastSavedAtMilliseconds, 20)
+
+      try repository.moveToTrash(taskIDs: [newer.taskID])
+      let after = try repository.creatorPage(limit: 10, after: nil, searchText: "")
+        .rows.first { $0.id == creator.id }
+      XCTAssertEqual(after?.savedWorkCount, 1, "回收站里的作品不计条数")
+      XCTAssertEqual(after?.lastSavedAtMilliseconds, 10, "最近保存时间退回还在库里的那条")
+    }
+  }
+
   func testCreatorFilterPaginatesOnlyAttachedSavedTasks() throws {
     try withCreatorRepository { repository in
       let creator = try repository.upsertCreator(creatorCommand(

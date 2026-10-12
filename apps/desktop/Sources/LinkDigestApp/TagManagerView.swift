@@ -37,11 +37,21 @@ struct TagManagerView: View {
     tags.filter { HistoryContentView.hiddenSidebarTagNames.contains($0.tag.normalizedName) }.count
   }
 
-  /// 「Twitter」和来源「X」重名，多半是同一个东西：侧栏把它隐藏了，这里给一个
-  /// 显式的合并入口，点不点由人决定（2026-10-12 走查 #7）。不自动改任何数据。
-  private var twitterTag: HistoryNavigationTag? {
-    guard let normalized = HistoryTagNormalizer.normalized("Twitter")?.normalizedName else { return nil }
-    return tags.first { $0.tag.normalizedName == normalized }
+  /// 和来源平台重名的标签：侧栏把它们隐藏了，管理里写明白，免得两个总数对不上。
+  /// 只提示、不给合并按钮：一点就改数据、没法确认，而且并进的同名来源标签
+  /// 本来也在侧栏隐藏名单里，合了也没有改善（2026-10-13 审查：按「先删」处理）。
+  private var sourceNameDuplicateTags: [HistoryNavigationTag] {
+    ["twitter", "youtube"].compactMap { key in
+      tags.first { $0.tag.normalizedName == key }
+    }
+  }
+
+  private func sourceDuplicateHint(for tag: HistoryNavigationTag) -> String? {
+    switch tag.tag.normalizedName {
+    case "twitter": return "「Twitter」就是来源「X」，侧栏不显示"
+    case "youtube": return "「YouTube」就是来源「YouTube」，侧栏不显示"
+    default: return nil
+    }
   }
 
   private var similarGroups: [[HistoryNavigationTag]] { HistoryTagSimilarity.groups(model.manageableTags) }
@@ -59,18 +69,14 @@ struct TagManagerView: View {
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("tag-manager-message")
       }
-      if let twitter = twitterTag {
+      ForEach(sourceNameDuplicateTags, id: \.tag.normalizedName) { tag in
         HStack {
-          Text("「Twitter」和来源「X」重名，侧栏不显示；可能是同一个标签")
+          Text(sourceDuplicateHint(for: tag) ?? "")
             .themedFont(.callout)
-            .lineLimit(1)
+            .foregroundStyle(.secondary)
           Spacer()
-          Button("并入「X」") {
-            model.mergeTags([twitter.tag], into: "X")
-          }
-          .accessibilityIdentifier("tag-manager-merge-twitter-into-x")
         }
-        .accessibilityIdentifier("tag-manager-twitter-suggestion")
+        .accessibilityIdentifier("tag-manager-source-duplicate-\(tag.tag.normalizedName)")
       }
       if !similarGroups.isEmpty { similarSection }
       HStack(spacing: 8) {

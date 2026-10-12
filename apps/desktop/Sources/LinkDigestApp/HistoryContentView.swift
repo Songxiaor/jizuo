@@ -34,8 +34,6 @@ struct HistoryContentView: View {
   @State private var platformGalleryScrollTarget: TaskID?
   @State private var showsCreatorDirectoryCatalog = true
   @State private var creatorDirectoryScrollTarget: CreatorID?
-  /// 「全部博主」的排列（2026-10-12 走查 #34）。会话内记住，不落盘：它只是一次浏览的顺序偏好。
-  @State private var creatorArrangement: CreatorArrangement = .byPlatform
   @State private var collapsedCreatorPlatforms: Set<String> = []
   @State private var creatorWorkSort: WorkSortOrder = .original
   /// 瀑布流里每张卡钉在哪一列（键：卡片 id）。换博主、换排序、列数变化时整体重算。
@@ -896,6 +894,12 @@ struct HistoryContentView: View {
   private var listColumnTitle: String {
     // 搜索时标题说清搜到多少条；原来仍写「全部」，看不出是搜索结果、有多少。
     if !model.searchText.isEmpty, let count = model.searchResultCount { return "搜索 · \(count) 条" }
+    return scopeTitle
+  }
+
+  /// 当前范围的名字：合集名 / 博主名 / 来源名 / 作用域。列标题和筛选条前的范围词
+  /// 共用这一份（2026-10-13 审查：两处各写一份 switch，改一处忘一处）。
+  private var scopeTitle: String {
     if let collection = model.selectedCollection { return collection.name }
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
     // 形式不写进标题：它就在标题右边那个「显示」按钮上（2026-10-12（Syc 定））。
@@ -1183,7 +1187,13 @@ struct HistoryContentView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-trash-empty")
         } else if let collection = model.selectedCollection,
-                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                  // 只有合集本身没内容时才说「还是空的」；有内容但被搜索 / 形式 / 标签
+                  // 筛空了，走下面统一的「没有符合条件的内容」（2026-10-13 审查）。
+                  collection.itemCount == 0,
+                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  model.selectedForm == nil,
+                  model.selectedTagNormalizedNames.isEmpty,
+                  model.selectedHosts.isEmpty {
           HistoryInlineState(
             symbol: CollectionIcon.collection,
             title: "「\(collection.name)」还是空的",
@@ -1630,7 +1640,8 @@ struct HistoryContentView: View {
 
   /// 正选中的那一行（如果在「实用工具」里）。收起时也要露出来。
   private var selectedUtilityScope: HistoryListScope? {
-    guard !model.hasCategoryFilter, !model.isCreatorDirectoryActive, !model.isWorkbenchActive else { return nil }
+    // 只选标签时实用工具的行仍然亮着：标签叠在当前范围上，不换地方（走查 #5 同一口径）。
+    guard !model.hasNonTagCategoryFilter, !model.isCreatorDirectoryActive, !model.isWorkbenchActive else { return nil }
     return utilityRows.first { $0.scope == model.selectedScope }?.scope
   }
 
@@ -1848,7 +1859,8 @@ struct HistoryContentView: View {
             .padding(.vertical, 2)
             // 两个动作放一行、用主题色和图标：原来两行灰字看起来像说明文字，不像能点（2026-09-24 走查）。
             HStack(spacing: DesignTokens.Space.sm) {
-              if !sidebarTagCloud.isEmpty {
+              // 标签多于 6 个才给「全部 N 个」；全部在弹层里，不撑开侧栏（走查 #6）。
+              if sidebarTagCloud.count > 6 {
                 sidebarLinkAction(
                   "全部 \(sidebarTagCloud.count) 个",
                   systemImage: "chevron.down"
@@ -1968,7 +1980,8 @@ struct HistoryContentView: View {
       }
       .padding(12)
     }
-    .frame(width: 320, height: min(CGFloat(sidebarTagCloud.count) * 30 + 24, 420))
+    // 高度固定：药丸流自动换行，按行数估高不准（走查 #6；2026-10-13 审查）。
+    .frame(width: 320, height: 420)
     .background(theme.canvas)
     .accessibilityIdentifier("history-navigation-tags-popover")
   }
@@ -2320,9 +2333,10 @@ struct HistoryContentView: View {
             .accessibilityIdentifier("history-creator-directory-overview")
         }
         Spacer(minLength: 0)
-        // 排列（2026-10-12 走查 #34）：按平台分组折叠是原样；新增「按最近保存」平铺，
-        // 用博主最近一条作品的存入时间排，方便「看看我最近收了谁」。只排已加载的分页。
-        Picker("排列", selection: $creatorArrangement) {
+        // 排序（2026-10-12 走查 #34）：按平台分组折叠是原样；新增「按最近保存」平铺，
+        // 用博主最近一条作品的存入时间排。选「按最近保存」时博主一次取完再排。
+        // 和作品页的排序下拉同一个词（2026-10-13 审查：排列/排序不要两个字眼）。
+        Picker("排序", selection: $model.creatorArrangement) {
           ForEach(CreatorArrangement.allCases) { Text($0.title).tag($0) }
         }
         .pickerStyle(.menu)
@@ -2388,7 +2402,7 @@ struct HistoryContentView: View {
           ScrollViewReader { proxy in
             ScrollView {
               VStack(alignment: .leading, spacing: DesignTokens.Space.xl) {
-                switch creatorArrangement {
+                switch model.creatorArrangement {
                 case .byPlatform:
                   ForEach(CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)) { group in
                   CreatorDirectoryPlatformSection(
@@ -2530,21 +2544,9 @@ struct HistoryContentView: View {
     return parts.joined(separator: " · ")
   }
 
-  /// 「全部博主」页的两种排列（2026-10-12 走查 #34）。
-  enum CreatorArrangement: String, CaseIterable, Identifiable {
-    case byPlatform
-    case byRecentSave
-    var id: String { rawValue }
-    var title: String {
-      switch self {
-      case .byPlatform: "按平台"
-      case .byRecentSave: "按最近保存"
-      }
-    }
-  }
-
   /// 「按最近保存」：用博主最近一条作品的存入时间排，新的在前；还没存过作品的
-  /// 按名字跟在后面。和作品页的排序同一口径：只排已加载的分页（2026-10-12 走查 #34）。
+  /// 按名字跟在后面。和作品页的排序同一口径：只排已加载的内容（选这个排序时
+  /// 博主列表已经一次取完，见 reloadCreators）。
   static func creatorsByRecentSave(_ creators: [CreatorSummary]) -> [CreatorSummary] {
     creators.sorted { lhs, rhs in
       switch (lhs.lastSavedAtMilliseconds, rhs.lastSavedAtMilliseconds) {
@@ -2692,29 +2694,7 @@ struct HistoryContentView: View {
 
   /// 筛选片开头那个范围词（「全部 · 标签：AI Agent」里前半段）：和列标题同一个口径，
   /// 但去掉搜索分支——搜索词自己就是一枚片。
-  private var filterScopeTitle: String {
-    if model.selectedCollection != nil { return "合集" }
-    if model.selectedCreator != nil { return model.selectedCreator!.directoryDisplayName }
-    if let source = PlatformHistoryGalleryPresentation.sourceTitle(
-      selectedHosts: model.selectedHosts, scope: model.selectedScope
-    ) {
-      return source
-    }
-    switch model.selectedScope {
-    case .own: return "自有"
-    case .external: return "外部"
-    case .all: return "全部"
-    case .recent: return "最近 7 天"
-    case .unsummarized: return "未总结"
-    case .untidied: return "待校对"
-    case .untranscribed: return "待转写"
-    case .favorite: return "收藏"
-    case .notes: return "笔记"
-    case .trash: return "回收站"
-    case .works: return "作品"
-    case .drafts: return "稿件"
-    }
-  }
+  private var filterScopeTitle: String { scopeTitle }
 
   private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
     Button(action: clear) {
@@ -3186,8 +3166,8 @@ struct HistoryContentView: View {
           // 排序基准写在页头（2026-10-12 走查 #12）：默认按保存先后、新的在前，
           // 下方可以改；日期当年省年、往年带年是同一套规则，这里不另说。
           Text(HistoryPlatformRegistry.canonicalHost(for: creator.identity.platform) == "mp.weixin.qq.com"
-            ? "\(creatorDirectorySubtitle(creator)) · 按保存先后排（新的在前，下方可改）"
-            : "\(creatorDirectorySubtitle(creator)) · 互动数据是保存时的数字 · 按保存先后排（新的在前，下方可改）")
+            ? "\(creatorDirectorySubtitle(creator)) · 默认按保存先后排（新的在前，下方可改）"
+            : "\(creatorDirectorySubtitle(creator)) · 互动数据是保存时的数字 · 默认按保存先后排（新的在前，下方可改）")
             .themedFont(.caption)
             .foregroundStyle(theme.secondaryText)
         }
@@ -3821,7 +3801,14 @@ struct HistoryContentView: View {
     }
     // 空合集：阅读区原来整块空白，☆ ⋯ 灰着，不知道是坏了还是本来就没什么可看
     // （2026-10-12 走查 #10）。列表列已有完整的加入方法，这里只放一句占位。
-    if model.selectedCollection != nil, model.rows.isEmpty {
+    // 有内容但被筛空的不算：那走「筛选没结果」的静默分支（2026-10-13 审查）。
+    if let collection = model.selectedCollection,
+       collection.itemCount == 0,
+       model.rows.isEmpty,
+       model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+       model.selectedForm == nil,
+       model.selectedTagNormalizedNames.isEmpty,
+       model.selectedHosts.isEmpty {
       return AnyView(
         HistoryInlineState(
           symbol: CollectionIcon.collection,
