@@ -142,6 +142,73 @@ final class RealLibraryExportHarnessTests: XCTestCase {
     }
   }
 
+  /// 按勾选层导出。`JIZUO_EXPORT_SELECT` 形如
+  /// `目录名=taskID:层,层`，多项用分号隔开。层用 `ExportContentLayer` 的名字。
+  /// 只写 Markdown 和 PDF 首页，供人工核对结构。数据库仍只读。
+  func testExportSelectedLayers() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let spec = environment["JIZUO_EXPORT_SELECT"], !spec.isEmpty,
+          let dbPath = environment["JIZUO_EXPORT_HARNESS_DB"], !dbPath.isEmpty else {
+      throw XCTSkip("JIZUO_EXPORT_SELECT 未设置")
+    }
+    let outRoot = environment["JIZUO_EXPORT_HARNESS_OUT"]
+      .map { URL(fileURLWithPath: $0, isDirectory: true) }
+      ?? FileManager.default.temporaryDirectory.appendingPathComponent("jizuo-export-select", isDirectory: true)
+    var dependencies = PersistenceDependencies.live
+    dependencies.openWritable = { _, _ in throw CocoaError(.featureUnsupported) }
+    let repository = try GRDBHistoryRepository.open(
+      at: .init(directoryURL: URL(fileURLWithPath: dbPath).deletingLastPathComponent()),
+      dependencies: dependencies
+    )
+    defer { try? repository.database.close() }
+    let appSupportRoot = environment["JIZUO_EXPORT_HARNESS_APP_SUPPORT"]
+      .map { URL(fileURLWithPath: $0, isDirectory: true) }
+      ?? FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support", isDirectory: true)
+    let model = HistoryViewModel(imageCache: GitHubREADMEImageCache(applicationSupportRoot: appSupportRoot))
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      isReadOnly: true,
+      unavailableCode: nil
+    )
+    let readingFont = ReadingFontSelection(storedValue: ReadingFontSelection.defaultStoredValue)
+      .resolved(
+        usesEditorialReadingTypography: AppearanceTheme.paper.usesEditorialReadingTypography,
+        bodySize: ReadingFontSize.default
+      )
+    try FileManager.default.createDirectory(at: outRoot, withIntermediateDirectories: true)
+
+    for item in spec.split(separator: ";") where !item.isEmpty {
+      let halves = item.split(separator: "=", maxSplits: 1).map(String.init)
+      guard halves.count == 2 else { continue }
+      let name = halves[0]
+      let parts = halves[1].split(separator: ":", maxSplits: 1).map(String.init)
+      guard parts.count == 2, let taskID = TaskID(parts[0]) else { continue }
+      let layers = Set(parts[1].split(separator: ",").compactMap { ExportContentLayer(rawValue: String($0)) })
+      model.reveal(taskID: taskID)
+      await waitUntil(timeout: .seconds(30)) {
+        model.detail?.task.id == taskID && model.detailState == .loaded
+      }
+      let selection = ExportContentSelection(layers: layers, current: layers.first)
+      let composed = try XCTUnwrap(model.composeExportMarkdown(selection: selection), "导出失败：\(name)")
+      let detail = try XCTUnwrap(model.detail)
+      let context = ReadingDocumentExport.ExportColophonContext(detail: detail, mindMap: model.mindMapRecord)
+      let folder = outRoot.appendingPathComponent(name, isDirectory: true)
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      let markdown = ReadingDocumentExport.cleanTextExport(
+        composedMarkdown: composed.markdown, format: .markdown, context: context
+      )
+      try markdown.write(to: folder.appendingPathComponent("\(composed.baseFilename).md"), atomically: true, encoding: .utf8)
+      let styled = ReadingDocumentExport.styledDocument(
+        composedMarkdown: composed.markdown, context: context,
+        readingFont: readingFont, localImageURLs: model.localImageURLs
+      )
+      let pdf = try XCTUnwrap(ReadingDocumentExport.pdfData(from: styled), "PDF 失败：\(name)")
+      try pdf.write(to: folder.appendingPathComponent("\(composed.baseFilename).pdf"))
+      FileHandle.standardOutput.write(("[select] \(name) → \(folder.path)\n").data(using: .utf8)!)
+    }
+  }
+
   private func waitUntil(
     timeout: Duration,
     file: StaticString = #filePath,
