@@ -229,6 +229,8 @@ public protocol HistoryRepository: Sendable {
   func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage
   func navigationCounts() throws -> HistoryNavigationCounts
+  /// 在这组筛选下（忽略其中的形式）每种形式各有几条，只含大于 0 的，顺序同 `ContentForm.allCases`。
+  func formCounts(filter: HistoryListFilter) throws -> [HistoryNavigationForm]
   func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary
   func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws
   func attachCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) throws -> AttachCreatorWorksResult
@@ -459,6 +461,12 @@ public extension HistoryRepository {
   /// Read-only / unavailable repositories deliberately return an empty rail:
   /// navigation must never make an otherwise readable list fail to load.
   func navigationCounts() throws -> HistoryNavigationCounts { .init() }
+
+  /// 同上：数不出来时菜单只剩「全部」，不影响列表本身。
+  func formCounts(filter: HistoryListFilter) throws -> [HistoryNavigationForm] {
+    _ = filter
+    return []
+  }
 
   func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
     _ = command

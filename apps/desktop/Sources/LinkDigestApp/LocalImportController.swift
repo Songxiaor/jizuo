@@ -709,7 +709,15 @@ final class LocalImportController: ObservableObject {
   }
 
   func reveal(host: String) {
-    historyModel?.selectHost(host)
+    // 侧栏没有「本地文件」合计那一行了（2026-10-12（Syc 定）：文件按归属分到「自有」「外部」下）。
+    // 这次收进来的全判成外部就去「外部 → 文件」，否则去「自有」那边（备忘录、录音本来就是自有）。
+    var scope: HistoryListScope = .own
+    if case let .finished(_, summary, _) = phase,
+       !summary.ownership.isEmpty,
+       summary.ownership.allSatisfy({ $0.ownership == .external }) {
+      scope = .external
+    }
+    historyModel?.selectHost(host, scope: scope)
     phase = .idle
   }
 

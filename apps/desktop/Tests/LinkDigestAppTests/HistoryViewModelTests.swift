@@ -2347,6 +2347,297 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertTrue(names.contains("夜测标签"), "恢复没有删标签：\(names)")
   }
 
+  // MARK: 侧栏「自有 / 外部」下的来源、列头「显示」菜单（2026-10-12（Syc 定））
+
+  /// 一份同时有自有、外部两边的小库：X 上自己发的一条（手动改成自有）和别人的两条、抖音视频一条、
+  /// 不常见网站一条、自有文件一条、下载来的文件一条、笔记一条、语音备忘录一条。
+  private struct SidebarFixture {
+    let repository: GRDBHistoryRepository
+    let ownTweet: TaskID
+    let externalTweets: Set<TaskID>
+    let douyinVideo: TaskID
+    let miscPage: TaskID
+    let ownFile: TaskID
+    let downloadedFile: TaskID
+    let note: TaskID
+    let memo: TaskID
+  }
+
+  private func makeSidebarFixture(_ name: String) throws -> (SidebarFixture, URL) {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-sidebar-\(name)-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    var clock: Int64 = 1_000
+    func web(_ url: String, _ title: String) throws -> TaskID {
+      clock += 1
+      return try repository.acceptCapture(.init(
+        document: CapturedDocument(
+          createdAt: "2026-10-12T00:00:00Z",
+          origin: .manualLink,
+          url: url,
+          title: title,
+          platform: "generic",
+          method: "rendered_dom",
+          text: "正文 \(title)",
+          completeness: "complete",
+          capturedAt: "2026-10-12T00:00:00Z",
+          sourceLabel: "fixture"
+        ),
+        receivedAtMilliseconds: clock
+      )).taskID
+    }
+    func file(_ c: Character) throws -> TaskID {
+      clock += 1
+      return try repository.acceptCapture(.init(
+        document: LocalImportDocument.file(
+          contentSHA256: String(repeating: c, count: 64), fileName: "\(c).md", text: "正文 \(c)",
+          completeness: "complete", method: "local_file_text", fileDate: nil
+        ),
+        receivedAtMilliseconds: clock
+      )).taskID
+    }
+    let ownTweet = try web("https://x.com/me/status/1", "自己发的")
+    _ = try repository.addTags([ContentOwnership.ownTagName], to: ownTweet)
+    let tweetA = try web("https://x.com/someone/status/2", "别人的 A")
+    let tweetB = try web("https://x.com/someone/status/3", "别人的 B")
+    let douyinVideo = try web("https://www.douyin.com/video/7000000000000000001", "抖音视频")
+    let miscPage = try web("https://obscure.example.org/post", "小众网站")
+    let ownFile = try file("a")
+    let downloadedFile = try file("b")
+    _ = try repository.addTags([ContentOwnership.externalTagName], to: downloadedFile)
+    clock += 1
+    let note = try repository.acceptCapture(.init(
+      document: try UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: clock
+    )).taskID
+    clock += 1
+    let memo = try repository.acceptCapture(.init(
+      document: LocalImportDocument.voiceMemo(recordingID: "M", title: "录音", recordedAt: nil, durationSeconds: 3),
+      receivedAtMilliseconds: clock
+    )).taskID
+    return (SidebarFixture(
+      repository: repository, ownTweet: ownTweet, externalTweets: [tweetA, tweetB], douyinVideo: douyinVideo,
+      miscPage: miscPage, ownFile: ownFile, downloadedFile: downloadedFile, note: note, memo: memo
+    ), root)
+  }
+
+  private func makeSidebarModel(_ fixture: SidebarFixture) async -> HistoryViewModel {
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: fixture.repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil(timeout: .seconds(3)) { model.navigationCounts.total == 9 && model.listState == .loaded }
+    return model
+  }
+
+  /// 「自有 / 外部」下面的子项加起来等于那一行；手动改成自有的网站帖子、两边的本地文件各归各的。
+  func testOwnershipSourceRowsSumToTheirParent() async throws {
+    let (fixture, root) = try makeSidebarFixture("sum")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer { try? fixture.repository.database.close() }
+    let model = await makeSidebarModel(fixture)
+    let counts = model.navigationCounts
+    XCTAssertEqual(counts.own, 4)
+    XCTAssertEqual(counts.external, 5)
+
+    let own = OwnershipSourceNavigation.rows(for: .own, counts: counts)
+    let external = OwnershipSourceNavigation.rows(for: .external, counts: counts)
+    XCTAssertEqual(own.reduce(0) { $0 + $1.count }, counts.own, "自有下面加起来要等于「自有」")
+    XCTAssertEqual(external.reduce(0) { $0 + $1.count }, counts.external, "外部下面加起来要等于「外部」")
+    XCTAssertEqual(counts.own + counts.external, counts.total)
+
+    // 自有：笔记、语音备忘录、文件（本机来源按固定顺序），再是改成自有的 X。
+    XCTAssertEqual(own.map(\.key), [
+      HistoryPlatformDisplay.noteHost, LocalImportSource.voiceMemos.rawValue, LocalImportSource.files.rawValue, "x.com",
+    ])
+    XCTAssertEqual(own.map(\.count), [1, 1, 1, 1])
+    XCTAssertEqual(own.first { $0.key == LocalImportSource.files.rawValue }?.title, "文件")
+    // 外部：网站按条数从多到少，下载来的文件在网站后面，「其他」垫底。
+    XCTAssertEqual(external.map(\.key), [
+      "x.com", "douyin.com", LocalImportSource.files.rawValue, HistoryPlatformDisplay.miscHost,
+    ])
+    XCTAssertEqual(external.map(\.count), [2, 1, 1, 1])
+    XCTAssertEqual(external.last?.hosts, ["obscure.example.org"])
+    // 同一个 X 两边各一行，id 不能撞。
+    XCTAssertEqual(Set(own.map(\.id) + external.map(\.id)).count, own.count + external.count)
+
+    // 收起时只露前几个网站；文件、「其他」在「还有 N 个」里。只多一行时不折。
+    XCTAssertEqual(OwnershipSourceNavigation.collapsedVisibleIDs(external, limit: 1), ["external-x.com"])
+    XCTAssertNil(OwnershipSourceNavigation.collapsedVisibleIDs(Array(external.prefix(3)), limit: 2))
+    XCTAssertEqual(OwnershipSourceNavigation.collapsedVisibleIDs(external), ["external-x.com", "external-douyin.com"])
+
+    // 笔记清空了，「自有 → 笔记」这一行也留着（新建笔记从这里进）。
+    let empty = OwnershipSourceNavigation.rows(for: .own, counts: .init())
+    XCTAssertEqual(empty.map(\.key), [HistoryPlatformDisplay.noteHost])
+    XCTAssertTrue(OwnershipSourceNavigation.rows(for: .external, counts: .init()).isEmpty)
+  }
+
+  /// 点子项 = 那一边 + 那个来源；只亮那一行，「自有 / 外部」那一行不跟着亮。
+  func testSelectingOwnershipSourceAppliesScopeAndHost() async throws {
+    let (fixture, root) = try makeSidebarFixture("select")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer { try? fixture.repository.database.close() }
+    let model = await makeSidebarModel(fixture)
+    let own = OwnershipSourceNavigation.rows(for: .own, counts: model.navigationCounts)
+    let external = OwnershipSourceNavigation.rows(for: .external, counts: model.navigationCounts)
+    func row(_ rows: [OwnershipSourceRow], _ key: String) throws -> OwnershipSourceRow {
+      try XCTUnwrap(rows.first { $0.key == key })
+    }
+
+    let ownX = try row(own, "x.com")
+    model.selectOwnershipSource(ownX)
+    XCTAssertEqual(model.selectedScope, .own)
+    XCTAssertEqual(model.selectedHosts, ["x.com"])
+    XCTAssertTrue(model.hasCategoryFilter, "选了子项，「自有」那一行不该再亮")
+    XCTAssertTrue(model.isOwnershipSourceSelected(ownX))
+    XCTAssertFalse(model.isOwnershipSourceSelected(try row(external, "x.com")), "外部那行 X 不能一起亮")
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.ownTweet] }
+
+    let externalX = try row(external, "x.com")
+    model.selectOwnershipSource(externalX)
+    XCTAssertEqual(model.selectedScope, .external)
+    XCTAssertTrue(model.isOwnershipSourceSelected(externalX))
+    XCTAssertFalse(model.isOwnershipSourceSelected(ownX))
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == fixture.externalTweets }
+
+    // 文件按归属分开：自有那行只有自己的，外部那行只有下载来的。
+    model.selectOwnershipSource(try row(own, LocalImportSource.files.rawValue))
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.ownFile] }
+    model.selectOwnershipSource(try row(external, LocalImportSource.files.rawValue))
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.downloadedFile] }
+
+    let misc = try row(external, HistoryPlatformDisplay.miscHost)
+    model.selectOwnershipSource(misc)
+    XCTAssertEqual(model.selectedHosts, ["obscure.example.org"])
+    XCTAssertTrue(model.isOwnershipSourceSelected(misc))
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.miscPage] }
+
+    // 「自有 → 笔记」仍是「笔记」作用域。
+    let notes = try row(own, HistoryPlatformDisplay.noteHost)
+    model.selectOwnershipSource(notes)
+    XCTAssertEqual(model.selectedScope, .notes)
+    XCTAssertTrue(model.selectedHosts.isEmpty)
+    XCTAssertTrue(model.isOwnershipSourceSelected(notes))
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.note] }
+
+    // 回到「外部」本身：子项都不亮，「外部」那一行亮（没有来源筛选）。
+    model.selectScope(.external)
+    XCTAssertFalse(model.hasCategoryFilter)
+    XCTAssertFalse(external.contains { model.isOwnershipSourceSelected($0) })
+  }
+
+  /// 列头的形式和侧栏是「且」：换侧栏时留着，在哪一处都只看这种形式；回到全部形式才放开。
+  func testFormFilterAndsWithSidebarSelectionAndPersists() async throws {
+    let (fixture, root) = try makeSidebarFixture("form-and")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer { try? fixture.repository.database.close() }
+    let model = await makeSidebarModel(fixture)
+
+    model.selectForm(.video)
+    XCTAssertEqual(model.selectedScope, .all, "选形式不动侧栏")
+    XCTAssertFalse(model.hasCategoryFilter, "只看视频时「全部」仍是选中的那一行")
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.douyinVideo] }
+
+    model.selectScope(.external)
+    XCTAssertEqual(model.selectedForm, .video, "换侧栏时形式留着")
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.douyinVideo] }
+
+    model.selectScope(.own)
+    XCTAssertEqual(model.selectedForm, .video)
+    await waitUntil { model.listState == .empty && model.rows.isEmpty }
+
+    let ownX = try XCTUnwrap(OwnershipSourceNavigation.rows(for: .own, counts: model.navigationCounts).first { $0.key == "x.com" })
+    model.selectOwnershipSource(ownX)
+    XCTAssertEqual(model.selectedForm, .video)
+    await waitUntil { model.listState == .empty }
+
+    model.selectForm(.article)
+    XCTAssertEqual(model.selectedHosts, ["x.com"], "换形式不动侧栏")
+    XCTAssertEqual(model.selectedScope, .own)
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.ownTweet] }
+
+    model.selectScope(.favorite)
+    XCTAssertEqual(model.selectedForm, .article)
+    model.selectForm(nil)
+    XCTAssertNil(model.selectedForm)
+    model.selectScope(.all)
+    await waitUntil { model.listState == .loaded && model.rows.count == 9 }
+
+    // 新建笔记、点 [[链接]] 落到「自有 → 笔记」时形式一并放开，刚建的笔记不会被滤掉。
+    model.selectForm(.video)
+    model.showNotes()
+    XCTAssertNil(model.selectedForm)
+    XCTAssertEqual(model.selectedScope, .notes)
+    await waitUntil { model.listState == .loaded && Set(model.rows.map(\.taskID)) == [fixture.note] }
+  }
+
+  /// 列头菜单里每种形式的数是「当前侧栏选择里各有几条」，不看已选的形式；0 条的不列，正选着的那种例外。
+  func testListFormCountsFollowSidebarSelection() async throws {
+    let (fixture, root) = try makeSidebarFixture("form-counts")
+    defer { try? FileManager.default.removeItem(at: root) }
+    defer { try? fixture.repository.database.close() }
+    let model = await makeSidebarModel(fixture)
+    func counts() -> [ContentForm: Int] {
+      Dictionary(uniqueKeysWithValues: model.listFormCounts.map { ($0.form, $0.count) })
+    }
+
+    await waitUntil(timeout: .seconds(2)) { counts() == [.article: 4, .video: 1, .audio: 1, .document: 2, .note: 1] }
+    XCTAssertEqual(model.listFormCounts.reduce(0) { $0 + $1.count }, model.navigationCounts.total)
+
+    model.selectScope(.external)
+    await waitUntil(timeout: .seconds(2)) { counts() == [.article: 3, .video: 1, .document: 1] }
+
+    // 选了形式，菜单里的数不变（还是这一组里各几条）。
+    model.selectForm(.video)
+    await waitUntil { model.listState == .loaded }
+    XCTAssertEqual(counts(), [.article: 3, .video: 1, .document: 1])
+
+    model.selectOwnershipSource(try XCTUnwrap(
+      OwnershipSourceNavigation.rows(for: .own, counts: model.navigationCounts).first { $0.key == "x.com" }
+    ))
+    await waitUntil(timeout: .seconds(2)) { counts() == [.article: 1] }
+    // 正选着视频、这一组没有视频：菜单里仍列出「视频 0」，选中项不凭空消失。
+    let items = ListFormFilterMenu.menuItems(counts: model.listFormCounts, selected: model.selectedForm)
+    XCTAssertEqual(items.map(\.form), [.article, .video])
+    XCTAssertEqual(items.last?.count, 0)
+    XCTAssertEqual(ListFormFilterMenu.menuItems(counts: model.listFormCounts, selected: nil).map(\.form), [.article])
+
+    // 合集里也按合集数。
+    let collection = try fixture.repository.createCollection(name: "混合")
+    _ = try fixture.repository.addTasks([fixture.douyinVideo, fixture.memo], toCollection: collection.id)
+    model.selectForm(nil)
+    model.reloadCollections()
+    await waitUntil(timeout: .seconds(2)) { !model.collections.isEmpty }
+    model.selectCollection(collection.id)
+    await waitUntil(timeout: .seconds(2)) { counts() == [.video: 1, .audio: 1] }
+  }
+
+  /// 「实用工具」收着、正选中其中一行（回收站、待转写）时，那一行仍露出来；回收站清空后正停在里面也不消失。
+  func testSelectedUtilityRowStaysVisible() {
+    let counts = HistoryNavigationCounts(untranscribed: 2, trash: 3)
+    let rows = SidebarUtilityNavigation.rows(counts: counts, selectedScope: .all, autoSummarizesNewCaptures: true)
+    XCTAssertEqual(rows.map(\.scope), [.untranscribed, .trash], "清空的不占行；自动总结开着时「未总结」不占位")
+    XCTAssertTrue(SidebarUtilityNavigation.visibleRows(rows, expanded: false, selectedScope: nil).isEmpty)
+    XCTAssertEqual(
+      SidebarUtilityNavigation.visibleRows(rows, expanded: false, selectedScope: .trash).map(\.scope), [.trash]
+    )
+    XCTAssertEqual(SidebarUtilityNavigation.visibleRows(rows, expanded: true, selectedScope: nil).map(\.scope), [.untranscribed, .trash])
+
+    let emptied = SidebarUtilityNavigation.rows(counts: .init(), selectedScope: .trash, autoSummarizesNewCaptures: true)
+    XCTAssertEqual(emptied.map(\.scope), [.trash], "回收站清空后正停在里面，这一行不能消失")
+    XCTAssertEqual(
+      SidebarUtilityNavigation.visibleRows(emptied, expanded: false, selectedScope: .trash).map(\.scope), [.trash]
+    )
+    let untidied = SidebarUtilityNavigation.rows(counts: .init(), selectedScope: .untidied, autoSummarizesNewCaptures: false)
+    XCTAssertEqual(untidied.map(\.scope), [.untidied, .unsummarized])
+
+    // 「自有 / 外部」收着时，选中的子项也留着。
+    let source = OwnershipSourceRow(ownership: .external, key: "x.com", hosts: ["x.com"], count: 2)
+    let other = OwnershipSourceRow(ownership: .external, key: "douyin.com", hosts: ["douyin.com"], count: 1)
+    XCTAssertEqual(
+      OwnershipSourceNavigation.visibleRows([source, other], expanded: false) { $0 == source }, [source]
+    )
+    XCTAssertEqual(OwnershipSourceNavigation.visibleRows([source, other], expanded: true) { _ in false }, [source, other])
+  }
+
   private func waitUntil(timeout: Duration = .seconds(1), file: StaticString = #filePath, line: UInt = #line, _ condition: @escaping @MainActor () -> Bool) async {
     let clock = ContinuousClock(), deadline = clock.now + timeout
     while !condition() && clock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }

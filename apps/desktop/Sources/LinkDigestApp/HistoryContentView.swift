@@ -28,9 +28,8 @@ struct HistoryContentView: View {
   /// 有作品的博主删除前先确认；没作品的直接删。
   @State private var creatorPendingDeletion: CreatorSummary?
   @AppStorage(ProfileImportQueuePresentation.dismissedKey) private var dismissedImportNotices = ""
-  /// 来源平台是否全部展开。默认只露出条数最多的 5 家。
-  // v2（2026-09-25）：来源默认只露前 5 家。旧键里记着「全部展开」，换键让所有人回到默认折叠。
-  @AppStorage("history.navigation.platforms-show-all.v2") private var navigationPlatformsShowsAll = false
+  /// 「外部」下面「还有 N 个」是否展开。默认只露条数最多的 4 个网站（同原来的「来源」）。
+  @AppStorage("history.navigation.external-show-all") private var navigationExternalShowsAll = false
   @State private var isReadingPlatformGalleryItem = false
   @State private var platformGalleryScrollTarget: TaskID?
   @State private var showsCreatorDirectoryCatalog = true
@@ -44,17 +43,16 @@ struct HistoryContentView: View {
   @State private var creatorMasonryMeasuredRevision = 0
   @State private var creatorSortReferenceDate = Date()
   @State private var creatorWorkScrollTarget: TaskID?
-  // 2026-09-23 侧栏分层（对标应用）：顶部四个固定入口常驻，视图 / 博主 / 来源平台 / 标签
-  // 这些次要分组默认收起，展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
-  @AppStorage("history.navigation.views-expanded") private var navigationViewsExpanded = false
-  // 「形式」2026-09-24 新加时默认展开；2026-10-01 走查：侧栏七组看同一批资料，一打开全摊开
-  // 太多，改回和「标签」「来源」一样默认收起。用户展开过就按 AppStorage 记住的来。
-  @AppStorage("history.navigation.forms-expanded") private var navigationFormsExpanded = false
+  // 2026-09-23 侧栏分层（对标应用）：顶部固定入口常驻，博主 / 标签这些次要分组默认收起，
+  // 展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
   @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
-  @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
-  /// 「视图」里「工序状态」那一组，默认收起（2026-10-04 侧栏去重）。
-  @AppStorage("history.navigation.step-status-expanded") private var navigationStepStatusExpanded = false
+  // 2026-10-12（Syc 定）：「来源」并进「自有 / 外部」，两行各带展开箭头，默认展开——
+  // 东西从哪来是最常用的入口，不能一打开就藏着。「视图」拆掉，「形式」挪到列头。
+  @AppStorage("history.navigation.own-expanded") private var navigationOwnExpanded = true
+  @AppStorage("history.navigation.external-expanded") private var navigationExternalExpanded = true
+  /// 「实用工具」（待转写、待校对、未总结、回收站）默认收起：要批量补做、找回删掉的东西时才点开。
+  @AppStorage("history.navigation.utilities-expanded") private var navigationUtilitiesExpanded = false
   // 「合集」2026-09-29 新加，默认展开：新分组第一次出现时要让人看见（同「形式」）。
   @AppStorage("history.navigation.collections-expanded") private var navigationCollectionsExpanded = true
   @State private var didRevealInitialNavigationPlatform = false
@@ -896,12 +894,12 @@ struct HistoryContentView: View {
     if !model.searchText.isEmpty, let count = model.searchResultCount { return "搜索 · \(count) 条" }
     if let collection = model.selectedCollection { return collection.name }
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
-    if let form = model.selectedForm { return form.rawValue }
+    // 形式不写进标题：它就在标题右边那个「显示」按钮上（2026-10-12（Syc 定））。
     // 和侧栏行同名（「公众号」「B站」），「其他」一次选中多个小众来源，也要叫「其他」而不是落回「全部」。
-    // 侧栏「自有 → 自有文件」：列标题跟侧栏同名，不写成「本地文件」（那是来源里的合计）。
-    if model.selectedScope == .own, model.selectedHosts == [LocalImportSource.files.rawValue] { return "自有文件" }
-    if !model.selectedHosts.isEmpty {
-      return PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
+    if let source = PlatformHistoryGalleryPresentation.sourceTitle(
+      selectedHosts: model.selectedHosts, scope: model.selectedScope
+    ) {
+      return source
     }
     switch model.selectedScope {
     case .own: return "自有"
@@ -924,7 +922,8 @@ struct HistoryContentView: View {
       || !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  /// 列标题最多占多宽：列宽减去右边按钮（搜索、＋，在「笔记」「来源」里各多一个）和边距。
+  /// 列标题最多占多宽：列宽减去右边按钮（搜索、＋，在「笔记」「来源」里各多一个）、
+  /// 标题旁的「显示」菜单和边距。
   private var listColumnTitleMaxWidth: CGFloat {
     var buttons: CGFloat = 2
     if model.selectedScope == .notes { buttons += 1 }
@@ -933,22 +932,36 @@ struct HistoryContentView: View {
     return max(96, listWidth - buttons * 34 - 48)
   }
 
+  /// 工作台、博主目录接管中间列时没有「显示」菜单：形式在那里不生效（见 `HistoryViewModel.listFilter`）。
+  private var showsListFormMenu: Bool {
+    !model.isWorkbenchActive && !model.isCreatorDirectoryActive
+  }
+
   @ToolbarContentBuilder private var listColumnToolbar: some ToolbarContent {
     // 列标题自己画，不用系统标题：系统标题在列表列工具栏里预留一段固定宽度，
     // 列宽 260pt 时只剩两个按钮的位置。来源页多一个「卡片视图」就放不下，系统把
     // 整组按钮往右推，「＋」压在分栏线上，还在线右边多出一条分段线（2026-09-24 实测）。
     ToolbarItem(placement: .navigation) {
-      // 跟设置里的界面字号走（原来写死 15pt，调大字号后列标题不变，2026-10-01 体检）。
-      Text(listColumnTitle)
-        .themedFont(.headline, weight: .bold)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        // 博主名可能很长：列宽 220pt 时，标题超过约 96pt 就会把三个按钮重新挤上分栏线。
-        // 列拖宽了就跟着放宽，按钮数照实扣（2026-10-04 走查：260pt 列里「汲作验收素材-0929」
-        // 被截成「汲作验收素材-…」，右边明明空着）。
-        .frame(maxWidth: listColumnTitleMaxWidth, alignment: .leading)
-        .help(listColumnTitle)
-        .accessibilityAddTraits(.isHeader)
+      if showsListFormMenu {
+        // 「形式」从侧栏挪到这里（2026-10-12（Syc 定），照「照片」的「显示：全部项目」）：
+        // 和侧栏选的东西是「且」，换侧栏时留着；不是全部形式时按钮着强调色，筛选不会藏起来。
+        // 列头只留这个按钮、不再写标题：侧栏亮着的那一行已经说了在哪，标题「全部」挨着「全部形式」
+        // 是同一个词说两遍（Syc 看候选版时提的）。搜到多少条挪到筛选片那一行。
+        ListFormFilterMenu(model: model, theme: theme)
+      } else {
+        // 工作台、博主目录接管中间列时没有「显示」按钮，标题照旧。
+        // 跟设置里的界面字号走（原来写死 15pt，调大字号后列标题不变，2026-10-01 体检）。
+        Text(listColumnTitle)
+          .themedFont(.headline, weight: .bold)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          // 博主名可能很长：列宽 220pt 时，标题超过约 96pt 就会把三个按钮重新挤上分栏线。
+          // 列拖宽了就跟着放宽，按钮数照实扣（2026-10-04 走查：260pt 列里「汲作验收素材-0929」
+          // 被截成「汲作验收素材-…」，右边明明空着）。
+          .frame(maxWidth: listColumnTitleMaxWidth, alignment: .leading)
+          .help(listColumnTitle)
+          .accessibilityAddTraits(.isHeader)
+      }
     }
     // 标题不再是弹性项，按钮会贴着标题排；用弹性空白把它们推回列的右缘。
     if #available(macOS 26.0, *) {
@@ -1000,7 +1013,7 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-search")
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
       }
-      if hasClearableListFilters && !isSingleFilterShownAsTitle {
+      if listFilterChipCount > 0 {
         activeFilterBar
       }
       if model.isReadOnly {
@@ -1093,7 +1106,20 @@ struct HistoryContentView: View {
       // 抓取那几秒中间只写着「还没有保存的内容」，像没点上（2026-10-02 新用户走查）。
       case .empty where model.visibleRelatedRows.isEmpty
         && ordinaryPendingCaptures.isEmpty && visibleProfileImportBatches.isEmpty:
-        if model.selectedScope == .unsummarized, !model.hasCategoryFilter,
+        // 列头只看某种形式、这里一条也没有：先说是形式滤掉的，给一键放开。否则会落到「回收站是空的」
+        // 「都转写过了」这类说法上，像是这里本来就没东西（2026-10-12（Syc 定））。
+        if let form = model.selectedForm,
+           model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          HistoryInlineState(
+            symbol: form.systemImage,
+            title: "这里没有\(form.rawValue)",
+            message: "列头选了只看这一种形式。换回全部形式，就能看到这里的其它内容。",
+            actionTitle: "显示全部形式",
+            action: { model.selectForm(nil) }
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-form-empty")
+        } else if model.selectedScope == .unsummarized, !model.hasCategoryFilter,
            model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
             symbol: "checkmark.circle",
@@ -1427,123 +1453,208 @@ struct HistoryContentView: View {
     }
   }
 
-  /// 「自有 / 外部」下面缩进的本机来源行。没有条目的来源不出行。
-  @ViewBuilder private func localSourceRows(_ hosts: [String]) -> some View {
-    let items = hosts.compactMap { host in
-      model.navigationCounts.platforms.first { $0.host == host }
-    }.filter { $0.count > 0 }
-    if !items.isEmpty {
-      UIReadingPlatformNavigation(
-        items: items.map { .init(host: $0.host, count: $0.count, faviconURL: nil, faviconTaskID: nil) },
-        theme: theme,
-        isSelected: { model.selectedHosts.contains($0) },
-        onSelect: { host in
-          isReadingPlatformGalleryItem = false
-          model.selectHost(host)
-        }
-      )
-      .padding(.leading, 16)
+  /// 「自有 / 外部」那一行（2026-10-12（Syc 定）：「来源」并进来，像「邮件」的邮箱一样带展开箭头）。
+  ///
+  /// 点行本身 = 只按归属看，数字是这一边的合计（等于下面各行之和）；点名字后面的小箭头只展开 /
+  /// 收起下面的来源，不改选中。箭头紧跟名字，不放数字那一列：放在数字后面，这两行的数字就和
+  /// 上下几行对不齐了。三段分开点：名字、箭头、空白和数字；读屏只念第一段。
+  private func ownershipParentRow(
+    _ ownership: ContentOwnership,
+    count: Int,
+    expanded: Binding<Bool>,
+    help: String,
+    identifier: String
+  ) -> some View {
+    let scope: HistoryListScope = ownership == .own ? .own : .external
+    let title = ownership.rawValue
+    // 选中的是下面某一行时只亮那一行，这一行不跟着亮（hasCategoryFilter 里有来源）。
+    let selected = model.selectedScope == scope && !model.hasCategoryFilter
+      && !model.isCreatorDirectoryActive && !model.isWorkbenchActive
+    let select = {
+      sidebarScrollMemory.snapshot()
+      isReadingPlatformGalleryItem = false
+      model.selectScope(scope)
     }
-  }
-
-  private struct StepStatusRow {
-    let scope: HistoryListScope
-    let title: String
-    let symbol: String
-    let count: Int
-    let help: String
-    let identifier: String
-  }
-
-  /// 「工序状态」下的几行：清空了就不占一行，正选中时仍留着。
-  private var stepStatusRows: [StepStatusRow] {
-    var rows: [StepStatusRow] = []
-    let counts = model.navigationCounts
-    if counts.untranscribed > 0 || model.selectedScope == .untranscribed {
-      rows.append(.init(scope: .untranscribed, title: "待转写", symbol: "waveform", count: counts.untranscribed,
-                        help: "带音视频、还没转成文字的内容", identifier: "history-navigation-untranscribed"))
-    }
-    if counts.untidied > 0 || model.selectedScope == .untidied {
-      rows.append(.init(scope: .untidied, title: "待校对", symbol: "checkmark.seal", count: counts.untidied,
-                        help: "有转写、还没用模型校对过的内容", identifier: "history-navigation-untidied"))
-    }
-    // 自动总结开着时新内容会自己总结，这一行就不占位（2026-10-01 走查：「待总结 475」像一份做不完的作业）。
-    if !providerSettings.autoSummarizeNewCaptures || model.selectedScope == .unsummarized {
-      rows.append(.init(scope: .unsummarized, title: "未总结", symbol: MenuIcon.summarize, count: counts.unsummarized,
-                        help: "还没有生成总结的内容", identifier: "history-navigation-unsummarized"))
-    }
-    return rows
-  }
-
-  /// 正选中其中一行时一定展开，免得选中项藏在折叠里。
-  private var showsStepStatusRows: Bool {
-    navigationStepStatusExpanded || stepStatusRows.contains { $0.scope == model.selectedScope }
-  }
-
-  /// 「工序状态」那一行：图标列、文字起点、行高、选中底都和 `navigationButton` 同一套尺寸，
-  /// 展开箭头放在数字那一列（2026-10-04：原来箭头占了图标位、左右边距自己写，整行比上下
-  /// 几行往右缩了 4pt、行也矮一截）。
-  private var stepStatusDisclosureRow: some View {
-    Button {
-      // 收起后如果列表自己滚回顶部，把还放得下的偏移按回去。这一行留在原地。
-      sidebarScrollMemory.holdVisibleOffset()
-      navigationStepStatusExpanded.toggle()
-    } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "checklist")
-          .font(.system(size: DesignTokens.IconSize.sidebar, weight: .regular))
-          .foregroundStyle(theme.secondaryText)
+    return HStack(spacing: 0) {
+      Button(action: select) {
+        HStack(spacing: 8) {
+          // 选中时上朱：导航里唯一一处朱色，和列表的「作」、页头的主印连成一套（2026-09-29）。
+          SealMark(
+            glyph: ownership == .own ? .own : .external,
+            size: 16,
+            color: selected ? SealMark.stampInk : theme.secondaryText,
+            showsInnerFrame: false
+          )
           .frame(width: 18)
-        Text("工序状态")
-          .themedFont(.body)
-          .foregroundStyle(theme.primaryText)
-          .layoutPriority(1)
-        Spacer(minLength: DesignTokens.Space.xs)
-        Image(systemName: "chevron.right")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(theme.secondaryText)
-          .rotationEffect(.degrees(showsStepStatusRows ? 90 : 0))
-          .padding(.horizontal, 6)
+          Text(title)
+            .themedFont(.body)
+            .foregroundStyle(selected ? theme.accent : theme.primaryText)
+            .lineLimit(1)
+            .fixedSize()
+        }
+        .frame(minHeight: 20)
+        .contentShape(Rectangle())
       }
-      .frame(minHeight: 20)
-      .contentShape(Rectangle())
+      .buttonStyle(.plain)
+      .help(help)
+      .accessibilityLabel(title)
+      .accessibilityValue("\(count)")
+      .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+      .accessibilityIdentifier(identifier)
+      Button {
+        // 换掉这一组后列表会自己滚回顶部；内容还比窗口高就按回原来的偏移（同分组标题）。
+        sidebarScrollMemory.holdVisibleOffset()
+        expanded.wrappedValue.toggle()
+      } label: {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(theme.secondaryText)
+          .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+          .frame(width: 22, height: 20)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help(expanded.wrappedValue ? "收起「\(title)」下面的来源" : "展开「\(title)」下面的来源")
+      .accessibilityLabel("\(title)的来源")
+      .accessibilityValue(expanded.wrappedValue ? "已展开" : "已折叠")
+      .accessibilityIdentifier("\(identifier)-disclosure")
+      Button(action: select) {
+        HStack(spacing: 0) {
+          Spacer(minLength: DesignTokens.Space.xs)
+          countBadge(count, selected: selected)
+        }
+        .frame(minHeight: 20)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help(help)
+      .accessibilityHidden(true)
     }
-    .buttonStyle(.plain)
+    // 尺寸、选中底和 `navigationButton` 同一套：上下 2pt、左右 8pt 再外扩 6pt。
     .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
+    .background(
+      selected ? theme.accent.opacity(0.12) : .clear,
+      in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+    )
+    .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
-    .help("还没转写、没校对、没总结的内容，要批量补做时点开")
-    .accessibilityLabel("工序状态")
-    .accessibilityValue(showsStepStatusRows ? "已展开" : "已折叠")
-    .accessibilityIdentifier("history-navigation-step-status")
+    .fontWeight(selected ? .medium : .regular)
   }
 
-  @ViewBuilder private var ownLocalFilesRow: some View {
-    let host = LocalImportSource.files.rawValue
-    if model.navigationCounts.ownLocalFiles > 0 {
+  /// 「自有 / 外部」下面缩进的来源行。收起时只留正选中的那一行：选中项不能藏在折叠里。
+  @ViewBuilder private func ownershipSourceRows(_ ownership: ContentOwnership, expanded: Bool) -> some View {
+    let rows = OwnershipSourceNavigation.rows(for: ownership, counts: model.navigationCounts)
+    let shown = OwnershipSourceNavigation.visibleRows(rows, expanded: expanded, isSelected: model.isOwnershipSourceSelected)
+    if !shown.isEmpty {
       UIReadingPlatformNavigation(
-        // 悬停说清和「来源」那行的差别（2026-10-01）：两行同名、数字不同，不说明像算错了。
-        items: [.init(
-          host: host,
-          count: model.navigationCounts.ownLocalFiles,
-          faviconURL: nil,
-          faviconTaskID: nil,
-          helpText: "自己的本地文件（\(model.navigationCounts.ownLocalFiles) 条）；全部本地文件在「来源 → 本地文件」",
-          title: "自有文件"
-        )],
+        items: shown.map(ownershipSourceItem),
         theme: theme,
-        isSelected: { model.selectedHosts == [$0] && model.selectedScope == .own },
-        onSelect: { host in
+        isSelected: { id in rows.first { $0.id == id }.map(model.isOwnershipSourceSelected) ?? false },
+        onSelect: { id in
+          guard let row = rows.first(where: { $0.id == id }) else { return }
           isReadingPlatformGalleryItem = false
-          model.selectHost(host, scope: .own)
-        }
+          model.selectOwnershipSource(row)
+        },
+        // 只有「外部」折：网站多（十几个），「自有」下面通常就四五行。
+        collapsedVisibleIDs: ownership == .external && expanded
+          ? OwnershipSourceNavigation.collapsedVisibleIDs(rows) : nil,
+        isExpanded: $navigationExternalShowsAll
       )
       .padding(.leading, 16)
-      .accessibilityIdentifier("history-navigation-own-local-files")
     }
   }
 
-  /// 侧栏「合集」（2026-09-29）：一组要按顺序一起看的内容，例如一套教程。放在「视图」之后；
+  private func ownershipSourceItem(_ row: OwnershipSourceRow) -> UIReadingPlatformNavigation.Item {
+    let favicon = row.isLocal || row.isMisc ? nil : model.platformFavicon(forHost: row.key)
+    return .init(
+      host: row.key,
+      count: row.count,
+      faviconURL: favicon?.url,
+      faviconTaskID: favicon?.taskID,
+      helpText: ownershipSourceHelp(row),
+      title: row.title,
+      rowID: row.id,
+      identifier: ownershipSourceIdentifier(row),
+      systemImage: row.key == HistoryPlatformDisplay.noteHost ? "square.and.pencil"
+        : row.key == HistoryPlatformDisplay.workHost ? ContentForm.work.systemImage : nil
+    )
+  }
+
+  /// 原来就有的行沿用原来的标识（笔记、备忘录、语音备忘录、自有文件、外部的各网站和「其他」），
+  /// 新出来的行带上归属，免得同一个 host 在两边撞名。
+  private func ownershipSourceIdentifier(_ row: OwnershipSourceRow) -> String {
+    let files = LocalImportSource.files.rawValue
+    switch row.ownership {
+    case .own:
+      if row.isNotesScope { return "history-navigation-notes" }
+      if row.key == files { return "history-navigation-own-local-files" }
+      if [LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue].contains(row.key) {
+        return "history-navigation-platform-\(row.key)"
+      }
+      return "history-navigation-own-platform-\(row.key)"
+    case .external:
+      if row.key == files { return "history-navigation-external-local-files" }
+      if row.isLocal { return "history-navigation-external-platform-\(row.key)" }
+      return "history-navigation-platform-\(row.key)"
+    }
+  }
+
+  private func ownershipSourceHelp(_ row: OwnershipSourceRow) -> String? {
+    switch (row.ownership, row.key) {
+    case (.own, HistoryPlatformDisplay.noteHost): "自己在汲作里写的笔记（⇧⌘N 新建）"
+    case (.own, LocalImportSource.files.rawValue): "自己的本地文件（\(row.count) 条）：拖进来、没有下载标记的"
+    case (.external, LocalImportSource.files.rawValue): "外部的本地文件（\(row.count) 条）：从网上、微信下载后拖进来的"
+    case (.own, _) where !row.isLocal:
+      "改成「自有」的\(HistoryPlatformDisplay.shortName(forHost: row.key))内容（\(row.count) 条）"
+    case (.external, _) where row.isLocal:
+      "改成「外部」的\(row.title ?? HistoryPlatformDisplay.shortName(forHost: row.key))（\(row.count) 条）"
+    default: nil
+    }
+  }
+
+  /// 「实用工具」里的几行，规则见 `SidebarUtilityNavigation`。
+  private var utilityRows: [SidebarUtilityRow] {
+    SidebarUtilityNavigation.rows(
+      counts: model.navigationCounts,
+      selectedScope: model.selectedScope,
+      autoSummarizesNewCaptures: providerSettings.autoSummarizeNewCaptures
+    )
+  }
+
+  /// 正选中的那一行（如果在「实用工具」里）。收起时也要露出来。
+  private var selectedUtilityScope: HistoryListScope? {
+    guard !model.hasCategoryFilter, !model.isCreatorDirectoryActive, !model.isWorkbenchActive else { return nil }
+    return utilityRows.first { $0.scope == model.selectedScope }?.scope
+  }
+
+  /// 「实用工具」一组：放在「标签」下面、工作台上面，默认收起。
+  @ViewBuilder private var utilitiesNavigationSection: some View {
+    let rows = utilityRows
+    if !rows.isEmpty {
+      let selectedScope = selectedUtilityScope
+      Section {
+        ForEach(
+          SidebarUtilityNavigation.visibleRows(rows, expanded: navigationUtilitiesExpanded, selectedScope: selectedScope),
+          id: \.scope
+        ) { row in
+          navigationButton(row.title, systemImage: row.symbol, count: row.count, selected: model.selectedScope == row.scope) {
+            model.selectScope(row.scope)
+          }
+          .help(row.help)
+          .accessibilityIdentifier(row.identifier)
+        }
+      } header: {
+        navigationSectionHeader("实用工具", expanded: $navigationUtilitiesExpanded)
+          .accessibilityIdentifier("history-navigation-utilities-header")
+      }
+      // id 在分组上（同「合集」「博主」）：收着时这一组是空的，空分组后来插入的行画不出来（2026-10-11）。
+      // 收着时从别处跳进「待转写」「回收站」，那一行也得出来，所以「选中了哪一行」也算进 id。
+      .id("utilities-\(navigationUtilitiesExpanded)-\(selectedScope.map { "\($0)" } ?? "none")")
+    }
+  }
+
+  /// 侧栏「合集」（2026-09-29）：一组要按顺序一起看的内容，例如一套教程。放在顶部一组之后；
   /// 每个合集一行（名称 + 条数），标题右侧「＋」新建，右键改名、删除。
   @ViewBuilder private var collectionsNavigationSection: some View {
     Section {
@@ -1629,188 +1740,52 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-sidebar-wordmark")
         // 侧栏重建后第一行总在眼前，借它拿到侧栏的滚动视图、把位置还原回去。
         .background(SidebarScrollProbe(memory: sidebarScrollMemory))
-      // 顶部三个入口按「这条内容是谁说的」切（2026-09-24）：全部 = 自有 + 外部，数字加得上。
+      // 顶部入口按「这条内容是谁说的」切（2026-09-24）：全部 = 自有 + 外部，数字加得上。
       // 汲作是记录平台，不是待办清单：原来的收件箱 / 已归档 / 已使用记的是「处理到哪了」，
       // 那是外部 Agent 或用户自己工作流的事，不占侧栏最显眼的位置。
+      //
+      // 2026-10-12（Syc 定）：「视图」拆掉——最近 7 天、收藏挪到「全部」下面；待转写这些挪到
+      // 最下面的「实用工具」。「来源」并进「自有 / 外部」：每一行只数这一边的，不再有混着
+      // 自有和外部的「本地文件」。
       Section {
         navigationButton("全部", systemImage: "line.3.horizontal", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.all)
         }
         .help("所有记录：收集来的外部内容，和自己的笔记、作品、备忘录、录音")
         .accessibilityIdentifier("history-navigation-all")
-        navigationButton("自有", systemImage: OwnershipIcon.own, seal: .own, count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
-          model.selectScope(.own)
+        // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
+        navigationButton("最近 7 天", systemImage: "clock.arrow.circlepath", count: model.navigationCounts.recent, selected: model.selectedScope == .recent && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
+          model.selectScope(.recent)
         }
-        .help("自己说的：笔记、作品、备忘录、语音备忘录。判断错了可以右键改成「外部」")
-        .accessibilityIdentifier("history-navigation-own")
-        // 「笔记」放回来（2026-09-25 Syc：新建笔记找不到了）：09-24 改版撤掉「我的笔记」后，
-        // 自己写的笔记只能从「形式 → 笔记」里和 740 条备忘录混着找，新建也只剩「+」菜单。
-        // 它是自己写的，排在「自有」下面第一个。
-        navigationButton("笔记", systemImage: "square.and.pencil", count: model.navigationCounts.notes, selected: model.selectedScope == .notes) {
-          model.selectScope(.notes)
+        .accessibilityIdentifier("history-navigation-recent")
+        navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
+          model.selectScope(.favorite)
         }
-        .padding(.leading, 16)
-        .help("自己在汲作里写的笔记（⇧⌘N 新建）")
-        .accessibilityIdentifier("history-navigation-notes")
-        localSourceRows([LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue])
-        // 自有的本地文件（2026-10-01）：缺了这行，「自有」下面几项加起来比「自有」少，
-        // 看着像丢了数据。只数归自有的那部分，点进去也只看自有的。2026-10-04 起叫「自有文件」：
-        // 原来也叫「本地文件」，和「来源」里那行同名不同数（15 / 20），只能靠悬停说明。
-        ownLocalFilesRow
-        navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
-          model.selectScope(.external)
-        }
-        .help("别人的内容：从网上存的帖子、文章、视频，从微信、浏览器下载后拖进来的文件。判断错了可以右键改成「自有」")
-        .accessibilityIdentifier("history-navigation-external")
+        .accessibilityIdentifier("history-navigation-favorite")
+        ownershipParentRow(
+          .own,
+          count: model.navigationCounts.own,
+          expanded: $navigationOwnExpanded,
+          help: "自己说的：笔记、作品、备忘录、语音备忘录、自己的文件。判断错了可以右键改成「外部」",
+          identifier: "history-navigation-own"
+        )
+        // 「笔记」排第一（2026-09-25 Syc：新建笔记找不到了）：它是自己写的，没有也留着这一行。
+        ownershipSourceRows(.own, expanded: navigationOwnExpanded)
+        ownershipParentRow(
+          .external,
+          count: model.navigationCounts.external,
+          expanded: $navigationExternalExpanded,
+          help: "别人的内容：从网上存的帖子、文章、视频，从微信、浏览器下载后拖进来的文件。判断错了可以右键改成「自有」",
+          identifier: "history-navigation-external"
+        )
+        ownershipSourceRows(.external, expanded: navigationExternalExpanded)
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
-
-      // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
-      Section {
-        if navigationViewsExpanded {
-          // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
-          navigationButton("最近 7 天", systemImage: "clock.arrow.circlepath", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
-            model.selectScope(.recent)
-          }
-          .accessibilityIdentifier("history-navigation-recent")
-          navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
-            model.selectScope(.favorite)
-          }
-          .accessibilityIdentifier("history-navigation-favorite")
-          // 待校对 / 待转写 / 未总结收进一个默认折叠的「工序状态」（2026-10-04 侧栏去重）：
-          // 原来和「最近 7 天」「收藏」「回收站」平铺在「视图」里，一组里混着三种东西。
-          // 不加新概念、不是收件箱：只是把已有的三行收起来，要批量补做时点开。
-          if !stepStatusRows.isEmpty {
-            stepStatusDisclosureRow
-            if showsStepStatusRows {
-              ForEach(stepStatusRows, id: \.scope) { row in
-                navigationButton(row.title, systemImage: row.symbol, count: row.count, selected: model.selectedScope == row.scope) {
-                  model.selectScope(row.scope)
-                }
-                .padding(.leading, 16)
-                .help(row.help)
-                .accessibilityIdentifier(row.identifier)
-              }
-            }
-          }
-          // 回收站清空后正停在回收站里：行不能凭空消失，否则侧栏一个高亮都没有（2026-10-01 体检）。
-          if model.navigationCounts.trash > 0 || model.selectedScope == .trash {
-            navigationButton(
-              "回收站",
-              systemImage: "trash",
-              count: model.navigationCounts.trash,
-              selected: model.selectedScope == .trash
-            ) {
-              model.selectScope(.trash)
-            }
-            .accessibilityIdentifier("history-navigation-trash")
-          }
-        }
-      } header: {
-        navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
-          .accessibilityIdentifier("history-navigation-views-header")
-      }
-      // id 在分组上，不在里面的 Group 上。List 会把 Group 摊平，组内 id 换了，
-      // 空分组仍算同一个。进「全部博主」会新建一张侧栏，当时收着的「视图」是空的，
-      // 之后插入的行画不出来（2026-10-11）。换掉这一组，它生下来就带着行；
-      // 整张列表不换，滚动位置留着。
-      .id("views-\(navigationViewsExpanded)-\(navigationStepStatusExpanded)")
+      // 展开 / 收起换掉这一组（不是整张侧栏），行跟着重新生出来；滚动位置由箭头按钮按住。
+      .id("sources-\(navigationOwnExpanded)-\(navigationExternalExpanded)")
 
       collectionsNavigationSection
 
-      // 形式：这条内容「是什么」。抓取时按规则判定（`ContentForm`），不需要 AI。
-      if !model.navigationCounts.forms.isEmpty {
-        Section {
-          if navigationFormsExpanded {
-            // 「笔记」不在这里列（2026-10-04 侧栏去重）：它就是「自有」下的笔记 + 备忘录，
-            // 原来两处都叫「笔记」、一处 3 条一处 743 条。正选中它时仍留着，免得选中项凭空消失。
-            ForEach(model.navigationCounts.forms.filter { $0.form != .note || model.selectedForm == .note }) { item in
-              navigationButton(
-                item.form.rawValue,
-                systemImage: item.form.systemImage,
-                count: item.count,
-                selected: model.selectedForm == item.form && !model.isCreatorDirectoryActive
-              ) {
-                model.selectForm(item.form)
-              }
-              .accessibilityIdentifier("history-navigation-form-\(item.form.rawValue)")
-            }
-          }
-        } header: {
-          navigationSectionHeader("形式", expanded: $navigationFormsExpanded)
-            .accessibilityIdentifier("history-navigation-forms-header")
-        }
-        .id("forms-\(navigationFormsExpanded)")
-      }
-
-      if !model.navigationCounts.platforms.isEmpty {
-        // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
-        // 本机来源（备忘录、语音备忘录、本地文件）和外部平台同属「从哪来」，合在一组按条数排。
-        // 本机来源（2026-09-25）挪到「自有 / 外部」下面：备忘录、语音备忘录是自己说的。
-        // 本地文件（2026-09-29）回到「来源」：它说的是「从哪个渠道进来」，每一份按下载标记
-        // 各自归自有或外部，不整组挂在任何一边下面。
-        let filesHost = LocalImportSource.files.rawValue
-        let knownPlatforms = model.navigationCounts.platforms.filter {
-          $0.host == filesHost
-            || (HistoryPlatformDisplay.isWellKnown(host: $0.host) && LocalImportSource(rawValue: $0.host) == nil)
-        }
-        let miscPlatforms = model.navigationCounts.platforms.filter {
-          $0.host != filesHost && !HistoryPlatformDisplay.isWellKnown(host: $0.host)
-        }
-        // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
-        // 自己渲染的，和行内容一样收不到环境字体。
-        Section {
-          if navigationPlatformsExpanded {
-            // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
-            // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
-            UIReadingPlatformNavigation(
-              items: knownPlatforms.map { platform in
-                let favicon = model.platformFavicon(forHost: platform.host)
-                // 「来源」里的本地文件是合计，「自有」下那行只数自有的；差出来的就是外部文件。
-                let externalFiles = platform.count - model.navigationCounts.ownLocalFiles
-                return .init(
-                  host: platform.host,
-                  count: platform.count,
-                  faviconURL: favicon?.url,
-                  faviconTaskID: favicon?.taskID,
-                  helpText: platform.host == filesHost && externalFiles > 0
-                    ? "本地文件（\(platform.count) 条），含 \(externalFiles) 条外部文件"
-                    : nil
-                )
-              }
-                + (miscPlatforms.isEmpty ? [] : [
-                  .init(
-                    host: HistoryPlatformDisplay.miscHost,
-                    count: miscPlatforms.reduce(0) { $0 + $1.count },
-                    faviconURL: nil,
-                    faviconTaskID: nil
-                  )
-                ]),
-              theme: theme,
-              isSelected: { host in
-                host == HistoryPlatformDisplay.miscHost
-                  ? model.selectedHosts == Set(miscPlatforms.map(\.host))
-                  // 「自有」下的本地文件也选中这个 host，但那时这里不该一起亮。
-                  : model.selectedHosts.contains(host) && model.selectedScope == .all
-              },
-              onSelect: { host in
-                isReadingPlatformGalleryItem = false
-                if host == HistoryPlatformDisplay.miscHost {
-                  model.selectHosts(miscPlatforms.map(\.host))
-                } else {
-                  model.selectHost(host)
-                }
-              },
-              // 4 家：侧栏分组多，平台再多露一行，最下面几项就得滚动才看得到（2026-10-01）。
-              collapsedLimit: 4,
-              isExpanded: $navigationPlatformsShowsAll
-            )
-          }
-        } header: {
-          navigationSectionHeader("来源", expanded: $navigationPlatformsExpanded)
-        }
-        .id("platforms-\(navigationPlatformsExpanded)")
-      }
 
       Section {
         if navigationCreatorsExpanded {
@@ -1915,6 +1890,8 @@ struct HistoryContentView: View {
         .id("tags-\(navigationTagsExpanded)")
         .accessibilityIdentifier("history-navigation-tags")
       }
+      utilitiesNavigationSection
+
       // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
       // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
       // 所以自成一节而不是混进上面的筛选项。
@@ -1959,7 +1936,7 @@ struct HistoryContentView: View {
     .onAppear {
       guard !didRevealInitialNavigationPlatform else { return }
       didRevealInitialNavigationPlatform = true
-      if let target = navigationPlatformScrollTarget(model.selectedHosts) {
+      if let target = navigationPlatformScrollTarget() {
         DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
       }
     }
@@ -1988,7 +1965,7 @@ struct HistoryContentView: View {
       .compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
   )
 
-  /// 侧栏里的次要文字动作（「全部标签」「清空筛选」）：和「更多平台」同一种样子，不用系统按钮。
+  /// 侧栏里的次要文字动作（「全部标签」「清空筛选」）：和「外部」下「还有 N 个」同一种样子，不用系统按钮。
   private func sidebarTextAction(_ title: String, action: @escaping () -> Void) -> some View {
     Button(action: action) {
       Text(title)
@@ -2014,15 +1991,16 @@ struct HistoryContentView: View {
     .buttonStyle(.plain)
   }
 
-  private func navigationPlatformScrollTarget(_ hosts: Set<String>) -> String? {
-    guard !hosts.isEmpty else { return nil }
-    let misc = Set(
-      model.navigationCounts.platforms
-        .filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
-        .map(\.host)
-    )
-    if !misc.isEmpty, hosts == misc { return HistoryPlatformDisplay.miscHost }
-    return hosts.count == 1 ? hosts.first : nil
+  /// 选中的来源在侧栏里那一行的 id。来源挂在「自有 / 外部」下面（2026-10-12（Syc 定）），
+  /// 同一个 host 两边各有一行，按当前归属找；收起时选中的那一行仍然在（见 ownershipSourceRows）。
+  private func navigationPlatformScrollTarget() -> String? {
+    for ownership in ContentOwnership.allCases {
+      if let row = OwnershipSourceNavigation.rows(for: ownership, counts: model.navigationCounts)
+        .first(where: { model.isOwnershipSourceSelected($0) && !$0.isNotesScope }) {
+        return row.id
+      }
+    }
+    return nil
   }
 
   /// All sections share the same title baseline; disclosure controls occupy a
@@ -2532,45 +2510,29 @@ struct HistoryContentView: View {
     }
   }
 
-  private var hasClearableListFilters: Bool {
-    !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      || model.hasCategoryFilter
-      || ([HistoryListScope.recent, .unsummarized, .untidied, .untranscribed, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
-  }
-
-  private var listScopeFilterTitle: String? {
-    guard !model.isCreatorDirectoryActive else { return nil }
-    switch model.selectedScope {
-    case .all: return nil
-    case .recent: return "最近 7 天"
-    case .unsummarized: return "未总结"
-    case .untidied: return "待校对"
-    case .untranscribed: return "待转写"
-    case .favorite: return "收藏"
-    // 自有、外部的名字已经写在列表标题上，不再重复成一个筛选胶囊。
-    case .own, .external: return nil
-    case .trash: return "回收站"
-    case .notes, .drafts, .works: return nil
-    }
-  }
-
-  /// 当前挂着几个筛选：搜索词、范围、博主、平台、标签各算一个。
-  private var activeListFilterCount: Int {
-    var count = 0
-    if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { count += 1 }
-    if listScopeFilterTitle != nil { count += 1 }
-    if model.selectedCreator != nil { count += 1 }
-    if model.selectedForm != nil { count += 1 }
-    if model.selectedCollection != nil { count += 1 }
-    count += model.selectedHosts.count
+  /// 列表上方的筛选片（2026-10-12（Syc 定）：列头不再写标题，侧栏亮着的那一行就说明了「在哪」）。
+  ///
+  /// 只放侧栏上看不出来的东西：搜索词、选中的标签、「其他」里具体是哪些网站。最近 7 天、收藏、
+  /// 实用工具、合集、「外部 → X」这些侧栏本来就亮着，再来一枚同名筛选片就是同一句话说两遍；
+  /// 只看某个博主时列表顶上已经写着博主名；形式在列头「显示」按钮上。
+  private var listFilterChipCount: Int {
+    var count = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
     count += activeFilterTags.count
+    if showsMiscHostChips { count += model.selectedHosts.count }
     return count
+  }
+
+  /// 「其他」一次选中好几个不常见网站：侧栏只写「其他」，这里列出具体是哪几个，也能单独摘掉一个。
+  private var showsMiscHostChips: Bool {
+    model.selectedHosts.count > 1 && !model.isCreatorDirectoryActive
   }
 
   private func clearListFilters() {
     let scope = model.selectedScope
+    // 「清除筛选」连列头的形式一起放开：它也是筛选，只是放在列头。
+    model.clearFormSelection()
     model.searchText = ""
-    // 在合集里只清搜索词，人还留在这个合集；要离开点侧栏或合集那枚筛选片的 ✕。
+    // 在合集里只清搜索词，人还留在这个合集；要离开点侧栏别的行。
     if model.isBrowsingCollection { return }
     model.selectScope([HistoryListScope.notes, .drafts, .works, .own, .external].contains(scope) ? scope : .all)
   }
@@ -2578,16 +2540,7 @@ struct HistoryContentView: View {
   private func removeHostFilter(_ host: String) {
     let remaining = model.selectedHosts.subtracting([host])
     if remaining.isEmpty { model.clearHostSelection() }
-    else { model.selectHosts(Array(remaining)) }
-  }
-
-  /// 只挂着一个筛选、而且它的名字已经写在列表标题上（最近 7 天、收藏、某个形式 / 平台 / 博主）时，
-  /// 不再在标题下重复一枚同名筛选片（2026-09-24 Syc 走查）。搜索词和标签不写进标题，照常显示。
-  /// 要回到全部，点侧栏「全部」即可。
-  private var isSingleFilterShownAsTitle: Bool {
-    activeListFilterCount == 1
-      && model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && activeFilterTags.isEmpty
+    else { model.selectHosts(Array(remaining), scope: model.selectedScope) }
   }
 
   private var activeFilterBar: some View {
@@ -2599,29 +2552,29 @@ struct HistoryContentView: View {
               model.searchText = ""
             }
           }
-          if let scopeTitle = listScopeFilterTitle {
-            filterChip(scopeTitle) { model.selectScope(.all) }
-          }
-          if let form = model.selectedForm {
-            filterChip(form.rawValue) { model.clearFormSelection() }
-          }
-          if let collection = model.selectedCollection {
-            filterChip(collection.name) { model.selectScope(.all) }
-          }
-          if let creator = model.selectedCreator {
-            filterChip(creator.listingTitle) { model.selectCreator(creator.id) }
-          }
-          ForEach(Array(model.selectedHosts).sorted(), id: \.self) { host in
-            filterChip(HistoryPlatformDisplay.name(forHost: host)) { removeHostFilter(host) }
+          if showsMiscHostChips {
+            ForEach(Array(model.selectedHosts).sorted(), id: \.self) { host in
+              filterChip(HistoryPlatformDisplay.shortName(forHost: host)) { removeHostFilter(host) }
+            }
           }
           ForEach(activeFilterTags, id: \.normalizedName) { tag in
             filterChip(tag.name) { model.toggleTag(tag, additive: true) }
           }
         }
       }
+      // 搜到多少条：原来写在列标题上（「搜索 · 12 条」），列头不写标题后挪到这里，紧跟着搜索词。
+      if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+         let count = model.searchResultCount {
+        Text("\(count) 条")
+          .themedFont(.caption, monospacedDigit: true)
+          .foregroundStyle(theme.secondaryText)
+          .fixedSize()
+          .accessibilityLabel("搜到 \(count) 条")
+          .accessibilityIdentifier("history-search-result-count")
+      }
       // 每个筛选片自带 ✕，右端再放一个「清除」是同一件事的第二个入口；
       // 只有同时挂着两个以上筛选时才值得一键全清。
-      if activeListFilterCount > 1 {
+      if listFilterChipCount > 1 {
         Button("清除") { clearListFilters() }
           .buttonStyle(.borderless)
           .themedFont(.caption, weight: .medium)
@@ -3815,8 +3768,9 @@ struct HistoryContentView: View {
   private func createNote() {
     manualLink.createNote(
       onCreated: { taskID in
-        // 「我的笔记」已并入侧栏「形式 → 笔记」（2026-09-24），落到同一处，侧栏能看到选中。
-        model.selectForm(.note, toggles: false)
+        // 落到「自有 → 笔记」，侧栏那一行亮起来（2026-10-12（Syc 定）：「形式」挪去列头，
+        // 原来落在「形式 → 笔记」会和七百多条备忘录混在一起）。
+        model.showNotes()
         model.reveal(taskID: taskID)
       },
       onFailure: { message in
@@ -3830,8 +3784,9 @@ struct HistoryContentView: View {
   private func openTodayNote() {
     manualLink.openTodayNote(
       onOpened: { taskID in
-        // 「我的笔记」已并入侧栏「形式 → 笔记」（2026-09-24），落到同一处，侧栏能看到选中。
-        model.selectForm(.note, toggles: false)
+        // 落到「自有 → 笔记」，侧栏那一行亮起来（2026-10-12（Syc 定）：「形式」挪去列头，
+        // 原来落在「形式 → 笔记」会和七百多条备忘录混在一起）。
+        model.showNotes()
         model.reveal(taskID: taskID)
       },
       onFailure: { model.reportFailure($0) }
@@ -4261,8 +4216,11 @@ private struct HistoryMultiSelectionPanel: View {
     if let form = model.selectedForm {
       parts.append(form.rawValue)
     }
-    if !model.selectedHosts.isEmpty {
-      parts.append("\(model.selectedHosts.count) 个平台")
+    // 前面已经写了「自有 / 外部」，这里只写来源本身。
+    if let source = PlatformHistoryGalleryPresentation.sourceTitle(
+      selectedHosts: model.selectedHosts, scope: model.selectedScope, includesOwnership: false
+    ) {
+      parts.append(source)
     }
     if !model.selectedTagNormalizedNames.isEmpty {
       parts.append("\(model.selectedTagNormalizedNames.count) 个标签")

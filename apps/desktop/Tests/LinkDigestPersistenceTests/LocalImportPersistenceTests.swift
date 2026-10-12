@@ -178,6 +178,73 @@ final class MaterialScopeTests: XCTestCase {
     }
   }
 
+  /// 侧栏「自有 / 外部」下的来源（2026-10-12（Syc 定）：「来源」并进归属）：每一边按来源分组，
+  /// 加起来等于那一边；改成自有的网站帖子、下载来的文件各归各的，笔记带着合成 host 一起数。
+  func testOwnershipPlatformCountsAddUpToEachSide() throws {
+    try withRepository { repository, now in
+      func web(_ url: String) throws -> TaskID {
+        try repository.acceptCapture(.init(document: CapturedDocument(
+          createdAt: "2026-10-12T00:00:00Z", origin: .manualLink, url: url, title: url, platform: "generic",
+          method: "rendered_dom", text: "正文", completeness: "complete", capturedAt: "2026-10-12T00:00:00Z",
+          sourceLabel: "fixture"
+        ), receivedAtMilliseconds: now)).taskID
+      }
+      let mine = try web("https://x.com/me/status/1")
+      _ = try repository.addTags([ContentOwnership.ownTagName], to: mine)
+      _ = try web("https://x.com/someone/status/2")
+      _ = try web("https://obscure.example.org/post")
+      let doc = try file(repository, "a", now: now)
+      let downloaded = try file(repository, "b", now: now)
+      _ = try repository.addTags([ContentOwnership.externalTagName], to: downloaded)
+      _ = try memo(repository, now: now)
+      _ = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: now))
+
+      let counts = try repository.navigationCounts()
+      func table(_ platforms: [HistoryNavigationPlatform]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: platforms.map { ($0.host, $0.count) })
+      }
+      XCTAssertEqual(table(counts.ownPlatforms), [
+        "x.com": 1, LocalImportSource.files.rawValue: 1, LocalImportSource.voiceMemos.rawValue: 1, HistoryPlatformDisplay.noteHost: 1,
+      ])
+      XCTAssertEqual(table(counts.externalPlatforms), [
+        "x.com": 1, LocalImportSource.files.rawValue: 1, "obscure.example.org": 1,
+      ])
+      XCTAssertEqual(counts.ownPlatforms.reduce(0) { $0 + $1.count }, counts.own)
+      XCTAssertEqual(counts.externalPlatforms.reduce(0) { $0 + $1.count }, counts.external)
+      XCTAssertEqual(counts.ownLocalFiles, 1)
+      // 「来源」合计口径（MCP 用）不变：仍是抓来的资料按 host 合计，不分归属、不含笔记。
+      XCTAssertEqual(table(counts.platforms)["x.com"], 2)
+      XCTAssertNil(table(counts.platforms)[HistoryPlatformDisplay.noteHost])
+      // 点进去的列表和那一行同数。
+      XCTAssertEqual(try ids(repository, .init(hosts: ["x.com"], scope: .own)), [mine])
+      XCTAssertEqual(try ids(repository, .init(hosts: [LocalImportSource.files.rawValue], scope: .external)), [downloaded])
+      XCTAssertEqual(try ids(repository, .init(hosts: [LocalImportSource.files.rawValue], scope: .own)), [doc])
+    }
+  }
+
+  /// 列头「显示」菜单的条数：和列表同一套筛选，只是不看已选的形式。
+  func testFormCountsFollowTheListFilterAndIgnoreTheChosenForm() throws {
+    try withRepository { repository, now in
+      _ = try file(repository, "a", now: now)
+      let downloaded = try file(repository, "b", now: now)
+      _ = try repository.addTags([ContentOwnership.externalTagName], to: downloaded)
+      _ = try file(repository, "c", text: LocalImportDocument.mediaPlaceholder(fileName: "c.m4a", durationSeconds: 3, hasVideo: false), now: now)
+      _ = try memo(repository, now: now)
+      _ = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: now))
+
+      func table(_ filter: HistoryListFilter) throws -> [ContentForm: Int] {
+        Dictionary(uniqueKeysWithValues: try repository.formCounts(filter: filter).map { ($0.form, $0.count) })
+      }
+      XCTAssertEqual(try table(.init(scope: .all, includesNotes: true)), [.document: 2, .audio: 2, .note: 1])
+      XCTAssertEqual(try table(.init(scope: .own, includesNotes: true)), [.document: 1, .audio: 2, .note: 1])
+      XCTAssertEqual(try table(.init(scope: .external, includesNotes: true, form: .video)), [.document: 1],
+                     "已选的形式不影响菜单里的数")
+      XCTAssertEqual(try table(.init(hosts: [LocalImportSource.files.rawValue], scope: .own)), [.document: 1, .audio: 1])
+      XCTAssertEqual(try repository.formCounts(filter: .init(scope: .all, includesNotes: true)).map(\.form), [.audio, .document, .note],
+                     "顺序同 ContentForm，只列有内容的")
+    }
+  }
+
   /// 形式按抓取时已有的信息判定：录音、文档、图片、音频文件、笔记。
   func testFormsAreDerivedByRules() throws {
     try withRepository { repository, now in

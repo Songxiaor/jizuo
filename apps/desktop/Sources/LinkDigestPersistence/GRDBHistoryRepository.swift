@@ -350,43 +350,19 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   public func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
     let bounded = min(max(limit, 1), 200)
     return try database.read { db in
-      var arguments: StatementArguments = []
-      var predicates: [String] = []
-      // 回收站是唯一「反过来看」的作用域：其余每一个都要求没被删。
-      //
-      // 判定放在最前面且**无条件**加进去，不跟着任何分支走：漏一条分支的表现是
-      // 「删掉的东西在某个筛选下又冒出来了」，而那种 bug 只有用户自己会撞上。
-      //
-      // 回收站按删除时间倒序。`moveToTrash` 会把 `updated_at_ms` 一并写成删除时刻，
-      // 所以这里沿用同一个 `updated_at_ms DESC` 排序和同一套游标，不需要第二种
-      // 分页逻辑——两个值在回收站里恒等。
-      if filter.scope.isTrashOnly {
-        predicates.append("t.deleted_at_ms IS NOT NULL")
-      } else {
-        predicates.append("t.deleted_at_ms IS NULL")
-        // 过去没写字的每日笔记只在显示层藏起来，数据不动（见 hiddenEmptyDailyNoteSQL）。
-        predicates.append("NOT \(Self.hiddenEmptyDailyNoteSQL(tableAlias: "t"))")
-      }
       // 合集（Migration024）：只看这个合集里的，按合集里的顺序排，不按时间。
       // 合集 id 是校验过的 UUID，直接内联进 JOIN——JOIN 写在 WHERE 之前，占位参数
       // 却是按谓词顺序拼的，放参数会错位（理由同 usedTagSQL）。
       let collectionID = filter.collectionID
-      // 回收站永远按删除时间（写在 updated_at_ms 上）排，见上。
+      // 回收站永远按删除时间（写在 updated_at_ms 上）排，见 listPredicates。
       let ordersBySavedTime = filter.ordersBySavedTime && !filter.scope.isTrashOnly && collectionID == nil
       // created_at_ms 在建表时就是 NOT NULL，不需要 COALESCE；包一层函数反而用不上索引。
       let orderColumn = ordersBySavedTime ? "t.created_at_ms" : "t.updated_at_ms"
-      if let cursor {
-        if collectionID != nil {
-          // 合集按位置翻页；拿别的列表的游标来翻合集，位置对不上，按无效输入拒绝。
-          guard let position = cursor.collectionPosition else { throw RepositoryFailure.invalidInput }
-          predicates.append("(ci.position > ? OR (ci.position = ? AND t.id > ?))")
-          arguments += [position, position, cursor.taskID.rawValue]
-        } else {
-          let value = ordersBySavedTime ? (cursor.savedAtMilliseconds ?? cursor.updatedAtMilliseconds) : cursor.updatedAtMilliseconds
-          predicates.append("(\(orderColumn) < ? OR (\(orderColumn) = ? AND t.id < ?))")
-          arguments += [value, value, cursor.taskID.rawValue]
-        }
-      }
+      let built = try listPredicates(
+        filter: filter, cursor: cursor, ordersBySavedTime: ordersBySavedTime, orderColumn: orderColumn
+      )
+      let predicates = built.predicates
+      var arguments = built.arguments
       let collectionJoin = collectionID.map {
         "INNER JOIN collection_items ci ON ci.task_id = t.id AND ci.collection_id = '\($0.rawValue)'"
       } ?? ""
@@ -394,194 +370,6 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let orderClause = collectionID == nil
         ? "\(orderColumn) DESC, t.id DESC"
         : "ci.position ASC, t.id ASC"
-      if !filter.tagNormalizedNames.isEmpty {
-        let placeholders = Array(repeating: "?", count: filter.tagNormalizedNames.count).joined(separator: ", ")
-        predicates.append("""
-          t.id IN (
-            SELECT tt.task_id
-            FROM task_tags tt
-            INNER JOIN tags tag ON tag.id = tt.tag_id
-            WHERE tag.normalized_name IN (\(placeholders))
-            GROUP BY tt.task_id
-            HAVING COUNT(DISTINCT tag.normalized_name) = ?
-          )
-          """)
-        for tagName in filter.tagNormalizedNames {
-          arguments += [tagName]
-        }
-        arguments += [filter.tagNormalizedNames.count]
-      }
-      if !filter.hosts.isEmpty {
-        let placeholders = Array(repeating: "?", count: filter.hosts.count).joined(separator: ", ")
-        predicates.append("t.normalized_host IN (\(placeholders))")
-        for host in filter.hosts { arguments += [host] }
-      }
-      if let creatorID = filter.creatorID {
-        predicates.append("""
-          EXISTS (
-            SELECT 1 FROM creator_works cw
-            WHERE cw.task_id = t.id AND cw.creator_id = ?
-          )
-          """)
-        arguments += [creatorID.rawValue]
-      }
-      // 笔记是独立区域：除了 `.notes` 自己，其余作用域一律把它排除。
-      //
-      // 抓来的资料和自己写的东西混在一张列表里，找素材时会被自己的草稿打断，
-      // 写东西时又要在一堆网页里翻。底层仍共用同一张表，所以标签、搜索、导出
-      // 照常可用——分开的只是「看到什么」。
-      //
-      // 判定改读 `tasks.content_kind`（Migration021 物化的列），语义与原来的前缀
-      // LIKE 逐条等价，但换成了索引可用的等值比较。
-      let notePredicate = "t.content_kind = '\(TaskClassificationSQL.noteKind)'"
-      // 稿件是「过程」,比笔记藏得更深:除了 `.drafts` 自己,任何作用域都不显示它,
-      // **搜索也不例外**。半成品被搜出来会和成品混在一起,而用户搜的是「我写过的
-      // 那句话」,他要的是笔记或成品,不是某件创作中途的一版草稿。
-      let draftPredicate = "t.content_kind = '\(TaskClassificationSQL.draftKind)'"
-      let workPredicate = "t.content_kind = '\(TaskClassificationSQL.workKind)'"
-      if filter.scope.isTrashOnly {
-        // 回收站不按内容类型分区：删掉的笔记、稿件、成品、抓取记录都在同一个
-        // 地方找回来。按类型再分一次，等于要求用户先想起「我删的那个是笔记还是
-        // 网页」——而他记得的只有「刚才手滑了」。
-      } else if filter.scope.isDraftsOnly {
-        predicates.append(draftPredicate)
-      } else if filter.scope.isWorksOnly {
-        predicates.append(workPredicate)
-      } else {
-        predicates.append("t.content_kind <> '\(TaskClassificationSQL.draftKind)'")
-        // 成品和笔记同样待遇:浏览时归自己那一区,搜索时可达——
-        // 它是「我做出来的东西」,正是用户搜索时最想找到的。
-        if filter.scope.isNotesOnly {
-          predicates.append(notePredicate)
-        } else if filter.searchText.isEmpty && filter.includesNotes {
-          // 「全部 / 自有 / 外部」和按标签、形式筛选都要看到笔记与作品：它们也是记录。
-          predicates.append("t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')")
-        } else if filter.searchText.isEmpty {
-          // 浏览态只剩「抓来的资料」，三条排除合成一条等值判定。
-          predicates.append("t.content_kind = '\(TaskClassificationSQL.captureKind)'")
-        }
-      }
-      // 搜索时不排除笔记：分区是为了「浏览时互不打扰」，而搜索恰恰是用户
-      // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
-      // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
-      switch filter.scope {
-      case .all, .notes, .drafts, .works, .trash:
-        break
-      case .favorite:
-        predicates.append("t.is_favorite = 1")
-      case .own:
-        predicates.append(TaskClassificationSQL.ownSQL(tableAlias: "t"))
-      case .external:
-        predicates.append("NOT \(TaskClassificationSQL.ownSQL(tableAlias: "t"))")
-      case .recent:
-        // 「最近」按**保存时间**算，不按更新时间。
-        //
-        // 原来用的是 `updated_at_ms`，而那个值会被总结、翻译、改标题、加标签、
-        // 收藏——甚至自动补标签——推到当下。结果是：去年存的一篇今天总结了一下，
-        // 它就出现在「最近」里，而用户心里的「最近」只有一个意思：最近存进来的。
-        predicates.append("t.created_at_ms >= (unixepoch('now') - 604800) * 1000")
-      case .untidied:
-        predicates.append(Self.untidiedTranscriptSQL)
-      case .untranscribed:
-        predicates.append(Self.untranscribedMediaSQL)
-      case .unsummarized:
-        predicates.append("NOT EXISTS (\(Self.completedSummarySQL))")
-        // 自己写的备忘录、录音不是「待总结的文章」。
-        if !filter.includesArchivesInScopes {
-          predicates.append("t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))")
-        }
-      }
-      if let form = filter.form {
-        // 形式名是枚举常量，直接内联，不占位置参数（理由同 usedTagSQL）。
-        predicates.append("(\(TaskClassificationSQL.formSQL(tableAlias: "t"))) = '\(form.rawValue)'")
-      }
-      if filter.excludesUsed {
-        predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
-      }
-      if let only = filter.onlyTaskIDs {
-        if only.isEmpty {
-          predicates.append("0")
-        } else {
-          predicates.append("t.id IN (\(Array(repeating: "?", count: only.count).joined(separator: ",")))")
-          for id in only { arguments += [id.rawValue] }
-        }
-      }
-      if !filter.searchText.isEmpty {
-        let pattern = "%\(escapedLikePattern(filter.searchText))%"
-        // 正文与标签也要能搜到。
-        //
-        // 原来只搜链接、标题、来源标签——「我记得有篇讲盲派格局的」找不回来，
-        // 因为那篇标题里根本没有「盲派」。条目一多，搜不到正文等于搜索废掉。
-        //
-        // 作者不必单独加一列：抓取时写进正文 frontmatter 的 `author:` 行，
-        // 搜正文自然覆盖。多加一个判定只会多一次扫描而不多命中任何东西。
-        //
-        // 正文和产物走 FTS5 trigram 索引（Migration022），不再对 5.3MB 文本逐字
-        // LIKE。trigram 的 MATCH 语义就是「包含这个子串」，和旧 LIKE 一致；三元组
-        // 建不起来的短词（1-2 个字）退回 LIKE 全扫。
-        //
-        // 覆盖面比旧实现**大一层**：旧查询只搜「有效快照」，而有效快照的定义排除了
-        // 转写稿和画面字幕，于是视频里说过的话永远搜不到。这里按快照逐条入索引。
-        let tagPredicate = """
-          EXISTS (
-              SELECT 1 FROM task_tags stt
-              INNER JOIN tags stg ON stg.id = stt.tag_id
-              WHERE stt.task_id = t.id
-                AND (
-                  stg.display_name LIKE ? ESCAPE '\\'
-                  OR stg.normalized_name LIKE ? ESCAPE '\\'
-                )
-            )
-          """
-        if filter.searchText.unicodeScalars.count >= Migration022.minimumTrigramLength {
-          // `IN (子查询)` 而不是相关子查询：FTS 只跑一次，结果物化成临时索引，
-          // 再和 tasks 对 id。写成 `EXISTS (... AND m.task_id = t.id)` 会退化成
-          // 每条 task 跑一次 MATCH。
-          predicates.append("""
-            (
-              t.canonical_url LIKE ? ESCAPE '\\'
-              OR t.id IN (
-                SELECT m.task_id
-                FROM task_search
-                INNER JOIN task_search_map m ON m.rowid_value = task_search.rowid
-                WHERE task_search MATCH ?
-              )
-              OR \(tagPredicate)
-            )
-            """)
-          arguments += [pattern, ftsSubstringPhrase(filter.searchText), pattern, pattern]
-        } else {
-          // 退回路径的覆盖面和 FTS 路径保持一致（同样按快照逐条看、同样包含
-          // 转写稿），否则「搜两个字」和「搜三个字」会给出口径不同的结果。
-          predicates.append("""
-            (
-              t.canonical_url LIKE ? ESCAPE '\\'
-              OR EXISTS (
-                SELECT 1 FROM content_snapshots ss
-                WHERE ss.task_id = t.id
-                  AND (
-                    COALESCE(ss.title, '') LIKE ? ESCAPE '\\'
-                    OR ss.source_label LIKE ? ESCAPE '\\'
-                    OR ss.body_text LIKE ? ESCAPE '\\'
-                  )
-              )
-              OR \(tagPredicate)
-              OR EXISTS (
-                -- 总结、翻译、整理稿也要能搜到：记住的常常是总结里的一句话，
-                -- 而不是原文的措辞。
-                --
-                -- 用 EXISTS 遍历这条目的全部产物，而不是复用外面那个 `a`——
-                -- 那个只 JOIN 最近一次运行，先总结后翻译时搜总结就会漏。
-                SELECT 1 FROM runs sr
-                INNER JOIN artifacts sa ON sa.run_id = sr.id
-                WHERE sr.task_id = t.id
-                  AND sa.body_text LIKE ? ESCAPE '\\'
-              )
-            )
-            """)
-          arguments += [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
-        }
-      }
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
       // 搜索的第一页顺带数一次命中总数：谓词只引用 t 和子查询，和下面同一套条件。
       // 只在搜索时数——浏览时侧栏已有计数，不必每次翻列表都多扫一遍。
@@ -680,6 +468,261 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 列表的 WHERE 条件。`historyPage` 和 `formCounts` 共用同一套，菜单里的条数和点进去的列表
+  /// 才是同一个口径（2026-10-12（Syc 定）：「形式」挪到列头菜单）。
+  private func listPredicates(
+    filter: HistoryListFilter,
+    cursor: HistoryPageCursor?,
+    ordersBySavedTime: Bool,
+    orderColumn: String
+  ) throws -> (predicates: [String], arguments: StatementArguments) {
+    var arguments: StatementArguments = []
+    var predicates: [String] = []
+    // 回收站是唯一「反过来看」的作用域：其余每一个都要求没被删。
+    //
+    // 判定放在最前面且**无条件**加进去，不跟着任何分支走：漏一条分支的表现是
+    // 「删掉的东西在某个筛选下又冒出来了」，而那种 bug 只有用户自己会撞上。
+    //
+    // 回收站按删除时间倒序。`moveToTrash` 会把 `updated_at_ms` 一并写成删除时刻，
+    // 所以这里沿用同一个 `updated_at_ms DESC` 排序和同一套游标，不需要第二种
+    // 分页逻辑——两个值在回收站里恒等。
+    if filter.scope.isTrashOnly {
+      predicates.append("t.deleted_at_ms IS NOT NULL")
+    } else {
+      predicates.append("t.deleted_at_ms IS NULL")
+      // 过去没写字的每日笔记只在显示层藏起来，数据不动（见 hiddenEmptyDailyNoteSQL）。
+      predicates.append("NOT \(Self.hiddenEmptyDailyNoteSQL(tableAlias: "t"))")
+    }
+    let collectionID = filter.collectionID
+    if let cursor {
+      if collectionID != nil {
+        // 合集按位置翻页；拿别的列表的游标来翻合集，位置对不上，按无效输入拒绝。
+        guard let position = cursor.collectionPosition else { throw RepositoryFailure.invalidInput }
+        predicates.append("(ci.position > ? OR (ci.position = ? AND t.id > ?))")
+        arguments += [position, position, cursor.taskID.rawValue]
+      } else {
+        let value = ordersBySavedTime ? (cursor.savedAtMilliseconds ?? cursor.updatedAtMilliseconds) : cursor.updatedAtMilliseconds
+        predicates.append("(\(orderColumn) < ? OR (\(orderColumn) = ? AND t.id < ?))")
+        arguments += [value, value, cursor.taskID.rawValue]
+      }
+    }
+    if !filter.tagNormalizedNames.isEmpty {
+      let placeholders = Array(repeating: "?", count: filter.tagNormalizedNames.count).joined(separator: ", ")
+      predicates.append("""
+        t.id IN (
+          SELECT tt.task_id
+          FROM task_tags tt
+          INNER JOIN tags tag ON tag.id = tt.tag_id
+          WHERE tag.normalized_name IN (\(placeholders))
+          GROUP BY tt.task_id
+          HAVING COUNT(DISTINCT tag.normalized_name) = ?
+        )
+        """)
+      for tagName in filter.tagNormalizedNames {
+        arguments += [tagName]
+      }
+      arguments += [filter.tagNormalizedNames.count]
+    }
+    if !filter.hosts.isEmpty {
+      let placeholders = Array(repeating: "?", count: filter.hosts.count).joined(separator: ", ")
+      predicates.append("t.normalized_host IN (\(placeholders))")
+      for host in filter.hosts { arguments += [host] }
+    }
+    if let creatorID = filter.creatorID {
+      predicates.append("""
+        EXISTS (
+          SELECT 1 FROM creator_works cw
+          WHERE cw.task_id = t.id AND cw.creator_id = ?
+        )
+        """)
+      arguments += [creatorID.rawValue]
+    }
+    // 笔记是独立区域：除了 `.notes` 自己，其余作用域一律把它排除。
+    //
+    // 抓来的资料和自己写的东西混在一张列表里，找素材时会被自己的草稿打断，
+    // 写东西时又要在一堆网页里翻。底层仍共用同一张表，所以标签、搜索、导出
+    // 照常可用——分开的只是「看到什么」。
+    //
+    // 判定改读 `tasks.content_kind`（Migration021 物化的列），语义与原来的前缀
+    // LIKE 逐条等价，但换成了索引可用的等值比较。
+    let notePredicate = "t.content_kind = '\(TaskClassificationSQL.noteKind)'"
+    // 稿件是「过程」,比笔记藏得更深:除了 `.drafts` 自己,任何作用域都不显示它,
+    // **搜索也不例外**。半成品被搜出来会和成品混在一起,而用户搜的是「我写过的
+    // 那句话」,他要的是笔记或成品,不是某件创作中途的一版草稿。
+    let draftPredicate = "t.content_kind = '\(TaskClassificationSQL.draftKind)'"
+    let workPredicate = "t.content_kind = '\(TaskClassificationSQL.workKind)'"
+    if filter.scope.isTrashOnly {
+      // 回收站不按内容类型分区：删掉的笔记、稿件、成品、抓取记录都在同一个
+      // 地方找回来。按类型再分一次，等于要求用户先想起「我删的那个是笔记还是
+      // 网页」——而他记得的只有「刚才手滑了」。
+    } else if filter.scope.isDraftsOnly {
+      predicates.append(draftPredicate)
+    } else if filter.scope.isWorksOnly {
+      predicates.append(workPredicate)
+    } else {
+      predicates.append("t.content_kind <> '\(TaskClassificationSQL.draftKind)'")
+      // 成品和笔记同样待遇:浏览时归自己那一区,搜索时可达——
+      // 它是「我做出来的东西」,正是用户搜索时最想找到的。
+      if filter.scope.isNotesOnly {
+        predicates.append(notePredicate)
+      } else if filter.searchText.isEmpty && filter.includesNotes {
+        // 「全部 / 自有 / 外部」和按标签、形式筛选都要看到笔记与作品：它们也是记录。
+        predicates.append("t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')")
+      } else if filter.searchText.isEmpty {
+        // 浏览态只剩「抓来的资料」，三条排除合成一条等值判定。
+        predicates.append("t.content_kind = '\(TaskClassificationSQL.captureKind)'")
+      }
+    }
+    // 搜索时不排除笔记：分区是为了「浏览时互不打扰」，而搜索恰恰是用户
+    // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
+    // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
+    switch filter.scope {
+    case .all, .notes, .drafts, .works, .trash:
+      break
+    case .favorite:
+      predicates.append("t.is_favorite = 1")
+    case .own:
+      predicates.append(TaskClassificationSQL.ownSQL(tableAlias: "t"))
+    case .external:
+      predicates.append("NOT \(TaskClassificationSQL.ownSQL(tableAlias: "t"))")
+    case .recent:
+      // 「最近」按**保存时间**算，不按更新时间。
+      //
+      // 原来用的是 `updated_at_ms`，而那个值会被总结、翻译、改标题、加标签、
+      // 收藏——甚至自动补标签——推到当下。结果是：去年存的一篇今天总结了一下，
+      // 它就出现在「最近」里，而用户心里的「最近」只有一个意思：最近存进来的。
+      predicates.append("t.created_at_ms >= (unixepoch('now') - 604800) * 1000")
+    case .untidied:
+      predicates.append(Self.untidiedTranscriptSQL)
+    case .untranscribed:
+      predicates.append(Self.untranscribedMediaSQL)
+    case .unsummarized:
+      predicates.append("NOT EXISTS (\(Self.completedSummarySQL))")
+      // 自己写的备忘录、录音不是「待总结的文章」。
+      if !filter.includesArchivesInScopes {
+        predicates.append("t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))")
+      }
+    }
+    if let form = filter.form {
+      // 形式名是枚举常量，直接内联，不占位置参数（理由同 usedTagSQL）。
+      predicates.append("(\(TaskClassificationSQL.formSQL(tableAlias: "t"))) = '\(form.rawValue)'")
+    }
+    if filter.excludesUsed {
+      predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
+    }
+    if let only = filter.onlyTaskIDs {
+      if only.isEmpty {
+        predicates.append("0")
+      } else {
+        predicates.append("t.id IN (\(Array(repeating: "?", count: only.count).joined(separator: ",")))")
+        for id in only { arguments += [id.rawValue] }
+      }
+    }
+    if !filter.searchText.isEmpty {
+      let pattern = "%\(escapedLikePattern(filter.searchText))%"
+      // 正文与标签也要能搜到。
+      //
+      // 原来只搜链接、标题、来源标签——「我记得有篇讲盲派格局的」找不回来，
+      // 因为那篇标题里根本没有「盲派」。条目一多，搜不到正文等于搜索废掉。
+      //
+      // 作者不必单独加一列：抓取时写进正文 frontmatter 的 `author:` 行，
+      // 搜正文自然覆盖。多加一个判定只会多一次扫描而不多命中任何东西。
+      //
+      // 正文和产物走 FTS5 trigram 索引（Migration022），不再对 5.3MB 文本逐字
+      // LIKE。trigram 的 MATCH 语义就是「包含这个子串」，和旧 LIKE 一致；三元组
+      // 建不起来的短词（1-2 个字）退回 LIKE 全扫。
+      //
+      // 覆盖面比旧实现**大一层**：旧查询只搜「有效快照」，而有效快照的定义排除了
+      // 转写稿和画面字幕，于是视频里说过的话永远搜不到。这里按快照逐条入索引。
+      let tagPredicate = """
+        EXISTS (
+            SELECT 1 FROM task_tags stt
+            INNER JOIN tags stg ON stg.id = stt.tag_id
+            WHERE stt.task_id = t.id
+              AND (
+                stg.display_name LIKE ? ESCAPE '\\'
+                OR stg.normalized_name LIKE ? ESCAPE '\\'
+              )
+          )
+        """
+      if filter.searchText.unicodeScalars.count >= Migration022.minimumTrigramLength {
+        // `IN (子查询)` 而不是相关子查询：FTS 只跑一次，结果物化成临时索引，
+        // 再和 tasks 对 id。写成 `EXISTS (... AND m.task_id = t.id)` 会退化成
+        // 每条 task 跑一次 MATCH。
+        predicates.append("""
+          (
+            t.canonical_url LIKE ? ESCAPE '\\'
+            OR t.id IN (
+              SELECT m.task_id
+              FROM task_search
+              INNER JOIN task_search_map m ON m.rowid_value = task_search.rowid
+              WHERE task_search MATCH ?
+            )
+            OR \(tagPredicate)
+          )
+          """)
+        arguments += [pattern, ftsSubstringPhrase(filter.searchText), pattern, pattern]
+      } else {
+        // 退回路径的覆盖面和 FTS 路径保持一致（同样按快照逐条看、同样包含
+        // 转写稿），否则「搜两个字」和「搜三个字」会给出口径不同的结果。
+        predicates.append("""
+          (
+            t.canonical_url LIKE ? ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1 FROM content_snapshots ss
+              WHERE ss.task_id = t.id
+                AND (
+                  COALESCE(ss.title, '') LIKE ? ESCAPE '\\'
+                  OR ss.source_label LIKE ? ESCAPE '\\'
+                  OR ss.body_text LIKE ? ESCAPE '\\'
+                )
+            )
+            OR \(tagPredicate)
+            OR EXISTS (
+              -- 总结、翻译、整理稿也要能搜到：记住的常常是总结里的一句话，
+              -- 而不是原文的措辞。
+              --
+              -- 用 EXISTS 遍历这条目的全部产物，而不是复用外面那个 `a`——
+              -- 那个只 JOIN 最近一次运行，先总结后翻译时搜总结就会漏。
+              SELECT 1 FROM runs sr
+              INNER JOIN artifacts sa ON sa.run_id = sr.id
+              WHERE sr.task_id = t.id
+                AND sa.body_text LIKE ? ESCAPE '\\'
+            )
+          )
+          """)
+        arguments += [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
+      }
+    }
+    return (predicates, arguments)
+  }
+
+  /// 列头「显示」菜单：在当前侧栏选择下（不看已选的形式）每种形式各几条。只在这一组里数，
+  /// 不是全库：选了「外部 → X」，菜单里的「视频 46」点进去就是 46 条（2026-10-12（Syc 定））。
+  public func formCounts(filter: HistoryListFilter) throws -> [HistoryNavigationForm] {
+    let unformed = filter.replacingForm(nil)
+    return try database.read { db in
+      let built = try listPredicates(
+        filter: unformed, cursor: nil, ordersBySavedTime: false, orderColumn: "t.updated_at_ms"
+      )
+      let collectionJoin = unformed.collectionID.map {
+        "INNER JOIN collection_items ci ON ci.task_id = t.id AND ci.collection_id = '\($0.rawValue)'"
+      } ?? ""
+      let predicate = built.predicates.isEmpty ? "" : "WHERE \(built.predicates.joined(separator: " AND "))"
+      let counts = try Row.fetchAll(db, sql: """
+        SELECT \(TaskClassificationSQL.formSQL(tableAlias: "t")) AS form, COUNT(*) AS count
+        FROM tasks t \(collectionJoin) \(predicate) GROUP BY form
+        """, arguments: built.arguments).reduce(into: [String: Int]()) { result, row in
+          let form: String = row["form"] ?? ""
+          result[form] = row["count"]
+        }
+      return ContentForm.allCases.compactMap { form -> HistoryNavigationForm? in
+        guard let count = counts[form.rawValue], count > 0 else { return nil }
+        return .init(form: form, count: count)
+      }
+    }
+  }
+
   /// 条目 `t` 是否带「已使用」标签。标签名是常量，直接内联，不占位置参数——
   /// `historyPage` 的谓词与参数按顺序拼接，在 switch 里插参数容易错位。
   static var usedTagSQL: String {
@@ -749,6 +792,23 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         db,
         sql: "SELECT COUNT(*) FROM tasks t WHERE \(isRecord) AND t.normalized_host = '\(LocalImportSource.files.rawValue)' AND \(TaskClassificationSQL.ownSQL(tableAlias: "t"))"
       ) ?? 0
+      // 「自有 / 外部」各自按来源分组（2026-10-12（Syc 定）：「来源」并进归属）。和 `own`
+      // 同一个口径（isRecord + ownSQL），子项加起来才等于上面那一行；笔记、作品带着合成 host 一起数。
+      var ownPlatforms: [HistoryNavigationPlatform] = []
+      var externalPlatforms: [HistoryNavigationPlatform] = []
+      for row in try Row.fetchAll(db, sql: """
+        SELECT t.normalized_host AS host, \(TaskClassificationSQL.ownSQL(tableAlias: "t")) AS is_own, COUNT(*) AS count
+        FROM tasks t WHERE \(isRecord) AND t.normalized_host <> ''
+        GROUP BY t.normalized_host, is_own
+        ORDER BY count DESC, host COLLATE NOCASE ASC
+        """) {
+        let host: String = row["host"] ?? ""
+        let isOwn: Bool = row["is_own"] ?? false
+        let count: Int = row["count"] ?? 0
+        guard !host.isEmpty, count > 0 else { continue }
+        if isOwn { ownPlatforms.append(.init(host: host, count: count)) }
+        else { externalPlatforms.append(.init(host: host, count: count)) }
+      }
       let formCounts = try Row.fetchAll(db, sql: """
         SELECT \(TaskClassificationSQL.formSQL(tableAlias: "t")) AS form, COUNT(*) AS count
         FROM tasks t WHERE \(isRecord) GROUP BY form
@@ -799,7 +859,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       )
       return .init(
         all: all, recent: recent, unsummarized: unsummarized, untidied: untidied, untranscribed: untranscribed, untranscribedSeconds: untranscribedSeconds, untranscribedFailed: untranscribedFailed, favorite: favorite,
-        total: total, own: own, external: total - own, ownLocalFiles: ownLocalFiles, forms: forms, notes: notes, works: works,
+        total: total, own: own, external: total - own, ownLocalFiles: ownLocalFiles,
+        ownPlatforms: ownPlatforms, externalPlatforms: externalPlatforms, forms: forms, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }

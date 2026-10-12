@@ -8,21 +8,6 @@ enum PlatformHistoryGalleryPresentation {
     !selectedHosts.isEmpty
   }
 
-  static func title(
-    selectedHosts: Set<String>,
-    searchText: String,
-    navigationCounts: HistoryNavigationCounts
-  ) -> String {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    let name = platformDisplayName(for: selectedHosts)
-    if !query.isEmpty { return "\(name) · 当前筛选" }
-    if let total = matchingPlatformCount(selectedHosts: selectedHosts, in: navigationCounts) {
-      // 全局统一口径：数的是「已保存的内容」，不是「抓过几次」。
-      return "\(name) · 已保存 \(total) 条内容"
-    }
-    return name
-  }
-
   static func sortCaption(searchActive: Bool) -> String {
     searchActive ? "匹配结果按保存时间排列，新的在前" : "按保存时间排列，新的在前"
   }
@@ -69,13 +54,36 @@ enum PlatformHistoryGalleryPresentation {
     return "来源"
   }
 
-  static func matchingPlatformCount(
+  /// 来源行的名字（2026-10-12（Syc 定）：来源挂在「自有 / 外部」下面）。
+  ///
+  /// `includesOwnership` 时把归属说出来，列标题、卡片墙页头用：本地文件叫「自有文件」「外部文件」，
+  /// 网站改成自有的叫「自有 · X」，备忘录这类改成外部的叫「外部 · 备忘录」；默认那一边就只写名字。
+  /// 前面已经写了「自有 / 外部」时（多选说明）传 false，只写来源本身。
+  static func sourceTitle(
     selectedHosts: Set<String>,
-    in counts: HistoryNavigationCounts
-  ) -> Int? {
-    let matched = counts.platforms.filter { selectedHosts.contains($0.host) }
-    guard !matched.isEmpty else { return nil }
-    return matched.reduce(0) { $0 + $1.count }
+    scope: HistoryListScope,
+    includesOwnership: Bool = true
+  ) -> String? {
+    guard !selectedHosts.isEmpty else { return nil }
+    let files = LocalImportSource.files.rawValue
+    let name: String = switch selectedHosts {
+    case [files]: "文件"
+    case [HistoryPlatformDisplay.noteHost]: "笔记"
+    case [HistoryPlatformDisplay.workHost]: "作品"
+    default: platformDisplayName(for: selectedHosts)
+    }
+    guard includesOwnership else { return name }
+    let isLocal = selectedHosts.allSatisfy { OwnershipSourceNavigation.localHosts.contains($0) }
+    switch scope {
+    case .own:
+      if selectedHosts == [files] { return "自有文件" }
+      return isLocal ? name : "自有 · \(name)"
+    case .external:
+      if selectedHosts == [files] { return "外部文件" }
+      return isLocal ? "外部 · \(name)" : name
+    default:
+      return selectedHosts == [files] ? "本地文件" : name
+    }
   }
 
   static func filtersRow(_ row: HistoryRowProjection, selectedHosts: Set<String>) -> Bool {
@@ -125,14 +133,6 @@ struct PlatformHistoryGallery: View {
     order == .original ? "最近保存" : order.title
   }
 
-  private var titleText: String {
-    PlatformHistoryGalleryPresentation.title(
-      selectedHosts: selectedHosts,
-      searchText: model.searchText,
-      navigationCounts: model.navigationCounts
-    )
-  }
-
   private func goBack() {
     if let onBack { onBack() } else { model.clearHostSelection() }
   }
@@ -157,11 +157,10 @@ struct PlatformHistoryGallery: View {
             .accessibilityLabel(PlatformHistoryGalleryPresentation.backToListTitle)
             .accessibilityIdentifier("\(accessibilityPrefix)-back-to-list")
         }
-        Text(titleText)
-          .themedFont(.title3, weight: .semibold)
-          .foregroundStyle(theme.primaryText)
-          .lineLimit(1)
-          .accessibilityIdentifier("\(accessibilityPrefix)-title")
+        // 页头不再写「X · 已保存 N 条内容」（2026-10-12（Syc 定），同三栏列头）：来源名和条数侧栏那一行
+        // 亮着写着，搜索词在下面的搜索框里，形式在这个「显示」按钮上。
+        // 列头的「显示」菜单在卡片墙上也要有：形式筛选跟着带过来，不能变成看不见的筛选。
+        ListFormFilterMenu(model: model, theme: theme, accessibilityPrefix: "\(accessibilityPrefix)-form")
         Spacer(minLength: 0)
         // 从三栏列头的「卡片视图」进来时，回去的开关就放在同一页的同一类位置：
         // 「列表 / 卡片」两段，当前在「卡片」。原来只有工具栏左上一个不写字的「<」，

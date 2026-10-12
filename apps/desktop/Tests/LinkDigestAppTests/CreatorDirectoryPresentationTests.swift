@@ -847,25 +847,30 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
       PlatformHistoryGalleryPresentation.platformDisplayName(for: ["obscure.example", "another.test"]),
       "其他"
     )
+    // 卡片墙页头不再写标题（2026-10-12（Syc 定）：侧栏亮着的那一行已经写了来源和条数）。
+    // 来源名只在列表标题退回时（工作台、博主目录之外不会出现）和多选说明里用，按归属写清。
+    XCTAssertEqual(PlatformHistoryGalleryPresentation.sourceTitle(selectedHosts: ["x.com"], scope: .external), "X")
+    XCTAssertEqual(PlatformHistoryGalleryPresentation.sourceTitle(selectedHosts: ["x.com"], scope: .own), "自有 · X")
     XCTAssertEqual(
-      PlatformHistoryGalleryPresentation.title(
-        selectedHosts: ["x.com"],
-        searchText: "关键词",
-        navigationCounts: .init()
-      ),
-      "X · 当前筛选"
+      PlatformHistoryGalleryPresentation.sourceTitle(selectedHosts: [LocalImportSource.files.rawValue], scope: .own), "自有文件"
     )
+    XCTAssertEqual(
+      PlatformHistoryGalleryPresentation.sourceTitle(selectedHosts: [LocalImportSource.files.rawValue], scope: .external), "外部文件"
+    )
+    XCTAssertEqual(
+      PlatformHistoryGalleryPresentation.sourceTitle(
+        selectedHosts: [LocalImportSource.files.rawValue], scope: .own, includesOwnership: false
+      ),
+      "文件"
+    )
+    XCTAssertEqual(
+      PlatformHistoryGalleryPresentation.sourceTitle(selectedHosts: ["obscure.example", "another.test"], scope: .external),
+      "其他"
+    )
+    XCTAssertNil(PlatformHistoryGalleryPresentation.sourceTitle(selectedHosts: [], scope: .all))
   }
 
   func testPlatformGalleryCountsSavedContentAndUsesThreeSentenceLoadFailure() throws {
-    XCTAssertEqual(
-      PlatformHistoryGalleryPresentation.title(
-        selectedHosts: ["x.com"],
-        searchText: "",
-        navigationCounts: .init(platforms: [.init(host: "x.com", count: 12)])
-      ),
-      "X · 已保存 12 条内容"
-    )
     XCTAssertEqual(PlatformHistoryGalleryPresentation.backToListTitle, "返回内容列表")
     XCTAssertEqual(PlatformHistoryGalleryPresentation.retryActionTitle, "重试")
     XCTAssertEqual(
@@ -885,7 +890,9 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     let gallery = try String(contentsOf: root.appendingPathComponent("PlatformHistoryGallery.swift"), encoding: .utf8)
     XCTAssertFalse(gallery.contains("载入失败，点击重试"), "图库失败态不能再是六个字加一个动作")
     XCTAssertTrue(gallery.contains("HistoryInlineState("))
-    XCTAssertTrue(gallery.contains("themedFont(.title3"))
+    // 页头不再写「X · 已保存 N 条内容」，只留「显示」菜单（2026-10-12（Syc 定）：侧栏那一行已经写着）。
+    XCTAssertFalse(gallery.contains("Text(titleText)"))
+    XCTAssertTrue(gallery.contains("ListFormFilterMenu(model: model, theme: theme"))
 
     let directory = try String(contentsOf: root.appendingPathComponent("CreatorDirectoryViews.swift"), encoding: .utf8)
     XCTAssertTrue(directory.contains("视频封面是黑场，已改用占位"))

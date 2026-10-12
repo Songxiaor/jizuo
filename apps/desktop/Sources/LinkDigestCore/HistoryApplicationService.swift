@@ -38,6 +38,7 @@ public struct HistoryApplicationService: Sendable {
   public func historyPage(limit: Int = 50, after cursor: HistoryPageCursor? = nil) throws -> HistoryPage { try repository.historyPage(limit: limit, after: cursor) }
   public func historyPage(limit: Int = 50, after cursor: HistoryPageCursor? = nil, filter: HistoryListFilter) throws -> HistoryPage { try repository.historyPage(limit: limit, after: cursor, filter: filter) }
   public func navigationCounts() throws -> HistoryNavigationCounts { try repository.navigationCounts() }
+  public func formCounts(filter: HistoryListFilter) throws -> [HistoryNavigationForm] { try repository.formCounts(filter: filter) }
   public func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
     try repository.upsertCreator(command)
   }

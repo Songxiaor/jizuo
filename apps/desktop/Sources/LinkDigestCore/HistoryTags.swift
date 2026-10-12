@@ -134,6 +134,11 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   /// 算作自有的本地文件条数（侧栏「自有」下的「本地文件」）。本地文件按下载标记各归
   /// 自有或外部，「来源」里那行是两边合计，放在「自有」下面得用这个数，否则子项加不上。
   public let ownLocalFiles: Int
+  /// 归自有的条目按来源分组（含笔记 `note`、作品 `work` 两个合成 host），只含大于 0 的，
+  /// 条数降序。侧栏「自有」下的子项由它来，子项加起来等于 `own`（2026-10-12（Syc 定）：「来源」并进归属）。
+  public let ownPlatforms: [HistoryNavigationPlatform]
+  /// 归外部的条目按来源分组，口径同 `ownPlatforms`；加起来等于 `external`。
+  public let externalPlatforms: [HistoryNavigationPlatform]
   /// 每种形式的条数，只含数量大于 0 的，顺序同 `ContentForm.allCases`。
   public let forms: [HistoryNavigationForm]
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
@@ -166,6 +171,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     own: Int = 0,
     external: Int = 0,
     ownLocalFiles: Int = 0,
+    ownPlatforms: [HistoryNavigationPlatform] = [],
+    externalPlatforms: [HistoryNavigationPlatform] = [],
     forms: [HistoryNavigationForm] = [],
     notes: Int = 0,
     works: Int = 0,
@@ -187,6 +194,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.own = own
     self.external = external
     self.ownLocalFiles = ownLocalFiles
+    self.ownPlatforms = ownPlatforms
+    self.externalPlatforms = externalPlatforms
     self.forms = forms
     self.notes = notes
     self.works = works
@@ -417,6 +426,16 @@ public struct HistoryListFilter: Sendable, Equatable {
     HistoryListFilter(
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
       searchText: searchText, creatorID: creatorID, includesNotes: includesNotes,
+      includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed,
+      onlyTaskIDs: onlyTaskIDs, collectionID: collectionID
+    )
+  }
+
+  /// 同样的筛选换一种形式（nil = 不限）。列头「显示」菜单按当前侧栏选择数各形式的条数时用。
+  public func replacingForm(_ form: ContentForm?) -> HistoryListFilter {
+    HistoryListFilter(
+      tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
+      searchText: searchText, creatorID: creatorID, ordersBySavedTime: ordersBySavedTime, includesNotes: includesNotes,
       includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed,
       onlyTaskIDs: onlyTaskIDs, collectionID: collectionID
     )

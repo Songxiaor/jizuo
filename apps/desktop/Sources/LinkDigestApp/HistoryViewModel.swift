@@ -1114,8 +1114,13 @@ final class HistoryViewModel {
   private(set) var navigationCounts = HistoryNavigationCounts()
   private(set) var selectedHosts: Set<String> = []
   private(set) var selectedScope: HistoryListScope = .all
-  /// 侧栏「形式」选中的那一种（视频、录音……）。和作用域、平台、标签互斥，选中时作用域回到全部。
+  /// 列头「显示」菜单选中的形式（视频、录音……），nil = 全部形式。
+  ///
+  /// 2026-10-12（Syc 定）：形式从侧栏挪到列表列头，和侧栏选的东西是「且」的关系——
+  /// 在「外部」「收藏」「某个合集」里都能只看视频，换侧栏时它留着；列头按钮一直亮着，不会藏起来。
   private(set) var selectedForm: ContentForm?
+  /// 当前侧栏选择下（不看形式）每种形式各几条，给列头菜单用。随列表一起刷新。
+  private(set) var listFormCounts: [HistoryNavigationForm] = []
   // MARK: 合集（2026-09-29）
   /// 侧栏「合集」分组：全部合集和各自看得见的条数。
   private(set) var collections: [HistoryCollectionSummary] = []
@@ -1856,7 +1861,7 @@ final class HistoryViewModel {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); styledExportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); batchTranslationTask?.cancel(); autoTitleLocalizationTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); styledExportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); batchTranslationTask?.cancel(); autoTitleLocalizationTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel(); formCountsTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -2054,8 +2059,10 @@ final class HistoryViewModel {
       || selectedForm != nil
       || selectedCollectionID != nil
   }
+  /// 侧栏里除作用域以外还挂着的筛选（来源、标签、博主、合集）。形式不算：它在列头，和侧栏是「且」的关系，
+  /// 只看视频时「全部」仍然是选中的那一行（2026-10-12（Syc 定））。
   var hasCategoryFilter: Bool {
-    !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil || selectedForm != nil
+    !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil
       || selectedCollectionID != nil
   }
   var selectedCreator: CreatorSummary? { selectedCreatorSnapshot }
@@ -2190,6 +2197,7 @@ final class HistoryViewModel {
     blockingErrorCode = unavailableCode
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; localMediaOriginalMissing = nil; originalRelocationState = .idle; faviconImageURLs = [:]; nextCursor = nil
     availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; selectedForm = nil; showsAllNavigationTags = false; searchText = ""
+    formCountsTask?.cancel(); listFormCounts = []; formCountsBaseFilter = nil
     collectionsTask?.cancel(); selectedTaskCollectionsTask?.cancel()
     collections = []; selectedCollectionID = nil; selectedTaskCollectionIDs = []; collectionMembership = [:]; collectionPrompt = nil; collectionFeedback = nil
     selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; isReadingCreatorWorkInDirectory = false; sessionDirectoryCreatorID = nil; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
@@ -2296,9 +2304,35 @@ final class HistoryViewModel {
         self.reloadAvailableTags(reloadsListIfSelectedTagsDisappear: false)
         self.reloadNavigationCounts()
       }
+      self?.reloadFormCounts(for: filter, force: refreshesAggregates)
     }
   }
   @ObservationIgnored private var aggregatesRefreshPending = false
+  @ObservationIgnored private var formCountsTask: Task<Void, Never>?
+  /// 上一次数形式时的筛选（不含形式本身）。只换形式时不用重数：菜单里的数是「这一组里各有几条」。
+  @ObservationIgnored private var formCountsBaseFilter: HistoryListFilter?
+
+  /// 列头「显示」菜单的条数。和列表同一套 WHERE（`formCounts(filter:)`），等这一页到手再数，不抢列表那一下。
+  private func reloadFormCounts(for filter: HistoryListFilter, force: Bool) {
+    guard let history else { return }
+    let base = filter.replacingForm(nil)
+    guard force || base != formCountsBaseFilter else { return }
+    formCountsBaseFilter = base
+    let generation = configurationGeneration
+    formCountsTask?.cancel()
+    formCountsTask = Task { [weak self] in
+      let counts = await Task.detached(priority: .utility) {
+        try? history.formCounts(filter: base)
+      }.value
+      guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
+      if let counts {
+        if counts != self.listFormCounts { self.listFormCounts = counts }
+      } else {
+        // 数不出来就下次再数；菜单仍有「全部」和当前选中的那一种。
+        self.formCountsBaseFilter = nil
+      }
+    }
+  }
 
   /// 离列表末尾还剩几条时就开始读下一页。原来要等最后一条露出来才读，滑到底
   /// 总要停下来看一圈转圈。
@@ -6034,7 +6068,6 @@ final class HistoryViewModel {
     selectedCreatorID = nil
     isCreatorDirectoryActive = false
     selectedScope = .all
-    selectedForm = nil
     selectedCollectionID = nil
     reload()
   }
@@ -6066,7 +6099,6 @@ final class HistoryViewModel {
       abandonPlatformGalleryReadingStash()
     }
     selectedScope = scope
-    selectedForm = nil
     selectedCollectionID = nil
     selectedHosts = []
     selectedTagNormalizedNames = []
@@ -6087,32 +6119,47 @@ final class HistoryViewModel {
     listState = .loading
   }
 
-  /// 侧栏「形式」：只看视频、录音……再点一次同一项取消（`toggles: false` 时保持选中，
-  /// 给「新建笔记后跳到笔记」这类定位用）。
-  func selectForm(_ form: ContentForm, toggles: Bool = true) {
-    isWorkbenchActive = false
+  /// 列头「显示」菜单：只看视频、录音……nil 回到全部形式。只换形式，侧栏选的东西不动。
+  func selectForm(_ form: ContentForm?) {
+    guard form != selectedForm else { return }
     stopRunningBatchJobsForNavigation()
-    clearCreatorMode()
-    let leavingPlatformGallery = !selectedHosts.isEmpty
-    if leavingPlatformGallery {
-      abandonPlatformGalleryReadingStash()
-    }
-    selectedForm = toggles && selectedForm == form && selectedScope == .all ? nil : form
-    selectedScope = .all
-    selectedCollectionID = nil
-    selectedHosts = []
-    selectedTagNormalizedNames = []
-    if leavingPlatformGallery {
-      discardVisibleList(state: .loading)    } else {
-      clearRowsForNavigation()
-    }
+    selectedForm = form
+    clearRowsForNavigation()
     reload()
   }
 
-  func clearFormSelection() {
-    guard selectedForm != nil else { return }
+  func clearFormSelection() { selectForm(nil) }
+
+  /// 去「自有 → 笔记」：新建笔记、今天的笔记、点 [[链接]] 都落在这里。形式一并放开，
+  /// 否则列头正只看视频时，刚建的笔记不在列表里，看着像没建上。
+  func showNotes() {
+    let formChanged = selectedForm != nil
     selectedForm = nil
-    reload()
+    if selectedScope == .notes, !hasCategoryFilter, !isCreatorDirectoryActive, !isWorkbenchActive {
+      if formChanged { reload() }
+      return
+    }
+    selectScope(.notes)
+  }
+
+  /// 侧栏「自有 / 外部」下的一行：那一边 + 那个来源（2026-10-12（Syc 定））。
+  func selectOwnershipSource(_ row: OwnershipSourceRow) {
+    if row.isNotesScope {
+      selectScope(.notes)
+    } else {
+      applyPlatformHosts(
+        Set(row.hosts.map { HistoryPlatformRegistry.canonicalHost(for: $0) }.filter { !$0.isEmpty }),
+        scope: row.scope
+      )
+    }
+  }
+
+  /// 这一行是不是当前选中的。只亮这一行，上面的「自有 / 外部」不跟着亮。
+  func isOwnershipSourceSelected(_ row: OwnershipSourceRow) -> Bool {
+    guard !isCreatorDirectoryActive, !isWorkbenchActive, selectedCollectionID == nil,
+          selectedTagNormalizedNames.isEmpty, selectedCreatorID == nil else { return false }
+    if row.isNotesScope { return selectedScope == .notes && selectedHosts.isEmpty }
+    return selectedScope == row.scope && !selectedHosts.isEmpty && selectedHosts == Set(row.hosts)
   }
 
   /// `scope` 默认「全部」；侧栏「自有」下的本地文件传 `.own`，只看归自有的那部分。
@@ -6124,12 +6171,13 @@ final class HistoryViewModel {
 
   /// 侧边栏「其他/待分类」聚合：一次筛选全部非知名平台的杂项来源。
   /// 再次点击同一组合保持筛选（幂等）；显式清除走筛选条或「全部」。
-  func selectHosts(_ hosts: [String]) {
+  /// `scope` 传当前那一边：筛选条上摘掉一个来源时不能把「外部」也一起丢了。
+  func selectHosts(_ hosts: [String], scope: HistoryListScope = .all) {
     let normalized = Set(
       hosts.map { HistoryPlatformRegistry.canonicalHost(for: $0) }.filter { !$0.isEmpty }
     )
     guard !normalized.isEmpty else { return }
-    applyPlatformHosts(normalized)
+    applyPlatformHosts(normalized, scope: scope)
   }
 
   /// 显式清除来源平台筛选（筛选条 × / 清除），不走再次点击同项。
@@ -6151,7 +6199,6 @@ final class HistoryViewModel {
       && !isWorkbenchActive
       && !isCreatorDirectoryActive
       && selectedScope == scope
-      && selectedForm == nil
       && selectedCollectionID == nil
     if alreadyInSameGallery { return }
 
@@ -6163,7 +6210,6 @@ final class HistoryViewModel {
     let hostsChanged = previousHosts != hosts
     selectedHosts = hosts
     selectedScope = scope
-    selectedForm = nil
     selectedCollectionID = nil
     selectedTagNormalizedNames = []
     // 跨平台不遗留上个平台的搜索词，避免隐形查询。
@@ -6182,7 +6228,6 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
-    selectedForm = nil
     selectedCollectionID = nil
     searchText = ""
     discardVisibleList(state: .loading)
@@ -6219,7 +6264,6 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
-    selectedForm = nil
     selectedCollectionID = nil
     reload()
   }
@@ -6242,7 +6286,6 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
-    selectedForm = nil
     selectedCollectionID = nil
     isReadingCreatorWorkInDirectory = false
     if switching {
@@ -7234,7 +7277,6 @@ final class HistoryViewModel {
     }
     selectedCollectionID = id
     selectedScope = .all
-    selectedForm = nil
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
@@ -8388,7 +8430,7 @@ final class HistoryViewModel {
         return
       }
       // 先切到笔记再选中：目标不在当前列表里时，选中会被列表刷新清掉。
-      if selectedForm != .note || selectedScope != .all { selectForm(.note, toggles: false) }
+      showNotes()
       reveal(taskID: target)
     } catch {
       snapshotEditFailure = "无法打开链接的笔记，请稍后重试。"
@@ -8971,12 +9013,17 @@ final class HistoryViewModel {
       // 「全部 / 自有 / 外部」和按标签、形式筛选都带上笔记与作品：侧栏这几处的计数
       // 本来就包含它们，点进来却看不到，数字和列表就对不上（2026-09-23 / 09-24）。
       // 选了平台或博主时笔记本来就进不来，保持原来的等值条件，走更好的索引。
+      // 「自有 → 作品」这类按合成 host（笔记、作品）选的行也要带上：它们本来就只有笔记 / 作品。
       includesNotes: [HistoryListScope.all, .own, .external].contains(selectedScope)
-        && selectedHosts.isEmpty && selectedCreatorID == nil,
-      form: selectedForm,
+        && (selectedHosts.isEmpty || !selectedHosts.isDisjoint(with: Self.recordKindHosts))
+        && selectedCreatorID == nil,
+      // 「全部博主」页和工作台没有列头菜单，形式在那里不生效，免得被一个看不见的筛选滤掉；值留着，回来照旧。
+      form: isCreatorDirectoryActive || isWorkbenchActive ? nil : selectedForm,
       collectionID: selectedCollectionID
     )
   }
+
+  static let recordKindHosts: Set<String> = [HistoryPlatformDisplay.noteHost, HistoryPlatformDisplay.workHost]
 
   private static func singleSelection(in taskIDs: Set<TaskID>) -> TaskID? {
     taskIDs.count == 1 ? taskIDs.first : nil

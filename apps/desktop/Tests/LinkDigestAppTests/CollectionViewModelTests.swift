@@ -79,9 +79,15 @@ final class CollectionViewModelTests: XCTestCase {
     XCTAssertNil(model.selectedCollectionID)
     await waitUntil { model.rows.map(\.taskID) == [third, second, first] }
     model.selectCollection(collection.id)
+    // 列头的形式和合集是「且」（2026-10-12（Syc 定）：「形式」从侧栏挪到列头）：人留在合集里，
+    // 只按形式收窄；合集顺序不变，没有这种形式时列表空着。
     model.selectForm(.article)
-    XCTAssertNil(model.selectedCollectionID)
-    model.selectCollection(collection.id)
+    XCTAssertEqual(model.selectedCollectionID, collection.id)
+    await waitUntil { model.listState == .loaded && model.rows.map(\.taskID) == [first, third, second] }
+    model.selectForm(.video)
+    XCTAssertEqual(model.selectedCollectionID, collection.id)
+    await waitUntil { model.listState == .empty && model.rows.isEmpty }
+    model.selectForm(nil)
     model.selectHost("example.test")
     XCTAssertNil(model.selectedCollectionID)
   }

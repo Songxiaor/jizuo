@@ -3,6 +3,7 @@ import SwiftUI
 
 /// 来源平台侧栏行：无常驻卡片底，只给选中项浅底高亮。
 /// 计数仍由调用方传入实时 `navigationCounts`，本文件不改筛选或导航模型。
+/// 2026-10-12（Syc 定）起挂在「自有 / 外部」下面，不再有单独的「来源」一组。
 struct UIReadingPlatformNavigation: View {
   struct Item: Identifiable {
     let host: String
@@ -11,57 +12,46 @@ struct UIReadingPlatformNavigation: View {
     let faviconTaskID: TaskID?
     /// 悬停说明；nil 时用默认的「平台（N 条）」。同名两行口径不同时由调用方写清楚（2026-10-01）。
     var helpText: String? = nil
-    /// 显示名；nil 时按 host 取平台名。「自有」下那行本地文件叫「自有文件」，
-    /// 和「来源 → 本地文件」不再同名不同数（2026-10-04 侧栏去重）。
+    /// 显示名；nil 时按 host 取平台名。本机来源用短名（「文件」「笔记」）。
     var title: String? = nil
-    var id: String { host }
+    /// 列表 id。同一个 host 可能「自有」「外部」下各一行，两行的 id 必须不同。nil 时用 host。
+    var rowID: String? = nil
+    /// 无障碍标识；nil 时用 `history-navigation-platform-<host>`。侧栏滚动记忆靠它认行，同样不能重复。
+    var identifier: String? = nil
+    /// 没有平台图标的合成来源（笔记、作品）用系统符号，和原来侧栏那一行同一个图标。
+    var systemImage: String? = nil
+    var id: String { rowID ?? host }
   }
 
   let items: [Item]
   let theme: HistoryThemeTokens
+  /// 参数是 `Item.id`。
   let isSelected: (String) -> Bool
   let onSelect: (String) -> Void
-  /// 折叠时最多显示几行。平台一多（十几个）就把侧栏占掉一半，「标签」被顶到底下
-  /// 看不见；默认只露出条数最多的几家，其余折进「更多平台」。`nil` 表示不折叠。
-  var collapsedLimit: Int? = nil
+  /// 收起时常驻的行（`Item.id`）；nil 表示不折叠。其余收进「还有 N 个」，当前选中的一定露出，
+  /// 否则选了一个折叠里的来源，侧栏却看不出选中了谁。
+  var collapsedVisibleIDs: Set<String>? = nil
   var isExpanded: Binding<Bool> = .constant(true)
+  var moreIdentifier = "history-navigation-platforms-more"
 
-  private var orderedItems: [Item] {
-    // 本机来源（2026-09-24 并入「来源」）排在外部平台之后、「待分类」之前：杂项永远垫底。
-    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "小红书",
-                 "备忘录", "语音备忘录", "本地文件", "待分类"]
-    return items.sorted {
-      let left = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $0.host)) ?? order.count
-      let right = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $1.host)) ?? order.count
-      return left == right ? $0.host < $1.host : left < right
-    }
-  }
-
-  /// 折叠时露出的行：按条数取前 N 家，再按固定顺序排；当前选中的平台一定露出，
-  /// 否则选了一个折叠里的平台，侧栏却看不出选中了谁。
   private var visibleItems: [Item] {
-    guard let collapsedLimit, !isExpanded.wrappedValue, orderedItems.count > collapsedLimit + 1 else {
-      return orderedItems
-    }
-    // 「其他」是杂项汇总，条数再多也不算常用平台，一律收进「更多」（2026-09-25）。
-    let top = Set(orderedItems.filter { $0.host != HistoryPlatformDisplay.miscHost }
-      .sorted { $0.count > $1.count }.prefix(collapsedLimit).map(\.host))
-    return orderedItems.filter { top.contains($0.host) || isSelected($0.host) }
+    guard let collapsedVisibleIDs, !isExpanded.wrappedValue else { return items }
+    return items.filter { collapsedVisibleIDs.contains($0.id) || isSelected($0.id) }
   }
 
-  private var hiddenCount: Int { orderedItems.count - visibleItems.count }
+  private var hiddenCount: Int { items.count - visibleItems.count }
 
   var body: some View {
     ForEach(visibleItems) { item in
       UIReadingPlatformRow(
         item: item,
         theme: theme,
-        isSelected: isSelected(item.host),
-        onSelect: { onSelect(item.host) }
+        isSelected: isSelected(item.id),
+        onSelect: { onSelect(item.id) }
       )
-      .id(item.host)
+      .id(item.id)
     }
-    if let collapsedLimit, orderedItems.count > collapsedLimit + 1 {
+    if let collapsedVisibleIDs, items.count > collapsedVisibleIDs.count {
       Button {
         isExpanded.wrappedValue.toggle()
       } label: {
@@ -73,7 +63,8 @@ struct UIReadingPlatformNavigation: View {
             .font(.system(size: 9, weight: .semibold))
             .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
             .frame(width: 18, height: 16)
-          Text(isExpanded.wrappedValue ? "收起" : "更多平台 · \(hiddenCount)")
+          // 收起时说清还藏着几个（选中的那个已经露出来，不算在内）。
+          Text(isExpanded.wrappedValue ? "收起" : "还有 \(hiddenCount) 个")
             .themedFont(.subheadline)
           Spacer(minLength: 0)
         }
@@ -86,7 +77,7 @@ struct UIReadingPlatformNavigation: View {
       }
       .buttonStyle(.plain)
       .padding(.horizontal, -6)
-      .accessibilityIdentifier("history-navigation-platforms-more")
+      .accessibilityIdentifier(moreIdentifier)
     }
   }
 }
@@ -100,7 +91,8 @@ private struct UIReadingPlatformRow: View {
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  private var fullName: String { item.title ?? HistoryPlatformDisplay.name(forHost: item.host) }
+  /// 看见的、悬停说明和读屏念的都是这一个名字（2026-10-12（Syc 定））：原来读屏念全名，
+  /// 杂项那一行屏幕上写「其他」、读屏念「待分类」，公众号念成「微信公众号」，同一行两个名字。
   private var name: String { item.title ?? HistoryPlatformDisplay.shortName(forHost: item.host) }
 
   var body: some View {
@@ -108,12 +100,19 @@ private struct UIReadingPlatformRow: View {
       // 间距、图标框和主导航行一致（8pt / 18pt 宽）：原来 4pt / 16pt，
       // 来源这一组的文字比上面几组往左缩了一截（2026-09-25 走查）。
       HStack(spacing: 8) {
-        PlatformNavigationIcon(
-          host: item.host,
-          faviconURL: item.faviconURL,
-          faviconTaskID: item.faviconTaskID,
-          monochrome: true
-        )
+        Group {
+          if let systemImage = item.systemImage {
+            Image(systemName: systemImage)
+              .font(.system(size: DesignTokens.IconSize.sidebar, weight: .regular))
+          } else {
+            PlatformNavigationIcon(
+              host: item.host,
+              faviconURL: item.faviconURL,
+              faviconTaskID: item.faviconTaskID,
+              monochrome: true
+            )
+          }
+        }
         // 选中时显示平台自己的颜色；黑色系品牌用正文色，免得深色主题下看不见。
         .foregroundStyle(isSelected ? (PlatformIconCatalog.sidebarBrandColor(for: item.host) ?? theme.primaryText) : theme.secondaryText)
         .frame(width: 18, height: 16)
@@ -153,11 +152,11 @@ private struct UIReadingPlatformRow: View {
     )
     .animation(reduceMotion ? nil : DesignTokens.Motion.instant, value: isSelected)
     .onHover { isHovering = $0 }
-    .help(item.helpText ?? "\(fullName)（\(item.count) 条）")
-    .accessibilityLabel(fullName)
+    .help(item.helpText ?? "\(name)（\(item.count) 条）")
+    .accessibilityLabel(name)
     .accessibilityValue("\(item.count) 条")
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-    .accessibilityIdentifier("history-navigation-platform-\(item.host)")
+    .accessibilityIdentifier(item.identifier ?? "history-navigation-platform-\(item.host)")
   }
 
   private var hoverFill: Color {

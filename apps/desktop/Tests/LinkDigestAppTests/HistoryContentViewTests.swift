@@ -410,15 +410,21 @@ final class HistoryContentViewTests: XCTestCase {
       gallery.contains("navigationRail"),
       "全部博主页必须用同一条侧栏"
     )
-    let views = section(
+    // 2026-10-12（Syc 定）：「视图」拆掉，收着的分组换成「实用工具」；顶部一组跟着「自有 / 外部」的展开换 id。
+    let utilities = section(
       in: source,
-      from: "navigationSectionHeader(\"视图\"",
-      to: "collectionsNavigationSection"
+      from: "navigationSectionHeader(\"实用工具\"",
+      to: "@ViewBuilder"
     )
     XCTAssertTrue(
-      views.contains(".id(\"views-\\(navigationViewsExpanded)-\\(navigationStepStatusExpanded)\")"),
-      "「视图」的 id 要挂在分组上，展开时这一组重新生出来，行才能出现"
+      utilities.contains(".id(\"utilities-\\(navigationUtilitiesExpanded)-"),
+      "「实用工具」的 id 要挂在分组上，展开时这一组重新生出来，行才能出现"
     )
+    XCTAssertTrue(
+      source.contains(".id(\"sources-\\(navigationOwnExpanded)-\\(navigationExternalExpanded)\")"),
+      "「自有 / 外部」展开收起时，顶部这一组跟着换 id"
+    )
+    XCTAssertFalse(source.contains("navigationSectionHeader(\"视图\""))
     XCTAssertFalse(source.contains(".id(navigationSectionsLayoutKey)"))
     XCTAssertFalse(SidebarScrollRestore.shouldRestore(.sectionToggle))
     // 滚离顶部 369pt（最近 7 天 411→42）。来源约 10 行、每行约 32pt，收起只少约 320pt，
@@ -1011,23 +1017,31 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("private var navigationRail: some View"))
     XCTAssertTrue(source.contains("history-navigation-all"))
     XCTAssertTrue(source.contains("history-navigation-recent"))
-    XCTAssertTrue(source.contains("history-navigation-unsummarized"))
-    XCTAssertTrue(source.contains("title: \"未总结\""), "侧栏文案应是未总结")
-    guard
-      let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
-      let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
-      let platformsIndex = source.range(of: "navigationSectionHeader(\"来源\"")?.lowerBound
-    else {
-      return XCTFail("侧栏必须同时有今天、博主和来源")
+    let utilities = appSource("OwnershipSourceNavigation.swift")
+    XCTAssertTrue(utilities.contains("history-navigation-unsummarized"))
+    XCTAssertTrue(utilities.contains("title: \"未总结\""), "侧栏文案应是未总结")
+    // 2026-10-12（Syc 定）：顶部一组 全部 → 最近 7 天 → 收藏 → 自有（来源）→ 外部（来源），
+    // 下面 合集 → 博主 → 标签 → 实用工具。「视图」「形式」「来源」三组撤掉。
+    let order = [
+      "accessibilityIdentifier(\"history-navigation-all\")",
+      "accessibilityIdentifier(\"history-navigation-recent\")",
+      "accessibilityIdentifier(\"history-navigation-favorite\")",
+      "identifier: \"history-navigation-own\"",
+      "ownershipSourceRows(.own",
+      "identifier: \"history-navigation-external\"",
+      "ownershipSourceRows(.external",
+      "      collectionsNavigationSection",
+      "navigationSectionHeader(\"博主\"",
+      "navigationSectionHeader(\"标签\", expanded",
+      "      utilitiesNavigationSection",
+    ].compactMap { source.range(of: $0)?.lowerBound }
+    XCTAssertEqual(order.count, 11)
+    XCTAssertEqual(order, order.sorted(), "侧栏顺序应为 全部 → 最近 7 天 → 收藏 → 自有 → 外部 → 合集 → 博主 → 标签 → 实用工具")
+    for removed in ["navigationSectionHeader(\"视图\"", "navigationSectionHeader(\"形式\"", "navigationSectionHeader(\"来源\""] {
+      XCTAssertFalse(source.contains(removed), "\(removed) 应已撤掉")
     }
-    // 2026-09-24：来源（本机 + 平台）在前，博主是来源下面的第二层，紧跟其后。
-    XCTAssertTrue(todayIndex < platformsIndex && platformsIndex < creatorsIndex, "博主分区必须紧跟在来源之后")
-    // 2026-09-24 Syc：短而常用的在上，长而会增长的在下——视图 → 形式 → 来源 → 博主 → 标签。
-    let order = ["navigationSectionHeader(\"视图\"", "navigationSectionHeader(\"形式\"", "navigationSectionHeader(\"来源\"",
-                 "navigationSectionHeader(\"博主\"", "navigationSectionHeader(\"标签\", expanded"]
-      .compactMap { source.range(of: $0)?.lowerBound }
-    XCTAssertEqual(order.count, 5)
-    XCTAssertEqual(order, order.sorted(), "侧栏分组顺序应为 视图 → 形式 → 来源 → 博主 → 标签")
+    // 「今天」在「添加」菜单里，不在侧栏。
+    XCTAssertTrue(source.contains("history-navigation-today-note"))
     XCTAssertTrue(source.contains("history-navigation-creators-all"))
     XCTAssertTrue(source.contains("history-navigation-creator-add"))
     XCTAssertTrue(source.contains("navigationSectionHeader(\"博主\", expanded: $navigationCreatorsExpanded"))
@@ -2957,23 +2971,33 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(sample.contains("manualLink"), "示例不能走添加链接")
     // 16：合集空态一句话、允许换行。
     XCTAssertTrue(source.contains("Text(\"点 ＋ 把一组内容按顺序放一起\")"))
-    // 18：标签、形式默认收起，展开状态记在 AppStorage。
-    XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.forms-expanded\") private var navigationFormsExpanded = false"))
-    // 19：「自有」下那行本地文件叫「自有文件」，和「来源 → 本地文件」不再同名（2026-10-04）；
-    // 来源那行仍说明含多少外部文件。
-    XCTAssertTrue(source.contains("title: \"自有文件\""))
-    XCTAssertTrue(source.contains("条外部文件"))
-    // 20：「未总结」和待转写、待校对一起收在「工序状态」里（收藏之后、回收站之前），自动总结开着时不占位。
+    // 18：标签默认收起、「实用工具」默认收起，「自有 / 外部」默认展开，展开状态记在 AppStorage。
+    // 「形式」不在侧栏了（2026-10-12（Syc 定）），挪到列头「显示」菜单。
+    XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.utilities-expanded\") private var navigationUtilitiesExpanded = false"))
+    XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.own-expanded\") private var navigationOwnExpanded = true"))
+    XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.external-expanded\") private var navigationExternalExpanded = true"))
+    XCTAssertFalse(source.contains("history.navigation.forms-expanded"))
+    XCTAssertTrue(source.contains("ListFormFilterMenu(model: model, theme: theme)"))
+    // 19：本地文件按归属分到两边，都叫「文件」，再没有混着自有和外部的「本地文件」（2026-10-12（Syc 定））。
+    let sources = appSource("OwnershipSourceNavigation.swift")
+    XCTAssertTrue(sources.contains("case LocalImportSource.files.rawValue: \"文件\""))
+    XCTAssertFalse(source.contains("条外部文件"))
+    XCTAssertFalse(source.contains("title: \"自有文件\""))
+    // 20：待转写、待校对、未总结、回收站拍平在「实用工具」里，按这个顺序；自动总结开着时「未总结」不占位。
     guard
-      let favorite = source.range(of: "history-navigation-favorite\")"),
-      let stepStatus = source.range(of: "stepStatusDisclosureRow\n"),
-      let trash = source.range(of: "history-navigation-trash\")")
-    else { return XCTFail("视图分组结构变了") }
-    XCTAssertLessThan(favorite.lowerBound, stepStatus.lowerBound)
-    XCTAssertLessThan(stepStatus.lowerBound, trash.lowerBound)
-    XCTAssertTrue(source.contains("if !providerSettings.autoSummarizeNewCaptures || model.selectedScope == .unsummarized {"))
-    XCTAssertTrue(source.contains("title: \"未总结\""))
+      let untranscribed = sources.range(of: "history-navigation-untranscribed\""),
+      let untidied = sources.range(of: "history-navigation-untidied\""),
+      let unsummarized = sources.range(of: "history-navigation-unsummarized\""),
+      let trash = sources.range(of: "history-navigation-trash\"")
+    else { return XCTFail("实用工具结构变了") }
+    XCTAssertLessThan(untranscribed.lowerBound, untidied.lowerBound)
+    XCTAssertLessThan(untidied.lowerBound, unsummarized.lowerBound)
+    XCTAssertLessThan(unsummarized.lowerBound, trash.lowerBound)
+    XCTAssertFalse(source.contains("stepStatusDisclosureRow"), "工序状态的折叠不再套在别的折叠里")
+    XCTAssertTrue(sources.contains("if !autoSummarizesNewCaptures || selectedScope == .unsummarized {"))
+    XCTAssertTrue(sources.contains("title: \"未总结\""))
     XCTAssertFalse(source.contains("\"待总结\""))
+    XCTAssertFalse(sources.contains("\"待总结\""))
     // 25：「+」里不再有两个同步；菜单栏「文件」里有。
     let addMenu = section(in: source, from: "private var addMenu: some View", to: ".accessibilityIdentifier(\"manual-link-add-toolbar\")")
     XCTAssertFalse(addMenu.contains("syncVoiceMemos"))
@@ -3418,7 +3442,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testDetailRemediationKeepsTrashTodayAndReadableMetrics() {
     let source = historyContentViewSource()
-    XCTAssertTrue(source.contains("history-navigation-trash"))
+    XCTAssertTrue(appSource("OwnershipSourceNavigation.swift").contains("history-navigation-trash"))
     // 「今天」从侧栏移进「添加」菜单（2026-09-23），⌘⇧T 照旧。
     XCTAssertTrue(source.contains("Button(action: openTodayNote) { Label(\"今日笔记"))
     XCTAssertTrue(source.contains("rectangle.compress.vertical"))
