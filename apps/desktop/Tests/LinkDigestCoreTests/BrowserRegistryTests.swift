@@ -7,9 +7,10 @@ import XCTest
 /// 改之前这里是 `enum { chrome, brave, edge }`——写死三个，加一个浏览器要改代码、改枚举、
 /// 再补一份一模一样的模板和哈希。现在是数据：`allKnown` 里放几条就支持几个。
 ///
-/// 2026-10-12 起加 ego：Syc 日常用的就是它（界面走查 #18），档案目录 `Chromium`
-/// 没被别家占用、扩展手动装过、收据显示送达正常。仍要求每加一个都真的验一遍——
-/// 没验过的不进表。
+/// 2026-10-12 起加 ego：Syc 日常用的就是它（界面走查 #18），档案目录在
+/// `Citro Labs/ego lite/`（审查核对：Syc 手装的 manifest 就在它的
+/// NativeMessagingHosts 里）、扩展手动装过、收据显示送达正常。仍要求每加一个
+/// 都真的验一遍——没验过的不进表。
 final class BrowserRegistryTests: XCTestCase {
   /// `id` 会被写进收据。改一个就等于让旧收据里的那条认不出来。
   func testStableIDs() {
@@ -26,8 +27,11 @@ final class BrowserRegistryTests: XCTestCase {
   /// 只列 Chrome 是漏识别。
   func testKnownBrowsersAreChromeAndEgo() {
     XCTAssertEqual(BrowserSupportBrowser.allKnown.map(\.id), ["chrome", "ego"])
-    XCTAssertEqual(BrowserSupportBrowser.ego.supportDirectoryRelativePath, "Chromium")
+    XCTAssertEqual(BrowserSupportBrowser.ego.supportDirectoryRelativePath, "Citro Labs/ego lite")
     XCTAssertEqual(BrowserSupportBrowser.ego.appBundleName, "ego lite")
+    XCTAssertEqual(
+      BrowserSupportBrowser.ego.nativeMessagingRelativePath,
+      "Library/Application Support/Citro Labs/ego lite/NativeMessagingHosts")
   }
 
   /// Edge 不是「忘了加」，是被 macOS 挡住的：它的档案目录第一段就是 app 名，写入时逐段

@@ -51,11 +51,13 @@ extension BrowserSupportBrowser {
   public static let edge = Self(
     id: "edge", displayName: "Microsoft Edge", supportDirectoryRelativePath: "Microsoft Edge",
     appBundleName: "Microsoft Edge")
-  /// EGO（ego lite）：包名带空格、档案目录固定叫 `Chromium`（沿 Chromium 默认目录，
-  /// 没换自己的名字）。2026-10-12 走查：Syc 日常用的就是它，「已装的浏览器」不能只
-  /// 列 Chrome 一家。id 用 `ego`，写进收据后是稳定键。
+  /// ego（ego lite）：2026-10-12 走查 #18——Syc 日常用的就是它，「已装的浏览器」
+  /// 不能只列 Chrome 一家。id 用 `ego`，写进收据后是稳定键。
+  /// 档案目录按厂商名归在 `Citro Labs/` 下面（审查核对：Syc 手装的
+  /// com.syc.linkdigest.v01.json 就在它的 NativeMessagingHosts 里）；
+  /// 包名带空格、目录也带空格，与主流 Chromium 各家目录布局同一路数。
   public static let ego = Self(
-    id: "ego", displayName: "ego", supportDirectoryRelativePath: "Chromium",
+    id: "ego", displayName: "ego", supportDirectoryRelativePath: "Citro Labs/ego lite",
     appBundleName: "ego lite")
 
   /// 当前支持的浏览器。

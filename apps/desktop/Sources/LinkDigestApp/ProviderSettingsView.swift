@@ -2366,7 +2366,14 @@ struct ProviderSettingsView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer(minLength: DesignTokens.Space.md)
-            Picker("阅读风格", selection: $readingFontRaw) {
+            // 读时归一：旧偏好（sansSerif / serif / songti / kaiti）经
+            // `ReadingFontSelection(storedValue:)` 迁到新家族（"sansSerif" → "PingFang SC"），
+            // 取迁移后的值参与三档匹配——选了「黑体」档才真的亮。
+            // 只读时不写回，让偏好里保留旧值（旧版本再打开时还能认得）。
+            Picker("阅读风格", selection: Binding(
+              get: { ReadingFontSelection(storedValue: readingFontRaw).storedValue },
+              set: { readingFontRaw = $0 }
+            )) {
               Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
               Text("黑体").tag("PingFang SC")
               if let serif = editorialSerifQuickOption {
@@ -2579,6 +2586,10 @@ struct ProviderSettingsView: View {
           }
         }
       }
+      // 发送授权（第一次发给服务商时问过你的记录）和别的 AI 隐私事项都放这页
+      // （2026-10-13 审查：原走查说按意思搜和发送授权都去 AI 处理或隐私，备份页
+      // 只留备份）；页头是「数据去向」一行小字，页尾才是清除记录的入口。
+      sendAuthorizationSection
       preferencesStatusNotice
     }
   }
@@ -2592,16 +2603,15 @@ struct ProviderSettingsView: View {
     .id(tab.rawValue)
   }
 
-  /// 数据与备份：备份 + 发送授权。2026-10-12 原来「备份恢复」一页装了四件事
-  /// （备份、知识库、按意思搜、发送授权），拆开后这一页只管备份与内容授权；
-  /// 知识库单成一页，按意思搜挪去「AI 模型与工序」和别的本机 AI 功能一起。
+  /// 数据与备份：备份全部资料。2026-10-12 原来「备份恢复」一页装了四件事
+  /// （备份、知识库、按意思搜、发送授权），拆开后这一页只管备份；知识库单成一页，
+  /// 按意思搜和发送授权挪去「AI 模型与工序」和别的本机 AI 功能一起（审查 10-13）。
   private var dataTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .dataBackup, caption: "备份全部资料，以及内容发去服务商的授权")
+      pageHeader(for: .dataBackup, caption: "把全部资料存成一个文件，随时能换回旧的")
       SettingsEmbeddedSection(anchor: SettingsTab.dataBackup.rawValue, showsHeader: false) {
         DataBackupSettingsView()
       }
-      sendAuthorizationSection
     }
   }
 
@@ -2629,7 +2639,7 @@ struct ProviderSettingsView: View {
           caption: commentLimitSaveFailed
             ? "保存失败，请重试；这次仍按之前的条数存。"
             : "下面没有单独设的平台都按这个数。",
-          details: "适用于 X、抖音、B 站、YouTube、Discourse、Reddit、小红书、知乎。不够数时扩展会往下翻，够了或到底就停，再滚回原位置。"
+          details: "适用于 X、抖音、哔哩哔哩、YouTube、论坛、Reddit、小红书、知乎。不够数时扩展会往下翻，够了或到底就停，再滚回原位置。"
         ) {
           SettingsMenuPicker(
             sections: [CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "\($0) 条") }],
@@ -2644,9 +2654,10 @@ struct ProviderSettingsView: View {
           .themedFont(.caption)
           .tracking(2)
           .foregroundStyle(settingsTheme.secondaryText)
-        // 与侧栏平台名保持一致（「Discourse」和侧栏同一个词，原写「论坛」）；
-        // 公众号的评论在文章页内是留言机制，扩展抓不了，所以这张清单里没有它。
-        Text("和侧栏平台同一个顺序、同一个叫法；公众号的评论抓不了，不在清单里。")
+        // 和侧栏平台同一个顺序、用侧栏的全名（「哔哩哔哩」而非「B 站」）；
+        // 论坛涵盖 Discourse、V2EX、Hacker News 等多家（见词表）；公众号的评论抓不了，
+        // 所以这张清单里没有它。
+        Text("顺序与叫法都和侧栏平台对齐；公众号的评论抓不了，不在清单里。")
           .themedFont(.footnote)
           .foregroundStyle(settingsTheme.secondaryText)
       }

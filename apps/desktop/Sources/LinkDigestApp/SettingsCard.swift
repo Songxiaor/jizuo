@@ -211,7 +211,6 @@ struct SettingsPlainPage<Content: View>: View {
       VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
         content()
       }
-      .tint(theme.accent)
     } else {
       ScrollViewReader { proxy in
         ScrollView {
@@ -228,9 +227,6 @@ struct SettingsPlainPage<Content: View>: View {
       }
       .background(theme.isNative ? Color.clear : theme.canvas)
       .settingsDetailContentMargins()
-      // 显式下发一次：设置页的 Toggle 隔着 NavigationSplitView / ScrollView 有时拿不到
-      // 窗口根部的 tint，开着只剩灰轨道（2026-10-12 #17）。靛青送到这一层，整页开关都亮。
-      .tint(theme.accent)
     }
   }
 
@@ -642,12 +638,6 @@ extension View {
   /// 这里的宽度就白钉了。
   func settingsControlWidth() -> some View {
     frame(width: DesignTokens.Layout.settingsControlWidth, alignment: .trailing)
-  }
-
-  /// 比标准列更宽的下拉：模型名这类长内容独占一行、用满卡宽（见「默认模型」）。
-  /// 不换行截第二行——模型全名一眼要看得全。
-  func settingsWideControlWidth() -> some View {
-    frame(maxWidth: .infinity, alignment: .trailing)
   }
 }
 

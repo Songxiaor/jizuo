@@ -89,6 +89,19 @@ final class UISettingsPresentationTests: XCTestCase {
     XCTAssertFalse(source.contains("case .processing: return \"AI 处理\""))
   }
 
+  /// 阅读风格分段选择器的读取必须把旧偏好（sansSerif / serif / songti / kaiti）归一
+  /// 成新家族（"sansSerif" 迁到 "PingFang SC"），不然旧用户选的「黑体」档不亮
+  /// （2026-10-13 审查 #8）。断言源码里通过 `ReadingFontSelection(storedValue:)` 归一。
+  func testReadingStylePickerNormalizesLegacyFontValues() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let source = try String(
+      contentsOf: root.appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("ReadingFontSelection(storedValue: readingFontRaw).storedValue"))
+  }
+
   private func section(in source: String, from start: String, to end: String) -> String {
     let afterStart = source.range(of: start).map { source[$0.lowerBound...] } ?? Substring()
     return afterStart.range(of: end).map { String(afterStart[..<$0.lowerBound]) } ?? String(afterStart)

@@ -1237,7 +1237,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "exclamationmark.triangle",
             title: "无法载入历史记录",
-            message: "资料库这次打不开。已保存的内容都还在，这期间也不会写入任何变更。退出并重新打开\(ProductDisplay.name)通常能恢复；仍然不行时，可在「备份恢复」里从备份恢复。",
+            message: "资料库这次打不开。已保存的内容都还在，这期间也不会写入任何变更。退出并重新打开\(ProductDisplay.name)通常能恢复；仍然不行时，可在「设置 → 备份」里从备份恢复。",
             actionTitle: "查看备份说明",
             action: {
               SettingsNavigationRequest.request("dataBackup")
@@ -4060,7 +4060,7 @@ struct HistoryContentView: View {
     HistoryInlineState(
       symbol: "externaldrive.badge.exclamationmark",
       title: "无法打开历史记录",
-      message: "资料库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「备份恢复」里从备份恢复。",
+      message: "资料库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「设置 → 备份」里从备份恢复。",
       actionTitle: "查看备份说明",
       action: {
         SettingsNavigationRequest.request("dataBackup")
