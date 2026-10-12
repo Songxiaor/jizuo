@@ -319,6 +319,11 @@ final class SidebarScrollMemory {
   /// 旧偏移先落到新列表上，再按锚点那一行的屏幕高度修正。
   /// 最靠近中间的一行若刚被收掉，就用后面还在的一行。都找不到就保持旧偏移。
   private func holdAnchoredRow(in scrollView: NSScrollView) {
+    // 旧偏移还在顶部一个字标行内时不再校正：新列表的行整体低 26–31pt，
+    // 校正会把偏移推高，刚好把顶上的「汲作」字标推出屏幕（2026-10-12 走查 #5，
+    // 实测从约 40pt 推到 66）。顶部对顶部；锚点行差二三十 pt 不影响辨认。
+    // 阈值取一个字标行高加边距：再往下滚，字标本就不在屏上，校正无此副作用。
+    guard lastOffset > 48 else { return }
     let clip = scrollView.contentView
     let documentHeight = scrollView.documentView?.frame.height ?? 0
     if isHoldingSection, !holdCommitsShortDocument,

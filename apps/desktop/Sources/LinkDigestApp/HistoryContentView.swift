@@ -1863,7 +1863,7 @@ struct HistoryContentView: View {
                 .help("改名、合并、删除标签")
                 .accessibilityIdentifier("history-navigation-tags-manage")
             }
-            // 清除入口只在列表筛选片上：原来这里还有一个「清空标签筛选」，
+            // 清除入口只在列表筛选片上：原来这里还有一个侧栏清空入口，
             // 两处都能清，反而不知道清的是哪个范围（2026-10-12 走查 #5）。
           }
         } header: {
