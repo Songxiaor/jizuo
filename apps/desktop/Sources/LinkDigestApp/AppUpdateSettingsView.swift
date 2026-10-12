@@ -82,7 +82,7 @@ struct AppUpdateSettingsView: View {
         // 「检查更新」和版本号同一行：它是这页唯一的动作，原来裸露在卡片外的左下角。
         SettingsRow(
           title: "获取更新",
-          caption: model.reminderCaption
+          caption: "看这一版改了什么，或主动去查新版"
         ) {
           HStack(spacing: DesignTokens.Space.md) {
             // 「更新内容」：去 GitHub 看这一版改了什么（发布说明都在那里，App 里不另抄一份）。
