@@ -90,7 +90,7 @@ final class HistoryViewModelTests: XCTestCase {
       "配文层缺少标题：\(exported.markdown)"
     )
     let transcriptHeading = try XCTUnwrap(
-      exported.markdown.range(of: LayeredSourceDocument.transcriptHeading),
+      exported.markdown.range(of: "## 转写"),
       "转写层缺少标题：\(exported.markdown)"
     )
     // 顺序与阅读区一致：配文在前，转写在后。

@@ -6257,9 +6257,13 @@ private struct HistoryDetailView: View, Equatable {
     return true
   }
 
-  /// 拷贝全文：与阅读区同源的正文 Markdown（不含导出 YAML 头）。
+  /// 拷贝全文：复制当前页签那一层，不弹选择，也不带导出用的 YAML 头。
   private func copyFullArticle() {
-    guard let composed = model.composeExportMarkdown() else { return }
+    guard let detail = model.detail else { return }
+    let document = ExportContentDocument(detail: detail)
+    let current = document.layer(forReadingTitle: readingTabTitle(activeReadingTab)) ?? .source
+    let selection = ExportContentSelection(layers: [current], current: current)
+    guard let composed = model.composeExportMarkdown(selection: selection) else { return }
     let body = MarkdownNoteFrontmatter.parse(composed.markdown).body
     CopyFeedbackController.shared.copy(body.isEmpty ? composed.markdown : body)
   }
@@ -6268,23 +6272,34 @@ private struct HistoryDetailView: View, Equatable {
   /// 干净正文导出（md / txt）：与阅读区一致，不含 Core 档案元数据。
   /// 拼装逻辑在 `ReadingDocumentExport`（与界面共用，可测试）；这里只负责弹面板落盘。
   private func exportCleanText(_ format: HistoryExportFormat) {
-    guard let composed = model.composeExportMarkdown() else {
-      model.failExportSave()
-      return
-    }
+    guard let detail = model.detail else { model.failExportSave(); return }
     let ext = format == .plainText ? "txt" : "md"
-    let finalContent = ReadingDocumentExport.cleanTextExport(
-      composedMarkdown: composed.markdown,
-      format: format,
-      context: exportColophonContext
-    )
-    guard let data = finalContent.data(using: .utf8), !data.isEmpty else { model.failExportSave(); return }
+    let chooser = exportContentChooser(for: detail)
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
-    panel.nameFieldStringValue = "\(composed.baseFilename).\(ext)"
+    panel.accessoryView = chooser.view
+    panel.isExtensionHidden = false
+    func applyName() {
+      guard let composed = model.composeExportMarkdown(selection: chooser.selection) else { return }
+      panel.nameFieldStringValue = "\(composed.baseFilename).\(ext)"
+    }
+    applyName()
+    chooser.onChange = { _ in applyName() }
     let historyModel = model
-    MenuSavePanel.present(panel) { url in
+    let context = exportColophonContext
+    MenuSavePanel.present(panel, chooser: chooser) { url in
       guard let url else { return }
+      guard let composed = historyModel.composeExportMarkdown(selection: chooser.selection),
+            !chooser.selection.layers.isEmpty else {
+        historyModel.failExportSave()
+        return
+      }
+      let finalContent = ReadingDocumentExport.cleanTextExport(
+        composedMarkdown: composed.markdown,
+        format: format,
+        context: context
+      )
+      guard let data = finalContent.data(using: .utf8), !data.isEmpty else { historyModel.failExportSave(); return }
       do { try data.write(to: url) } catch { historyModel.failExportSave() }
     }
   }
@@ -6293,31 +6308,52 @@ private struct HistoryDetailView: View, Equatable {
   /// 排版对象不能离开主线程，所以生成仍在主线程，但已经不挡保存框出现。
   /// 纯文本导出仍走 `exportCleanText`，不改它的保存框时序。
   private func exportStyledDocument(_ kind: StyledExportKind) {
-    guard let composed = model.composeExportMarkdown() else {
-      model.failExportSave()
-      return
-    }
+    guard let detail = model.detail else { model.failExportSave(); return }
+    let chooser = exportContentChooser(for: detail)
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
     panel.allowedContentTypes = [kind.contentType]
-    panel.nameFieldStringValue = "\(composed.baseFilename).\(kind.fileExtension)"
+    panel.accessoryView = chooser.view
+    panel.isExtensionHidden = false
+    func applyName() {
+      guard let composed = model.composeExportMarkdown(selection: chooser.selection) else { return }
+      panel.nameFieldStringValue = "\(composed.baseFilename).\(kind.fileExtension)"
+    }
+    applyName()
+    chooser.onChange = { _ in applyName() }
     let historyModel = model
-    let markdown = composed.markdown
     let context = exportColophonContext
     let font = readingFont
     let imageURLs = localImageURLs
-    MenuSavePanel.present(panel) { url in
+    MenuSavePanel.present(panel, chooser: chooser) { url in
       guard let url else { return }
+      guard let composed = historyModel.composeExportMarkdown(selection: chooser.selection),
+            !chooser.selection.layers.isEmpty else {
+        historyModel.failExportSave()
+        return
+      }
       let job = StyledExportJob(
         kind: kind,
         destination: url,
-        markdown: markdown,
+        markdown: composed.markdown,
         context: context,
         readingFont: font,
         localImageURLs: imageURLs
       )
       historyModel.startStyledExport(job)
     }
+  }
+
+  /// 保存框下方的「内容」勾选。只列这一条实际有的层，默认勾当前页签。
+  private func exportContentChooser(for detail: HistoryDetailProjection) -> ExportContentChooser {
+    let document = ExportContentDocument(detail: detail)
+    let current = document.layer(forReadingTitle: readingTabTitle(activeReadingTab)) ?? document.available.first ?? .source
+    let selection = ExportContentSelection.initial(
+      available: document.available,
+      current: current,
+      includeComments: ExportContentChooser.remembersComments
+    )
+    return ExportContentChooser(available: document.available, selection: selection)
   }
 
   /// Capsule tool strip under the title — product control, not system Disclosure.
@@ -10975,8 +11011,13 @@ enum MenuSavePanel {
     panel.runModal() == .OK ? panel.url : nil
   }
 
-  static func present(_ panel: NSSavePanel, completion: @escaping @MainActor (URL?) -> Void) {
+  static func present(
+    _ panel: NSSavePanel,
+    chooser: ExportContentChooser? = nil,
+    completion: @escaping @MainActor (URL?) -> Void
+  ) {
     Task { @MainActor in
+      chooser?.attach(to: panel)
       completion(run(panel))
     }
   }

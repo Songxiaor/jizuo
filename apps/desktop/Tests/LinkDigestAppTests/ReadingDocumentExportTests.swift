@@ -184,6 +184,184 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertFalse(body[translation.upperBound..<comments.lowerBound].contains("译评一句"))
   }
 
+  /// 停在翻译页只勾译文；只导出这一层时文件名加上「译文」。
+  func testExportSelectionDefaultsToTheOpenTabAndNamesASingleLayer() throws {
+    let detail = sampleArticle()
+    let document = ExportContentDocument(detail: detail)
+    XCTAssertEqual(document.available, [.summary, .source, .translation, .comments])
+    let onTranslation = ExportContentSelection.initial(
+      available: document.available, current: .translation, includeComments: true
+    )
+    XCTAssertEqual(onTranslation.layers, [.translation, .comments])
+    XCTAssertEqual(onTranslation.filenameSuffix, nil)
+    let translationOnly = ExportContentSelection(layers: [.translation], current: .translation)
+    XCTAssertEqual(translationOnly.filenameSuffix, "译文")
+    let body = document.body(selecting: translationOnly)
+    XCTAssertTrue(body.contains("## 译文"))
+    XCTAssertTrue(body.contains("译文一句"))
+    XCTAssertFalse(body.contains("新总结"))
+    XCTAssertFalse(body.contains("原文很长"))
+    XCTAssertFalse(body.contains("原评一句"))
+    XCTAssertFalse(body.contains("译评一句"))
+  }
+
+  /// 停在总结页勾总结和原文。原文加译文时，评论原文在前，评论译文跟在后面。
+  func testExportOnTheSummaryTabIncludesTheSourceAndMergesComments() throws {
+    let document = ExportContentDocument(detail: sampleArticle())
+    let onSummary = ExportContentSelection.initial(
+      available: document.available, current: .summary, includeComments: true
+    )
+    XCTAssertEqual(onSummary.layers, [.summary, .source, .comments])
+    let both = ExportContentSelection(layers: [.source, .translation, .comments], current: .translation)
+    let body = document.body(selecting: both)
+    let article = try XCTUnwrap(body.range(of: "## 原文"))
+    let translation = try XCTUnwrap(body.range(of: "## 译文"))
+    let sourceComment = try XCTUnwrap(body.range(of: "原评一句"))
+    let translatedComment = try XCTUnwrap(body.range(of: "### 评论（译文，已保存 1 条）"))
+    XCTAssertLessThan(translation.lowerBound, article.lowerBound)
+    XCTAssertLessThan(article.lowerBound, sourceComment.lowerBound)
+    XCTAssertLessThan(sourceComment.lowerBound, translatedComment.lowerBound)
+    XCTAssertFalse(body.contains("新总结"))
+  }
+
+  /// 总结、译文、评论一起导出时，总结在前，当前页签的译文其次，评论最后。
+  func testExportPutsTheOpenTabAfterTheSummary() throws {
+    let document = ExportContentDocument(detail: sampleArticle())
+    let selection = ExportContentSelection(
+      layers: [.summary, .translation, .comments], current: .translation
+    )
+    XCTAssertNil(selection.filenameSuffix)
+    let body = document.body(selecting: selection)
+    let summary = try XCTUnwrap(body.range(of: "## 总结"))
+    let translation = try XCTUnwrap(body.range(of: "## 译文"))
+    let comments = try XCTUnwrap(body.range(of: "译评一句"))
+    XCTAssertLessThan(summary.lowerBound, translation.lowerBound)
+    XCTAssertLessThan(translation.lowerBound, comments.lowerBound)
+    XCTAssertFalse(body.contains("原文很长"))
+    XCTAssertFalse(body.contains("原评一句"))
+  }
+
+  /// 只有配文和转写时列出这两层。只导出转写时文件名加「转写」，正文带转写标题。
+  func testTranscriptExportListsCaptionAndTranscriptSeparately() throws {
+    let detail = sampleTranscript(proofread: false)
+    let document = ExportContentDocument(detail: detail)
+    XCTAssertEqual(document.available, [.caption, .transcript])
+    let onTranscript = ExportContentSelection.initial(
+      available: document.available, current: .transcript, includeComments: true
+    )
+    XCTAssertEqual(onTranscript.layers, [.transcript])
+    XCTAssertEqual(onTranscript.filenameSuffix, "转写")
+    let body = document.body(selecting: onTranscript)
+    XCTAssertTrue(body.contains("## 转写"))
+    XCTAssertTrue(body.contains("转写正文"))
+    XCTAssertFalse(body.contains("配文正文"))
+  }
+
+  /// 校对过的转写分成校对稿和原稿。只导出校对稿时标题用页签上的叫法。
+  func testProofreadExportSplitsTheRevisedTranscriptFromTheMachineCopy() throws {
+    let document = ExportContentDocument(detail: sampleTranscript(proofread: true))
+    XCTAssertEqual(document.available, [.caption, .proofread, .machineTranscript])
+    let selection = ExportContentSelection(layers: [.proofread, .translation], current: .proofread)
+    let body = document.body(selecting: ExportContentSelection(layers: [.proofread], current: .proofread))
+    XCTAssertTrue(body.contains("## 校对稿"))
+    XCTAssertTrue(body.contains("校对后的正文"))
+    XCTAssertFalse(body.contains("机器原稿"))
+    XCTAssertNil(selection.filenameSuffix)
+  }
+
+  /// 只有原文、没有总结和译文时，不额外加「原文」标题。
+  func testSourceOnlyExportStaysUnlabeled() throws {
+    let document = ExportContentDocument(detail: sampleArticle(withDerived: false))
+    XCTAssertEqual(document.available, [.source, .comments])
+    let onSource = ExportContentSelection.initial(
+      available: document.available, current: .source, includeComments: false
+    )
+    XCTAssertEqual(onSource.layers, [.source])
+    XCTAssertEqual(onSource.filenameSuffix, "原文")
+    let body = document.body(selecting: onSource)
+    XCTAssertTrue(body.contains("原文很长"))
+    XCTAssertFalse(body.contains("## 原文"))
+    XCTAssertFalse(body.contains("原评一句"))
+  }
+
+  /// 一项都不勾时，保存框的校验拒绝导出。
+  @MainActor
+  func testEmptyExportSelectionIsRejected() throws {
+    let chooser = ExportContentChooser(
+      available: [.source],
+      selection: ExportContentSelection(layers: [], current: .source)
+    )
+    let panel = NSSavePanel()
+    chooser.attach(to: panel)
+    XCTAssertThrowsError(try chooser.panel(panel, validate: URL(fileURLWithPath: "/tmp/a.md")))
+    chooser.selection.layers = [.source]
+    XCTAssertNoThrow(try chooser.panel(panel, validate: URL(fileURLWithPath: "/tmp/a.md")))
+  }
+
+  private func sampleArticle(withDerived: Bool = true) -> HistoryDetailProjection {
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "https://example.com/a", canonicalizationVersion: 1,
+      createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    )
+    let snapshot = ContentSnapshot(
+      id: ContentSnapshotID(), taskID: task.id, sequence: 1,
+      envelopeCreatedAtMilliseconds: 10, capturedAtMilliseconds: 10,
+      sourceKind: "browser_capture", sourceURL: task.canonicalURL, title: "例",
+      platform: "generic", captureMethod: "browser_capture", completeness: "complete",
+      bodyText: "# 例\n\n## 小节\n\n原文很长\n\n## 评论（已保存 1 条）\n\n- **甲** · 赞 1 · 2026-10-03T23:30:06.000Z · [原评论](https://example.com/c/1) · 回复层级 0\n  原评一句", characterCount: 100, bodySHA256: String(repeating: "a", count: 64),
+      sourceLabel: "网页", usedCookie: false
+    )
+    func run(_ kind: RunKind, body: String, at: Int64) -> HistoryDetailProjection.RunDetail {
+      let value = HistoryRun(
+        id: RunID(), taskID: task.id, snapshotID: snapshot.id, idempotencyKey: body,
+        rerunOfRunID: nil, kind: kind, targetLanguage: nil, status: .completed,
+        providerProfileID: nil, providerKind: nil, providerBaseURL: nil, providerAPIMode: nil,
+        model: nil, createdAtMilliseconds: at, startedAtMilliseconds: at, finishedAtMilliseconds: at,
+        failureCode: nil, failureRetryable: nil, usageCost: RunUsageCost()
+      )
+      let artifact = HistoryArtifact(
+        id: ArtifactID(), runID: value.id, contentFormat: .markdown, completeness: .complete,
+        bodyText: body, createdAtMilliseconds: at, updatedAtMilliseconds: at
+      )
+      return .init(run: value, artifact: artifact)
+    }
+    var runs: [HistoryDetailProjection.RunDetail] = []
+    if withDerived {
+      runs = [
+        run(.summarize, body: "## 要点\n\n新总结", at: 2),
+        run(.translate, body: "# 例\n\n译文一句\n\n## 评论（已保存 1 条）\n\n- **甲** · 赞 1 · 2026-10-03T23:30:06.000Z · [原评论](https://example.com/c/1) · 回复层级 0\n  译评一句", at: 3),
+      ]
+    }
+    return HistoryDetailProjection(task: task, snapshots: [snapshot], runs: runs)
+  }
+
+  private func sampleTranscript(proofread: Bool) -> HistoryDetailProjection {
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "https://example.com/v", canonicalizationVersion: 1,
+      createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    )
+    func snapshot(_ sequence: Int, kind: String, method: String, text: String) -> ContentSnapshot {
+      ContentSnapshot(
+        id: ContentSnapshotID(), taskID: task.id, sequence: sequence,
+        envelopeCreatedAtMilliseconds: Int64(sequence), capturedAtMilliseconds: Int64(sequence),
+        sourceKind: kind, sourceURL: task.canonicalURL, title: "讲座",
+        platform: "youtube", captureMethod: method, completeness: "complete",
+        bodyText: text, characterCount: text.count, bodySHA256: String(repeating: "b", count: 64),
+        sourceLabel: "视频", usedCookie: false
+      )
+    }
+    var snapshots = [
+      snapshot(1, kind: "browser_capture", method: "browser_capture", text: "配文正文"),
+      snapshot(2, kind: "local_transcription", method: "speech_analyzer_local", text: "机器原稿"),
+    ]
+    if proofread {
+      snapshots.append(snapshot(3, kind: "local_transcription", method: "openai_compatible_chat_tidy", text: "校对后的正文"))
+    } else {
+      snapshots[1] = snapshot(2, kind: "local_transcription", method: "speech_analyzer_local", text: "转写正文")
+    }
+    return HistoryDetailProjection(task: task, snapshots: snapshots, runs: [])
+  }
+
   /// 引用卡的机器标记在 Markdown、纯文本、PDF 里都变成可读文字。
   @MainActor
   func testQuotedTweetMarkerBecomesReadableText() throws {
@@ -404,7 +582,7 @@ final class ReadingDocumentExportTests: XCTestCase {
       encoding: .utf8
     )
     let styled = try XCTUnwrap(source.range(of: "private func exportStyledDocument"))
-    let next = source.range(of: "private static let noteTitleFontSize", range: styled.upperBound..<source.endIndex)?.lowerBound
+    let next = source.range(of: "private func exportContentChooser", range: styled.upperBound..<source.endIndex)?.lowerBound
       ?? source.endIndex
     let body = source[styled.lowerBound..<next]
     XCTAssertLessThan(
@@ -435,8 +613,8 @@ final class ReadingDocumentExportTests: XCTestCase {
     let plain = try XCTUnwrap(source.range(of: "private func exportCleanText"))
     let plainBody = source[plain.lowerBound..<styled.lowerBound]
     XCTAssertLessThan(
-      plainBody.range(of: "cleanTextExport")?.lowerBound ?? plainBody.endIndex,
-      plainBody.range(of: "MenuSavePanel.present")?.lowerBound ?? plainBody.startIndex
+      plainBody.range(of: "MenuSavePanel.present")?.lowerBound ?? plainBody.endIndex,
+      plainBody.range(of: "cleanTextExport")?.lowerBound ?? plainBody.startIndex
     )
   }
 
