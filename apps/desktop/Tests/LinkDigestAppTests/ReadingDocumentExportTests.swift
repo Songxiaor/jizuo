@@ -224,6 +224,26 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertFalse(body.contains("新总结"))
   }
 
+  /// 只勾译文、不勾原文时，评论用评论译文，标题写成「评论（译文）」。
+  /// 原文和译文都勾时，才是原评论在前、评论译文跟在每条下面。
+  func testTranslationOnlyExportUsesTheTranslatedComments() throws {
+    let document = ExportContentDocument(detail: sampleArticle())
+    let only = ExportContentSelection(layers: [.translation, .comments], current: .translation)
+    let body = document.body(selecting: only)
+    XCTAssertTrue(body.contains("### 评论（译文，已保存 1 条）"), "缺评论译文标题")
+    XCTAssertTrue(body.contains("译评一句"), "缺译评正文")
+    XCTAssertFalse(body.contains("原评一句"), "不该有原评正文")
+    XCTAssertFalse(body.contains("## 评论（当前"), "不该有原评论标题")
+
+    let both = document.body(selecting: ExportContentSelection(
+      layers: [.source, .translation, .comments], current: .translation
+    ))
+    let sourceComment = try XCTUnwrap(both.range(of: "原评一句"))
+    let translatedComment = try XCTUnwrap(both.range(of: "### 评论（译文，已保存 1 条）"))
+    XCTAssertLessThan(sourceComment.lowerBound, translatedComment.lowerBound)
+    XCTAssertTrue(both.contains("## 评论"))
+  }
+
   /// 总结、译文、评论一起导出时，总结在前，当前页签的译文其次，评论最后。
   func testExportPutsTheOpenTabAfterTheSummary() throws {
     let document = ExportContentDocument(detail: sampleArticle())
@@ -237,6 +257,7 @@ final class ReadingDocumentExportTests: XCTestCase {
     let comments = try XCTUnwrap(body.range(of: "译评一句"))
     XCTAssertLessThan(summary.lowerBound, translation.lowerBound)
     XCTAssertLessThan(translation.lowerBound, comments.lowerBound)
+    XCTAssertTrue(body.contains("### 评论（译文，已保存 1 条）"))
     XCTAssertFalse(body.contains("原文很长"))
     XCTAssertFalse(body.contains("原评一句"))
   }

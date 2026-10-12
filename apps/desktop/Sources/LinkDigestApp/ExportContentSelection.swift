@@ -149,14 +149,16 @@ struct ExportContentDocument: Sendable {
     let wantsSource = layers.contains { $0.isSourceBody }
     let wantsTranslation = layers.contains(.translation)
     if wantsTranslation, !wantsSource {
-      if !translatedComments.isEmpty { return translatedComments }
+      if !translatedComments.isEmpty {
+        return translatedCommentSection(translatedComments, levels: 0)
+      }
       return sourceComments.isEmpty ? nil : sourceComments
     }
     guard !sourceComments.isEmpty else {
       return translatedComments.isEmpty ? nil : translatedComments
     }
     guard wantsTranslation, !translatedComments.isEmpty else { return sourceComments }
-    return sourceComments + "\n\n" + translatedCommentSection(translatedComments)
+    return sourceComments + "\n\n" + translatedCommentSection(translatedComments, levels: 1)
   }
 
   private struct Built {
@@ -268,13 +270,14 @@ struct ExportContentDocument: Sendable {
   }
 
   /// 「评论（译文）」和译文自带的评论计数标题合成一条，不再上下叠两个标题。
-  private func translatedCommentSection(_ markdown: String) -> String {
+  private func translatedCommentSection(_ markdown: String, levels: Int) -> String {
     var lines = markdown.components(separatedBy: "\n")
     let heading = lines.first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("## 评论") }
     lines.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("## 评论") }
     let count = heading?.replacingOccurrences(of: "## 评论", with: "").trimmingCharacters(in: .whitespaces) ?? ""
     let title = count.isEmpty ? "### 评论（译文）" : "### 评论（译文，\(count.dropFirst().dropLast())）"
-    return title + "\n\n" + demotingHeadings(lines.joined(separator: "\n"), levels: 1)
+    let body = levels > 0 ? demotingHeadings(lines.joined(separator: "\n"), levels: levels) : lines.joined(separator: "\n")
+    return title + "\n\n" + body
   }
 
   /// 总结和译文里的标题降一级，让各层标题保持同级。
