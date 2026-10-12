@@ -2065,6 +2065,12 @@ final class HistoryViewModel {
     !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil
       || selectedCollectionID != nil
   }
+  /// 除标签以外的筛选（来源、博主、合集）。标签是叠在当前范围上的「且」：只选了标签时
+  /// 侧栏的作用域行（全部 / 自有 / 外部…）仍然亮着，不然「在哪个范围里筛」没有着落
+  /// （2026-10-12 走查 #5）。
+  var hasNonTagCategoryFilter: Bool {
+    !selectedHosts.isEmpty || selectedCreatorID != nil || selectedCollectionID != nil
+  }
   var selectedCreator: CreatorSummary? { selectedCreatorSnapshot }
   var showsCreatorNeverAddedEmpty: Bool {
     isCreatorDirectoryActive
@@ -6110,13 +6116,18 @@ final class HistoryViewModel {
     reload()
   }
 
-  /// 切侧栏时先把旧列表撤下：新一页一两百毫秒才到，这期间标题已经是「待校对」，
-  /// 下面却还是「笔记」那几条，看着像筛错了（2026-10-01 走查）。详情先留着，
-  /// 新列表到了会接住第一条；占位骨架 250ms 内不出现，快的时候就是一下空白换内容。
+  /// 切侧栏时先把旧列表撤下：新一页一两百毫秒才到，这期间标题已经是「待校对」,
+  /// 下面却还是「笔记」那几条，看着像筛错了（2026-10-01 走查）。
+  /// 选中的那条和详情也一起撤：旧选中多半不在新的范围里，留着会出现「右边还挂着
+  /// 上一页那条、列表里却没有高亮行」的错位（2026-10-12 走查 #9）。新列表到手后
+  /// 自动接住第一条，详情跟着换；占位骨架 250ms 内不出现，快的时候就是一下空白换内容。
   private func clearRowsForNavigation() {
     rows = []
     nextCursor = nil
     listState = .loading
+    selectedTaskIDs = []
+    detail = nil
+    setDetailState(.idle)
   }
 
   /// 列头「显示」菜单：只看视频、录音……nil 回到全部形式。只换形式，侧栏选的东西不动。
@@ -6156,8 +6167,9 @@ final class HistoryViewModel {
 
   /// 这一行是不是当前选中的。只亮这一行，上面的「自有 / 外部」不跟着亮。
   func isOwnershipSourceSelected(_ row: OwnershipSourceRow) -> Bool {
+    // 标签筛选叠在来源上时这一行仍然亮：标签不换地方，只缩小范围（2026-10-12 走查 #5）。
     guard !isCreatorDirectoryActive, !isWorkbenchActive, selectedCollectionID == nil,
-          selectedTagNormalizedNames.isEmpty, selectedCreatorID == nil else { return false }
+          selectedCreatorID == nil else { return false }
     if row.isNotesScope { return selectedScope == .notes && selectedHosts.isEmpty }
     return selectedScope == row.scope && !selectedHosts.isEmpty && selectedHosts == Set(row.hosts)
   }

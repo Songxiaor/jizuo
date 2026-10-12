@@ -252,7 +252,7 @@ struct CreatorDirectoryCard: View {
           // 还没抓过的博主：第二行直接是「去抓取」。原来按钮挂在名字右边，卡片又窄，
           // 名字被挤成「哔哩哔…」，看不出是谁（2026-10-01 复查）。
           if isEmpty, let captureAction {
-            Button("去挑选", action: captureAction)
+            Button("去选作品", action: captureAction)
               .buttonStyle(.plain)
               .themedFont(.subheadline, weight: .medium)
               .foregroundStyle(theme.accent)
@@ -302,7 +302,7 @@ struct CreatorDirectoryCard: View {
     // 同一个动作以自定义动作的形式挂在这个元素上。
     .accessibilityActions {
       if isEmpty, let captureAction {
-        Button("去挑选", action: captureAction)
+        Button("去选作品", action: captureAction)
       }
     }
   }

@@ -41,6 +41,9 @@ public struct CreatorSummary: Sendable, Equatable, Identifiable {
   public let savedWorkCount: Int
   public let createdAtMilliseconds: Int64
   public let updatedAtMilliseconds: Int64
+  /// 这位博主最近一条作品存进来的时间；还没存过作品时为 nil。
+  /// 「全部博主」页的「按最近保存」排列用它，不拿博主资料自身的更新时间凑数。
+  public var lastSavedAtMilliseconds: Int64?
 
   public init(
     id: CreatorID,
@@ -51,7 +54,8 @@ public struct CreatorSummary: Sendable, Equatable, Identifiable {
     pinnedRank: Int?,
     savedWorkCount: Int,
     createdAtMilliseconds: Int64,
-    updatedAtMilliseconds: Int64
+    updatedAtMilliseconds: Int64,
+    lastSavedAtMilliseconds: Int64? = nil
   ) {
     self.id = id
     self.identity = identity
@@ -62,6 +66,7 @@ public struct CreatorSummary: Sendable, Equatable, Identifiable {
     self.savedWorkCount = savedWorkCount
     self.createdAtMilliseconds = createdAtMilliseconds
     self.updatedAtMilliseconds = updatedAtMilliseconds
+    self.lastSavedAtMilliseconds = lastSavedAtMilliseconds
   }
 
   public var listingTitle: String {
