@@ -134,8 +134,8 @@ struct ExportContentDocument: Sendable {
     var sections = chosen.compactMap { layer -> String? in
       guard let piece = pieces[layer], !piece.body.isEmpty else { return nil }
       let labeled = !(alone && piece.unlabeledWhenAlone)
-      let body = layer == .summary ? demotingHeadings(piece.body) : piece.body
-      return sectionBody(body, heading: piece.heading, labeled: labeled)
+      // 降标题统一在 sectionBody 里做一次。总结在这里再降一次会把 `## 要点` 变成 `####`。
+      return sectionBody(piece.body, heading: piece.heading, labeled: labeled)
     }
     if layers.contains(.comments), let comments = comments(selecting: layers) {
       sections.append(comments)
@@ -158,7 +158,127 @@ struct ExportContentDocument: Sendable {
       return translatedComments.isEmpty ? nil : translatedComments
     }
     guard wantsTranslation, !translatedComments.isEmpty else { return sourceComments }
+    if let merged = Self.interleavingComments(sourceComments, translated: translatedComments) {
+      return merged
+    }
+    // 对不上哪条译文属于哪条评论时，整段评论译文放在后面，一条都不丢。
     return sourceComments + "\n\n" + translatedCommentSection(translatedComments, levels: 1)
+  }
+
+  /// 评论里的一条：头一行（作者、赞、链接）和下面的正文行。
+  private struct CommentEntry {
+    var header: String
+    var body: [String]
+    /// 头一行前面的空白。正文比它多缩进两格。
+    var indent: String
+    var permalink: String?
+  }
+
+  /// 把评论段拆成「标题等前导行」和一条条评论。认不出评论头就返回 nil。
+  private static func commentEntries(_ markdown: String) -> (lead: [String], entries: [CommentEntry])? {
+    let lines = markdown.components(separatedBy: "\n")
+    let isReplies = lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("## 评论与回复（") }
+    var lead: [String] = []
+    var entries: [CommentEntry] = []
+    for line in lines {
+      if let header = commentHeader(line, isReplies: isReplies) {
+        entries.append(CommentEntry(header: line, body: [], indent: header.indent, permalink: header.permalink))
+      } else if entries.isEmpty {
+        lead.append(line)
+      } else {
+        entries[entries.count - 1].body.append(line)
+      }
+    }
+    return entries.isEmpty ? nil : (lead, entries)
+  }
+
+  /// 和阅读区认评论头的规则一致：`- **作者** · …`，带分数、链接或回复层级；
+  /// 「评论与回复」只认顶格的。正文里的 `- **重点**` 不算。
+  private static func commentHeader(_ line: String, isReplies: Bool) -> (indent: String, permalink: String?)? {
+    let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+    let trimmed = line.dropFirst(indent.count)
+    guard trimmed.hasPrefix("- **") else { return nil }
+    let afterMarker = trimmed.dropFirst(4)
+    guard let closing = afterMarker.range(of: "**"),
+          !afterMarker[..<closing.lowerBound].trimmingCharacters(in: .whitespaces).isEmpty
+    else { return nil }
+    let author = afterMarker[..<closing.lowerBound]
+    let details = String(afterMarker[closing.upperBound...])
+    if isReplies {
+      guard indent.isEmpty else { return nil }
+    } else {
+      guard author.hasPrefix("u/") || details.contains("score ") || details.contains("[原评论](")
+        || details.contains("回复层级 ") else { return nil }
+    }
+    let permalink = details.components(separatedBy: " · ").lazy
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .first { $0.hasPrefix("[原评论](") && $0.hasSuffix(")") }
+    return (indent, permalink)
+  }
+
+  /// 原文和译文都勾时，每条评论头下面先放译文，原评论紧跟在下面，用引用写，
+  /// PDF 和 Word 里引用是浅色字，读起来译文为主、原文作对照。
+  /// 先按「原评论」链接对；没有链接的，两边条数相同时按位置对。
+  /// 有一条译文找不到对应的评论就返回 nil，交给整段放后面的做法。
+  private static func interleavingComments(_ source: String, translated: String) -> String? {
+    guard let original = commentEntries(source), let translation = commentEntries(translated) else { return nil }
+    let entries = original.entries
+    let others = translation.entries
+    var matched: [Int?] = Array(repeating: nil, count: entries.count)
+    var used = Set<Int>()
+    for (index, entry) in entries.enumerated() {
+      guard let link = entry.permalink else { continue }
+      if let found = others.indices.first(where: { !used.contains($0) && others[$0].permalink == link }) {
+        matched[index] = found
+        used.insert(found)
+      }
+    }
+    if entries.count == others.count {
+      for index in entries.indices where matched[index] == nil && !used.contains(index) {
+        // 有链接却和对面链接不同，不硬按位置对。
+        if let link = entries[index].permalink, let other = others[index].permalink, link != other { continue }
+        matched[index] = index
+        used.insert(index)
+      }
+    }
+    guard used.count == others.count else { return nil }
+
+    var lines = original.lead
+    for (index, entry) in entries.enumerated() {
+      var body = entry.body
+      while body.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { body.removeLast() }
+      lines.append(entry.header)
+      let originalBody = Self.commentBodyText(body, removingIndent: entry.indent.count + 2)
+      let translatedBody = matched[index].map {
+        Self.commentBodyText(others[$0].body, removingIndent: others[$0].indent.count + 2)
+      } ?? []
+      // 没有译文，或译文和原文一样（本来就是中文），原评论照常显示一遍。
+      guard !translatedBody.isEmpty, translatedBody != originalBody else {
+        lines.append(contentsOf: body)
+        continue
+      }
+      // 译文、原文之间不空行：`>` 行本身就会另起一块，Markdown 和 PDF 都认。
+      let bodyIndent = entry.indent + "  "
+      lines.append(contentsOf: translatedBody.map { $0.isEmpty ? "" : bodyIndent + $0 })
+      lines.append(contentsOf: originalBody.map { $0.isEmpty ? bodyIndent + ">" : bodyIndent + "> " + $0 })
+    }
+    return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// 评论正文去掉评论自带的缩进，首尾空行去掉，用来比较和重新缩进。
+  private static func commentBodyText(_ lines: [String], removingIndent count: Int) -> [String] {
+    var result = lines.map { line -> String in
+      var rest = Substring(line)
+      var removed = 0
+      while removed < count, let first = rest.first, first == " " || first == "\t" {
+        rest = rest.dropFirst()
+        removed += 1
+      }
+      return String(rest).trimmingCharacters(in: .whitespaces).isEmpty ? "" : String(rest)
+    }
+    while result.first?.isEmpty == true { result.removeFirst() }
+    while result.last?.isEmpty == true { result.removeLast() }
+    return result
   }
 
   private struct Built {
@@ -261,10 +381,9 @@ struct ExportContentDocument: Sendable {
   }
 
   private func markdownTitle(_ markdown: String) -> String {
-    for line in markdown.components(separatedBy: "\n") {
-      let trimmed = line.trimmingCharacters(in: .whitespaces)
-      guard trimmed.hasPrefix("# ") else { continue }
-      return String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+    for (line, inCode) in Self.linesMarkingCode(markdown) where !inCode {
+      guard let heading = Self.atxHeading(line), heading.level == 1, !heading.text.isEmpty else { continue }
+      return heading.text
     }
     return ""
   }
@@ -281,13 +400,52 @@ struct ExportContentDocument: Sendable {
   }
 
   /// 总结和译文里的标题降一级，让各层标题保持同级。
+  /// 只动真正的标题：代码块里的 `# 注释`、小红书的 `#话题` 都不是标题，原样留着。
+  /// 四级及以下不再降。
   private func demotingHeadings(_ markdown: String, levels: Int = 1) -> String {
-    markdown.components(separatedBy: "\n").map { line in
-      let trimmed = line.trimmingCharacters(in: .whitespaces)
-      guard trimmed.hasPrefix("#"), !trimmed.hasPrefix("####") else { return line }
-      let indent = String(line.prefix { $0 == " " || $0 == "\t" })
-      return indent + String(repeating: "#", count: levels) + trimmed
+    Self.linesMarkingCode(markdown).map { line, inCode in
+      guard !inCode, let heading = Self.atxHeading(line), heading.level < 4 else { return line }
+      let indent = String(line.prefix { $0 == " " })
+      return indent + String(repeating: "#", count: levels) + line.dropFirst(indent.count)
     }.joined(separator: "\n")
+  }
+
+  /// 按 CommonMark 认 ATX 标题：最多缩进三个空格，1 到 6 个 `#`，后面是空格、制表符或行尾。
+  private static func atxHeading(_ line: String) -> (level: Int, text: String)? {
+    let indent = line.prefix { $0 == " " }
+    guard indent.count <= 3 else { return nil }
+    let rest = line.dropFirst(indent.count)
+    let hashes = rest.prefix { $0 == "#" }
+    guard (1...6).contains(hashes.count) else { return nil }
+    let after = rest.dropFirst(hashes.count)
+    guard after.isEmpty || after.first == " " || after.first == "\t" else { return nil }
+    return (hashes.count, after.trimmingCharacters(in: .whitespaces))
+  }
+
+  /// 逐行标出是否在围栏代码块里（围栏行本身也算）。
+  /// ``` 和 ~~~ 都认；只有同一种符号、长度不短于开头的那行才算收尾。
+  /// 列表里的代码块常常缩进更多，所以缩进不设上限。
+  private static func linesMarkingCode(_ markdown: String) -> [(line: String, inCode: Bool)] {
+    var open: (mark: Character, length: Int)?
+    return markdown.components(separatedBy: "\n").map { line in
+      let trimmed = line.drop { $0 == " " || $0 == "\t" }
+      if let fence = open {
+        let run = trimmed.prefix { $0 == fence.mark }
+        if run.count >= fence.length, trimmed.dropFirst(run.count).allSatisfy({ $0 == " " || $0 == "\t" || $0 == "\r" }) {
+          open = nil
+        }
+        return (line, true)
+      }
+      if let mark = trimmed.first, mark == "`" || mark == "~" {
+        let run = trimmed.prefix { $0 == mark }
+        // 反引号围栏后面的语言名里不能再有反引号，否则是行内代码。
+        if run.count >= 3, mark == "~" || !trimmed.dropFirst(run.count).contains("`") {
+          open = (mark, run.count)
+          return (line, true)
+        }
+      }
+      return (line, false)
+    }
   }
 
   /// 原文或译文里的「## 评论」整段拆出来。认不出评论结构就整篇当正文。

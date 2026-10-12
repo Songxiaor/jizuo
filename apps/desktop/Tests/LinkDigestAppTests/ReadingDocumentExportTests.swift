@@ -176,8 +176,12 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertTrue(body.contains("## 原文"))
     XCTAssertTrue(body.contains("### 小节"))
     XCTAssertFalse(body.contains("# 例"))
-    XCTAssertTrue(body.contains("### 要点"))
-    XCTAssertTrue(body.contains("### 评论（译文，已保存 1 条）"))
+    // 按整行比，免得 `#### 要点` 也算含有 `### 要点`。总结标题只降一级。
+    let lines = body.components(separatedBy: "\n")
+    XCTAssertTrue(lines.contains("### 要点"), body)
+    XCTAssertFalse(lines.contains("#### 要点"), body)
+    XCTAssertFalse(body.contains("### 评论（译文"))
+    XCTAssertTrue(body.contains("[原评论](https://example.com/c/1) · 回复层级 0\n  译评一句\n  > 原评一句"), body)
     XCTAssertFalse(body.contains("### 评论（译文）\n"))
     XCTAssertTrue(body.contains("译评一句"))
     XCTAssertFalse(body.contains("旧总结"))
@@ -205,7 +209,7 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertFalse(body.contains("译评一句"))
   }
 
-  /// 停在总结页勾总结和原文。原文加译文时，评论原文在前，评论译文跟在后面。
+  /// 停在总结页勾总结和原文。原文加译文时，每条评论先放译文，原评论浅色跟在下面。
   func testExportOnTheSummaryTabIncludesTheSourceAndMergesComments() throws {
     let document = ExportContentDocument(detail: sampleArticle())
     let onSummary = ExportContentSelection.initial(
@@ -217,15 +221,15 @@ final class ReadingDocumentExportTests: XCTestCase {
     let article = try XCTUnwrap(body.range(of: "## 原文"))
     let translation = try XCTUnwrap(body.range(of: "## 译文"))
     let sourceComment = try XCTUnwrap(body.range(of: "原评一句"))
-    let translatedComment = try XCTUnwrap(body.range(of: "### 评论（译文，已保存 1 条）"))
+    let translatedComment = try XCTUnwrap(body.range(of: "  译评一句\n  > 原评一句"))
     XCTAssertLessThan(translation.lowerBound, article.lowerBound)
-    XCTAssertLessThan(article.lowerBound, sourceComment.lowerBound)
-    XCTAssertLessThan(sourceComment.lowerBound, translatedComment.lowerBound)
+    XCTAssertLessThan(article.lowerBound, translatedComment.lowerBound)
+    XCTAssertLessThan(translatedComment.lowerBound, sourceComment.lowerBound)
     XCTAssertFalse(body.contains("新总结"))
   }
 
   /// 只勾译文、不勾原文时，评论用评论译文，标题写成「评论（译文）」。
-  /// 原文和译文都勾时，才是原评论在前、评论译文跟在每条下面。
+  /// 原文和译文都勾时，才是每条评论先放译文、原评论跟在下面。
   func testTranslationOnlyExportUsesTheTranslatedComments() throws {
     let document = ExportContentDocument(detail: sampleArticle())
     let only = ExportContentSelection(layers: [.translation, .comments], current: .translation)
@@ -239,9 +243,11 @@ final class ReadingDocumentExportTests: XCTestCase {
       layers: [.source, .translation, .comments], current: .translation
     ))
     let sourceComment = try XCTUnwrap(both.range(of: "原评一句"))
-    let translatedComment = try XCTUnwrap(both.range(of: "### 评论（译文，已保存 1 条）"))
-    XCTAssertLessThan(sourceComment.lowerBound, translatedComment.lowerBound)
-    XCTAssertTrue(both.contains("## 评论"))
+    let translatedComment = try XCTUnwrap(both.range(of: "译评一句"))
+    XCTAssertLessThan(translatedComment.lowerBound, sourceComment.lowerBound)
+    XCTAssertTrue(both.contains("  > 原评一句"))
+    XCTAssertTrue(both.contains("## 评论（已保存 1 条）"))
+    XCTAssertFalse(both.contains("### 评论（译文"))
   }
 
   /// 总结、译文、评论一起导出时，总结在前，当前页签的译文其次，评论最后。
@@ -317,6 +323,178 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertThrowsError(try chooser.panel(panel, validate: URL(fileURLWithPath: "/tmp/a.md")))
     chooser.selection.layers = [.source]
     XCTAssertNoThrow(try chooser.panel(panel, validate: URL(fileURLWithPath: "/tmp/a.md")))
+  }
+
+  /// 降标题只动真正的标题：代码块里的 `# 注释`、`~~~` 块、小红书的 `#话题` 都原样留着。
+  func testHeadingDemotionLeavesCodeBlocksAndHashtagsAlone() throws {
+    let source = """
+    # 例
+
+    ## 安装
+
+    ```bash
+    # Start the debugger
+    ## not a heading either
+    ```
+
+    ~~~
+    # tilde comment
+    ```
+    # still inside tilde
+    ~~~
+
+    #海瑞温斯顿 #话题
+
+    #### 深层标题
+    """
+    let detail = articleDetail(source: source, runs: [(.summarize, "## 要点\n\n### 细节\n\n```sh\n# 总结里的注释\n```\n\n#总结话题")])
+    let body = ExportContentDocument(detail: detail).body(selecting: [.summary, .source])
+    XCTAssertTrue(body.contains("```bash\n# Start the debugger\n## not a heading either\n```"), body)
+    XCTAssertTrue(body.contains("~~~\n# tilde comment\n```\n# still inside tilde\n~~~"), body)
+    XCTAssertTrue(body.contains("\n#海瑞温斯顿 #话题\n"), body)
+    XCTAssertTrue(body.contains("\n### 安装\n"), body)
+    XCTAssertTrue(body.contains("\n#### 深层标题"), body)
+    XCTAssertFalse(body.contains("##### 深层标题"), body)
+    let lines = body.components(separatedBy: "\n")
+    XCTAssertTrue(lines.contains("### 要点"), body)
+    XCTAssertFalse(lines.contains("#### 要点"), body)
+    XCTAssertTrue(lines.contains("#### 细节"), body)
+    XCTAssertTrue(body.contains("```sh\n# 总结里的注释\n```"), body)
+    XCTAssertTrue(body.contains("\n#总结话题"), body)
+    XCTAssertFalse(body.contains("##总结话题"), body)
+    XCTAssertFalse(body.contains("# 例\n"), "和文档标题相同的开头标题应去掉")
+  }
+
+  /// 原文和译文都勾时：评论头、译文、原评论（引用），一条接一条。按「原评论」链接对，
+  /// 译文顺序和原文不同也对得上；回复保持缩进；已经是中文、译文没变的只出现一次、不用引用。
+  func testBothSelectedPutsEachTranslatedCommentUnderItsOriginal() throws {
+    let original = """
+    ## 评论（已保存 3 条）
+
+    - **am.will @LLMJunky** · 赞 46 · 2026-10-04 00:09 · [原评论](https://x.com/a/status/1) · 回复层级 0
+      "I want you to build it"
+      second line
+      - **Leon Lin @LexnLin** · 赞 5 · [原评论](https://x.com/b/status/2) · 回复层级 1
+        dude wtf man
+    - **甲** · 赞 1 · [原评论](https://x.com/c/status/3) · 回复层级 0
+      已经是中文
+    """
+    let translated = """
+    ## 评论（已保存 3 条）
+
+    - **Leon Lin @LexnLin** · 赞 5 · [原评论](https://x.com/b/status/2) · 回复层级 1
+      老兄搞什么
+    - **am.will @LLMJunky** · 赞 46 · 2026-10-04 00:09 · [原评论](https://x.com/a/status/1) · 回复层级 0
+      “我要你把它做出来”
+      第二行
+    - **甲** · 赞 1 · [原评论](https://x.com/c/status/3) · 回复层级 0
+      已经是中文
+    """
+    let detail = articleDetail(
+      source: "# 例\n\n原文很长\n\n" + original,
+      runs: [(.translate, "# 例\n\n译文一句\n\n" + translated)]
+    )
+    let body = ExportContentDocument(detail: detail).body(selecting: [.source, .translation, .comments])
+    let expected = """
+    ## 评论（已保存 3 条）
+
+    - **am.will @LLMJunky** · 赞 46 · 2026-10-04 00:09 · [原评论](https://x.com/a/status/1) · 回复层级 0
+      “我要你把它做出来”
+      第二行
+      > "I want you to build it"
+      > second line
+      - **Leon Lin @LexnLin** · 赞 5 · [原评论](https://x.com/b/status/2) · 回复层级 1
+        老兄搞什么
+        > dude wtf man
+    - **甲** · 赞 1 · [原评论](https://x.com/c/status/3) · 回复层级 0
+      已经是中文
+    """
+    XCTAssertTrue(body.hasSuffix(expected), body)
+    XCTAssertFalse(body.contains("### 评论（译文"))
+    XCTAssertEqual(body.components(separatedBy: "已经是中文").count, 2, "没变的译文不该重复")
+    // PDF / Word 仍把整段认成评论，译文落在各自那条评论的正文里。
+    let range = try XCTUnwrap(MarkdownPresentation.structuredCommentRange(in: body))
+    XCTAssertEqual(range.upperBound, body.endIndex)
+    XCTAssertTrue(body[range].contains("老兄搞什么\n    > dude wtf man"))
+    XCTAssertFalse(body.contains("> 已经是中文"))
+
+    // PDF / Word：译文正常颜色，原评论是浅色引用；没变的中文评论正常颜色。
+    let styled = ReadingDocumentExport.attributedDocument(markdown: body, readingFont: .serif)
+    func color(of text: String) throws -> NSColor? {
+      let range = (styled.string as NSString).range(of: text)
+      XCTAssertNotEqual(range.location, NSNotFound, "PDF 里缺：\(text)")
+      guard range.location != NSNotFound else { return nil }
+      return styled.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+    }
+    XCTAssertEqual(try color(of: "dude wtf man"), .secondaryLabelColor)
+    XCTAssertEqual(try color(of: "second line"), .secondaryLabelColor)
+    XCTAssertNotEqual(try color(of: "老兄搞什么"), .secondaryLabelColor)
+    XCTAssertNotEqual(try color(of: "第二行"), .secondaryLabelColor)
+    XCTAssertNotEqual(try color(of: "已经是中文"), .secondaryLabelColor)
+  }
+
+  /// 评论没有链接时，两边条数相同就按位置对。
+  func testCommentsWithoutLinksPairByPosition() throws {
+    let original = "## 评论（已保存 2 条）\n\n- **A** · 赞 1 · 回复层级 0\n  first\n- **B** · 赞 2 · 回复层级 0\n  second"
+    let translated = "## 评论（已保存 2 条）\n\n- **A** · 赞 1 · 回复层级 0\n  第一条\n- **B** · 赞 2 · 回复层级 0\n  第二条"
+    let detail = articleDetail(
+      source: "# 例\n\n原文很长\n\n" + original,
+      runs: [(.translate, "# 例\n\n译文一句\n\n" + translated)]
+    )
+    let body = ExportContentDocument(detail: detail).body(selecting: [.source, .translation, .comments])
+    XCTAssertTrue(body.hasSuffix(
+      "- **A** · 赞 1 · 回复层级 0\n  第一条\n  > first\n- **B** · 赞 2 · 回复层级 0\n  第二条\n  > second"
+    ), body)
+    XCTAssertFalse(body.contains("### 评论（译文"))
+  }
+
+  /// 没有链接、条数又对不上时，整段评论译文放在原评论后面，一条都不丢。
+  func testUnmatchedTranslatedCommentsFallBackToASeparateBlock() throws {
+    let original = "## 评论（已保存 2 条）\n\n- **A** · 赞 1 · 回复层级 0\n  first\n- **B** · 赞 2 · 回复层级 0\n  second"
+    let translated = "## 评论（已保存 1 条）\n\n- **A** · 赞 1 · 回复层级 0\n  第一条"
+    let detail = articleDetail(
+      source: "# 例\n\n原文很长\n\n" + original,
+      runs: [(.translate, "# 例\n\n译文一句\n\n" + translated)]
+    )
+    let body = ExportContentDocument(detail: detail).body(selecting: [.source, .translation, .comments])
+    let second = try XCTUnwrap(body.range(of: "  second"))
+    let block = try XCTUnwrap(body.range(of: "### 评论（译文，已保存 1 条）"))
+    let item = try XCTUnwrap(body.range(of: "  第一条"))
+    XCTAssertLessThan(second.lowerBound, block.lowerBound)
+    XCTAssertLessThan(block.lowerBound, item.lowerBound)
+    XCTAssertTrue(body.contains("  first"))
+    XCTAssertFalse(body.contains("> first"))
+  }
+
+  private func articleDetail(source: String, runs specs: [(RunKind, String)]) -> HistoryDetailProjection {
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "https://example.com/b", canonicalizationVersion: 1,
+      createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    )
+    let snapshot = ContentSnapshot(
+      id: ContentSnapshotID(), taskID: task.id, sequence: 1,
+      envelopeCreatedAtMilliseconds: 10, capturedAtMilliseconds: 10,
+      sourceKind: "browser_capture", sourceURL: task.canonicalURL, title: "例",
+      platform: "generic", captureMethod: "browser_capture", completeness: "complete",
+      bodyText: source, characterCount: source.count, bodySHA256: String(repeating: "c", count: 64),
+      sourceLabel: "网页", usedCookie: false
+    )
+    let runs = specs.enumerated().map { offset, spec -> HistoryDetailProjection.RunDetail in
+      let at = Int64(offset + 1)
+      let value = HistoryRun(
+        id: RunID(), taskID: task.id, snapshotID: snapshot.id, idempotencyKey: spec.1,
+        rerunOfRunID: nil, kind: spec.0, targetLanguage: nil, status: .completed,
+        providerProfileID: nil, providerKind: nil, providerBaseURL: nil, providerAPIMode: nil,
+        model: nil, createdAtMilliseconds: at, startedAtMilliseconds: at, finishedAtMilliseconds: at,
+        failureCode: nil, failureRetryable: nil, usageCost: RunUsageCost()
+      )
+      let artifact = HistoryArtifact(
+        id: ArtifactID(), runID: value.id, contentFormat: .markdown, completeness: .complete,
+        bodyText: spec.1, createdAtMilliseconds: at, updatedAtMilliseconds: at
+      )
+      return HistoryDetailProjection.RunDetail(run: value, artifact: artifact)
+    }
+    return HistoryDetailProjection(task: task, snapshots: [snapshot], runs: runs)
   }
 
   private func sampleArticle(withDerived: Bool = true) -> HistoryDetailProjection {
