@@ -6095,8 +6095,10 @@ final class HistoryViewModel {
     // 在工作台里点标签：原来标签亮了、右边不变（2026-10-01 体检）。和其它筛选一样先离开工作台。
     isWorkbenchActive = false
     selectedHosts = []
-    selectedCreatorID = nil
-    isCreatorDirectoryActive = false
+    // 在博主作品页上点标签：整个博主上下文一起撤掉。原来只清了 selectedCreatorID，
+    // selectedCreatorSnapshot 还留着，中栏顶上就残留「亲爱的安先生」的页头、
+    // 「更新资料 / 挑选作品」和筛选条里的博主名，看着像博主条件还在筛（2026-10-13）。
+    clearCreatorMode()
     selectedScope = .all
     selectedCollectionID = nil
     reload()

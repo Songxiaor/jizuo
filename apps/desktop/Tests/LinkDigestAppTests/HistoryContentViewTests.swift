@@ -513,50 +513,35 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(row.contains(".truncationMode(.middle)"))
   }
 
-  /// 进「全部博主」时各行低了约 26–31pt。按画面上某一行的窗口坐标校正，不减一个固定点数。
-  /// 这一行比原来低 31pt（窗口坐标更小）时，偏移加上 31，内容往上走回原位。
-  func testCreatorPageHoldsTheVisibleRowInsteadOfAFixedNudge() {
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetToHoldRow(
-        currentOffset: 180,
-        rowWindowY: 400,
-        desiredWindowY: 431,
-        documentHeight: 1_400,
-        viewportHeight: 740
-      ),
-      211
-    )
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetToHoldRow(
-        currentOffset: 180,
-        rowWindowY: 400,
-        desiredWindowY: 400,
-        documentHeight: 1_400,
-        viewportHeight: 740
-      ),
-      180
-    )
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetToHoldRow(
-        currentOffset: 180,
-        rowWindowY: 400,
-        desiredWindowY: 431,
-        documentHeight: 700,
-        viewportHeight: 740
-      ),
-      0,
-      "内容已经短于窗口时不再往下拽"
-    )
-    let nearer = SidebarVisibleRow(id: "history-navigation-forms-header", distanceFromClipCenter: 40, windowY: 500)
-    let edge = SidebarVisibleRow(id: "history-navigation-trash", distanceFromClipCenter: 300, windowY: 80)
-    XCTAssertEqual(SidebarRowAnchor.choose([edge, nearer])?.id, nearer.id)
+  /// 展开 / 收起侧栏里的分组，程序不替用户滚（2026-10-13 Syc：点「外部」的展开箭头，
+  /// 顶上的「汲作」标志立刻被顶出屏幕）。原来这里把「离窗口中心最近的那一行」拉回原来的
+  /// 屏幕高度，上面多出十几行，侧栏就被整个往下滚。现在只把点击前的偏移原样钉住。
+  func testSectionToggleNeverScrollsTheSidebarToKeepAnAnchorRow() {
     let memory = appSource("SidebarScrollMemory.swift")
-    XCTAssertTrue(memory.contains("anchoredRow = SidebarRowAnchor.capture"))
-    XCTAssertTrue(memory.contains("holdAnchoredRow"))
-    XCTAssertTrue(memory.contains("history-navigation-"))
+    XCTAssertFalse(memory.contains("SidebarRowAnchor"), "不能再按锚点行补偿滚动")
+    XCTAssertFalse(memory.contains("holdAnchoredRow"))
+    XCTAssertFalse(memory.contains("offsetToHoldRow"))
+    XCTAssertFalse(memory.contains("anchoredRow"))
+    let hold = section(in: memory, from: "func holdVisibleOffset()", to: "func remember(expanding:")
+    XCTAssertTrue(hold.contains("self.scroll(scrollView, to: self.lastOffset)"), "只钉住点击前的偏移")
     XCTAssertFalse(
       appSource("CreatorDirectoryViews.swift").contains("再低大约 26"),
       "不要再靠一个拍脑袋的固定点数对齐"
+    )
+    // 钉住的偏移不会超过新的滚动范围：没滚过的侧栏偏移是 0，标志不动；收起后变短就夹到最大偏移。
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 0, documentHeight: 1_400, viewportHeight: 740),
+      0
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 300, documentHeight: 1_400, viewportHeight: 740),
+      300,
+      "用户自己滚到的位置，展开后原样留着"
+    )
+    XCTAssertEqual(
+      SidebarScrollRestore.offsetAfterSectionToggle(previous: 300, documentHeight: 700, viewportHeight: 740),
+      0,
+      "收起后内容比窗口短，只能回到顶"
     )
   }
 
@@ -568,23 +553,8 @@ final class HistoryContentViewTests: XCTestCase {
       SidebarScrollRestore.offsetAfterSectionToggle(previous: 350, documentHeight: 1_000, viewportHeight: 677),
       323
     )
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetToHoldRow(
-        currentOffset: 190,
-        rowWindowY: 394,
-        desiredWindowY: 554,
-        documentHeight: 1_000,
-        viewportHeight: 677
-      ),
-      323
-    )
-    let nearer = SidebarVisibleRow(id: "history-navigation-forms-header", distanceFromClipCenter: 40, windowY: 357)
-    let removed = SidebarVisibleRow(id: "history-navigation-platform-x.com", distanceFromClipCenter: 10, windowY: 554)
-    XCTAssertEqual(SidebarRowAnchor.ranked([nearer, removed]).map(\.id), [removed.id, nearer.id])
     let memory = appSource("SidebarScrollMemory.swift")
     let hold = section(in: memory, from: "func holdVisibleOffset()", to: "func remember(expanding:")
-    XCTAssertTrue(hold.contains("holdAnchoredRow"))
-    XCTAssertTrue(hold.contains("SidebarRowAnchor.candidates"))
     XCTAssertTrue(hold.contains("deadline: .now() + 1.0"), "0.4 秒松手时，列表换 id 后的回顶已经落定")
     XCTAssertFalse(hold.contains("deadline: .now() + 0.4"))
   }
@@ -622,12 +592,6 @@ final class HistoryContentViewTests: XCTestCase {
       ),
       "本来就在顶部，不用等"
     )
-    let platforms = (0..<4).map {
-      SidebarVisibleRow(id: "history-navigation-platform-\($0)", distanceFromClipCenter: CGFloat($0), windowY: 400)
-    }
-    let header = SidebarVisibleRow(id: "history-navigation-section-来源", distanceFromClipCenter: 200, windowY: 314)
-    let kept = SidebarRowAnchor.includingSectionHeader(platforms + [header], limit: 4).map(\.id)
-    XCTAssertTrue(kept.contains(header.id), "收起后平台行没了，标题还在，必须能按它拉回原位")
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("history-navigation-section-\\(title)"))
   }

@@ -122,6 +122,32 @@ final class SidebarScopeFixTests: XCTestCase {
     XCTAssertTrue(model.hasNonTagCategoryFilter)
   }
 
+  /// 在博主作品页上点标签：博主上下文要整个撤掉（2026-10-13）。原来只清了 selectedCreatorID，
+  /// selectedCreatorSnapshot 还在，中栏顶上残留博主页头和筛选条里的博主名。
+  func testTogglingATagOnACreatorPageDropsTheWholeCreatorContext() async throws {
+    let creator = try repository.upsertCreator(upsertCommand(
+      platform: "douyin.com", authorID: "MS4wLjABAAAA-tag", name: "亲爱的安先生", now: 1
+    ))
+    let work = try capture("creator-work", at: 5_000)
+    try repository.attachCreatorWork(creatorID: creator.id, taskID: work)
+
+    let model = await makeModel()
+    model.enterCreatorDirectory()
+    await waitUntil { !model.creatorDirectoryRows.isEmpty && !model.isLoadingCreatorPage }
+    model.focusCreatorInDirectory(creator.id)
+    await waitUntil { model.selectedCreator != nil }
+    XCTAssertNotNil(model.selectedCreator, "前提：作品页上有博主页头")
+
+    let tag = try XCTUnwrap(HistoryTag(rawValue: "测试标签"))
+    model.toggleTag(tag, additive: false)
+    XCTAssertNil(model.selectedCreator, "页头用的快照也要清掉，否则中栏顶上还挂着博主")
+    XCTAssertNil(model.selectedCreatorID)
+    XCTAssertFalse(model.isCreatorDirectoryActive)
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory)
+    XCTAssertEqual(model.selectedTagNormalizedNames, [tag.normalizedName])
+    XCTAssertFalse(model.hasNonTagCategoryFilter, "博主条件不再参与筛选")
+  }
+
   /// 「按最近保存」：按最近一条作品的存入时间倒序，没作品的按名字跟后。
   func testCreatorsByRecentSaveSortsByLatestWorkThenName() {
     func summary(_ name: String, lastSaved: Int64?) -> CreatorSummary {

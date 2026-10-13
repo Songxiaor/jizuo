@@ -39,105 +39,6 @@ enum SidebarScrollRestore {
     guard previousDocumentHeight > viewportHeight + 1 else { return false }
     return documentHeight <= viewportHeight + 1
   }
-
-  /// 换侧栏后，让同一行回到原来的屏幕高度。
-  ///
-  /// AppKit 窗口坐标向上增大。滚动偏移增加时，内容在屏幕上往上走，这一行的窗口坐标也增大。
-  /// 进「全部博主」后各行大约低 26–31pt：新列表的可视区域和三栏侧栏不在同一高度，
-  /// 原样套用旧偏移就会全体下移。按这一行的窗口坐标把偏移补上，不靠一个固定的点数。
-  static func offsetToHoldRow(
-    currentOffset: CGFloat,
-    rowWindowY: CGFloat,
-    desiredWindowY: CGFloat,
-    documentHeight: CGFloat,
-    viewportHeight: CGFloat
-  ) -> CGFloat {
-    let adjusted = currentOffset + (desiredWindowY - rowWindowY)
-    return offsetAfterSectionToggle(
-      previous: adjusted,
-      documentHeight: documentHeight,
-      viewportHeight: viewportHeight
-    )
-  }
-}
-
-/// 侧栏里能认出来的一行，用来在两张列表之间对位置。
-struct SidebarVisibleRow: Equatable {
-  var id: String
-  var distanceFromClipCenter: CGFloat
-  var windowY: CGFloat
-}
-
-enum SidebarRowAnchor {
-  /// 可视区里最靠近中间的那一行。靠边的行换页时容易被裁掉，中间更稳。
-  static func choose(_ rows: [SidebarVisibleRow]) -> SidebarVisibleRow? {
-    ranked(rows).first
-  }
-
-  /// 靠近中间的排前面。收起分组时最靠近的那一行可能正好被收掉，后面的还在。
-  static func ranked(_ rows: [SidebarVisibleRow]) -> [SidebarVisibleRow] {
-    rows.sorted { lhs, rhs in
-      if lhs.distanceFromClipCenter != rhs.distanceFromClipCenter {
-        return lhs.distanceFromClipCenter < rhs.distanceFromClipCenter
-      }
-      return lhs.id < rhs.id
-    }
-  }
-
-  @MainActor
-  static func capture(in scrollView: NSScrollView) -> SidebarVisibleRow? {
-    candidates(in: scrollView, limit: 1).first
-  }
-
-  @MainActor
-  static func candidates(in scrollView: NSScrollView, limit: Int = 4) -> [SidebarVisibleRow] {
-    guard let document = scrollView.documentView else { return [] }
-    let clip = scrollView.contentView
-    let visible = clip.bounds
-    var rows: [SidebarVisibleRow] = []
-    func visit(_ view: NSView) {
-      let id = view.accessibilityIdentifier()
-      if !id.isEmpty, id.hasPrefix("history-navigation-"), view.bounds.height > 1 {
-        let inClip = view.convert(view.bounds, to: clip)
-        if visible.intersects(inClip) {
-          rows.append(SidebarVisibleRow(
-            id: id,
-            distanceFromClipCenter: abs(inClip.midY - visible.midY),
-            windowY: view.convert(view.bounds, to: nil).minY
-          ))
-        }
-      }
-      for child in view.subviews { visit(child) }
-    }
-    visit(document)
-    return includingSectionHeader(ranked(rows), limit: limit)
-  }
-
-  /// 靠近中间的几行收起后可能整组消失。分组标题还在，即使它不在这几行里也要留下，
-  /// 才能把「来源」拉回点击时的屏幕高度。
-  static func includingSectionHeader(_ ranked: [SidebarVisibleRow], limit: Int) -> [SidebarVisibleRow] {
-    var picked = Array(ranked.prefix(limit))
-    if let header = ranked.first(where: { $0.id.hasPrefix("history-navigation-section-") }),
-       !picked.contains(where: { $0.id == header.id }) {
-      picked.append(header)
-    }
-    return picked
-  }
-
-  @MainActor
-  static func windowY(of identifier: String, in scrollView: NSScrollView) -> CGFloat? {
-    guard let document = scrollView.documentView else { return nil }
-    var found: CGFloat?
-    func visit(_ view: NSView) {
-      if found == nil, view.accessibilityIdentifier() == identifier {
-        found = view.convert(view.bounds, to: nil).minY
-        return
-      }
-      for child in view.subviews where found == nil { visit(child) }
-    }
-    visit(document)
-    return found
-  }
 }
 
 /// 侧栏重建前后保持滚动位置。
@@ -154,9 +55,6 @@ final class SidebarScrollMemory {
   private var heldDocumentHeight: CGFloat = 0
   /// 只在按住的最后一下才允许把偏移夹到 0。前面几下如果文档还没高过可视区，写 0 就回不来了。
   private var holdCommitsShortDocument = false
-  /// 换侧栏或收起分组前，可视区里几行在屏幕上的高度。优先用还在的那一行校正。
-  private var anchoredRow: SidebarVisibleRow?
-  private var anchoredRows: [SidebarVisibleRow] = []
   private var isHoldingSection = false
   private var holdPinQueued = false
   private var hasAttached = false
@@ -172,8 +70,6 @@ final class SidebarScrollMemory {
   func snapshot() {
     guard let scrollView else { return }
     lastOffset = scrollView.contentView.bounds.origin.y
-    anchoredRow = SidebarRowAnchor.capture(in: scrollView)
-    anchoredRows = SidebarRowAnchor.candidates(in: scrollView)
     isRestoring = true
     snapshotGeneration += 1
     let generation = snapshotGeneration
@@ -186,14 +82,15 @@ final class SidebarScrollMemory {
   /// 收起或展开分组前调用。列表会把滚动偏移减掉刚收起的那一块高度
   /// （2026-10-11 夜：偏移 350，来源 5 行共 160，收起后停在 190。内容仍比窗口高，
   /// 标题只该为滚动范围变短让出那一点，不该跟着整块挪走）。
-  /// 先按旧偏移夹到新的最大范围，再把还在的那一行拉回原来的屏幕高度。
-  /// 不按新长出来的高度再推一次，那是点「视图」来回跳的原因。
+  /// 只把点击前的滚动偏移原样钉住（夹到新的最大范围），不替用户滚。展开出来的内容往下长，
+  /// 超出屏幕就让用户自己去滚；没滚过的侧栏偏移是 0，顶上的「汲作」和「全部」就不会动。
+  /// 以前这里还会把「离窗口中心最近的那一行」拉回原来的屏幕高度：点「外部」的展开箭头，
+  /// 上面多出十几行，侧栏就被整个往下滚，标志被顶出屏幕（2026-10-13 Syc）。
+  /// 也不按新长出来的高度再推一次，那是点「视图」来回跳的原因。
   func holdVisibleOffset() {
     guard let scrollView else { return }
     lastOffset = scrollView.contentView.bounds.origin.y
     heldDocumentHeight = scrollView.documentView?.frame.height ?? 0
-    anchoredRow = SidebarRowAnchor.capture(in: scrollView)
-    anchoredRows = SidebarRowAnchor.candidates(in: scrollView)
     pendingReveal = nil
     isRestoring = true
     isHoldingSection = true
@@ -204,7 +101,6 @@ final class SidebarScrollMemory {
       guard let self, self.snapshotGeneration == generation, let scrollView = self.scrollView else { return }
       self.holdCommitsShortDocument = commitShort
       self.scroll(scrollView, to: self.lastOffset)
-      self.holdAnchoredRow(in: scrollView)
     }
     DispatchQueue.main.async { pin(false) }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { pin(false) }
@@ -297,7 +193,6 @@ final class SidebarScrollMemory {
         target += min(grown, headroom)
       }
       self.scroll(scrollView, to: target)
-      self.holdAnchoredRow(in: scrollView)
       self.lastOffset = scrollView.contentView.bounds.origin.y
     }
   }
@@ -311,38 +206,6 @@ final class SidebarScrollMemory {
       self.holdPinQueued = false
       guard self.isHoldingSection, let scrollView = self.scrollView else { return }
       self.scroll(scrollView, to: self.lastOffset)
-      self.holdAnchoredRow(in: scrollView)
-    }
-  }
-
-  /// 旧偏移（已按视口基准换算）先落到新列表上，再按锚点那一行的屏幕高度修正。
-  /// 最靠近中间的一行若刚被收掉，就用后面还在的一行。都找不到就保持旧偏移。
-  private func holdAnchoredRow(in scrollView: NSScrollView) {
-    let clip = scrollView.contentView
-    let documentHeight = scrollView.documentView?.frame.height ?? 0
-    if isHoldingSection, !holdCommitsShortDocument,
-       SidebarScrollRestore.shouldWaitForSectionLayout(
-         previousOffset: lastOffset,
-         documentHeight: documentHeight,
-         viewportHeight: clip.bounds.height,
-         previousDocumentHeight: heldDocumentHeight
-       ) {
-      return
-    }
-    let rows = anchoredRows.isEmpty ? (anchoredRow.map { [$0] } ?? []) : anchoredRows
-    for row in rows {
-      guard let rowWindowY = SidebarRowAnchor.windowY(of: row.id, in: scrollView) else { continue }
-      let target = SidebarScrollRestore.offsetToHoldRow(
-        currentOffset: clip.bounds.origin.y,
-        rowWindowY: rowWindowY,
-        desiredWindowY: row.windowY,
-        documentHeight: scrollView.documentView?.frame.height ?? 0,
-        viewportHeight: clip.bounds.height
-      )
-      if abs(target - clip.bounds.origin.y) > 1 {
-        scroll(scrollView, to: target)
-      }
-      return
     }
   }
 
