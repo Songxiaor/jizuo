@@ -58,6 +58,21 @@ final class CommentsTabTests: XCTestCase {
     )
   }
 
+  /// 抖音的「13小时前 甘肃」：时间按保存时刻换算成日期，地区接在后面。
+  func testRelativeTimeWithRegionResolvesAndKeepsTheRegion() {
+    let captured = calendar.date(from: DateComponents(year: 2026, month: 10, day: 12, hour: 21, minute: 30))!
+    XCTAssertEqual(
+      CommentPublishedTime.absoluteLabel("13小时前 甘肃", now: now, calendar: calendar, capturedAt: captured),
+      "10月12日 08:30 甘肃"
+    )
+    XCTAssertEqual(
+      CommentPublishedTime.absoluteLabel("2周前 广东", now: now, calendar: calendar, capturedAt: captured),
+      "9月28日 广东"
+    )
+    // 不传保存时刻就不猜：原样显示。
+    XCTAssertEqual(CommentPublishedTime.absoluteLabel("13小时前 甘肃", now: now, calendar: calendar), "13小时前 甘肃")
+  }
+
   // MARK: 回复「回复 某某」
 
   private func item(_ sequence: Int, depth: Int, author: String) -> MarkdownPresentation.CommentItem {

@@ -482,6 +482,15 @@ enum CommentPublishedTime {
     if let capturedAt, let resolved = resolvingRelative(raw, capturedAt: capturedAt, now: now, calendar: calendar) {
       return resolved
     }
+    // 抖音写成「13小时前 甘肃」：时间照换算，后面的地区原样接上。
+    if let capturedAt, let space = raw.firstIndex(where: \.isWhitespace) {
+      let head = String(raw[..<space])
+      let region = raw[space...].trimmingCharacters(in: .whitespaces)
+      if !region.isEmpty, head.wholeMatch(of: /\d+\s*(秒|分钟|小时|天|周|个月|年)前/) != nil,
+         let resolved = resolvingRelative(head, capturedAt: capturedAt, now: now, calendar: calendar) {
+        return resolved + " " + region
+      }
+    }
     if let (date, hasTime) = parsedDisplayDate(raw, calendar: calendar) {
       return stamp(date, now: now, calendar: calendar, withTime: hasTime)
     }
