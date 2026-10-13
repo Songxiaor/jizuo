@@ -2754,6 +2754,14 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     c.id, c.platform, c.author_id, c.profile_url, c.display_name, c.avatar_url, c.pinned_rank,
     c.created_at_ms, c.updated_at_ms,
     (
+      -- 最近一条作品存进来的时间：「全部博主」页「按最近保存」排序用（2026-10-12 走查 #34）。
+      -- 放进回收站的作品不算，和下面的条数同一口径。
+      SELECT MAX(wt.created_at_ms)
+      FROM creator_works w
+      INNER JOIN tasks wt ON wt.id = w.task_id AND wt.deleted_at_ms IS NULL
+      WHERE w.creator_id = c.id
+    ) AS last_saved_at_ms,
+    (
       -- 放进回收站的作品不计入「已保存 N 篇」：博主卡上的数字必须和点进去
       -- 看到的列表一致。
       SELECT COUNT(*)
@@ -2821,7 +2829,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       pinnedRank: rank,
       savedWorkCount: saved,
       createdAtMilliseconds: row["created_at_ms"],
-      updatedAtMilliseconds: row["updated_at_ms"]
+      updatedAtMilliseconds: row["updated_at_ms"],
+      lastSavedAtMilliseconds: row["last_saved_at_ms"] as Int64?
     )
   }
 

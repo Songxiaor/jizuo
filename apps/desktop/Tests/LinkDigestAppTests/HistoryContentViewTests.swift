@@ -1127,7 +1127,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-tags-all"))
     // 2026-09-23：侧栏次要分组默认收起，展开状态跨启动记住。
     XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.tags-expanded\") private var navigationTagsExpanded = false"))
-    XCTAssertTrue(source.contains("Array(ordered.prefix(6))"))
+    // 2026-10-12 走查 #6：标签「显示全部」改成弹层，侧栏永远只摆前 6 个，不再撑开侧栏。
+    XCTAssertTrue(source.contains("Array(sidebarTagCloud.prefix(6))"))
+    XCTAssertTrue(source.contains("history-navigation-tags-popover"))
+    // 2026-10-12 走查 #5：清除入口只在列表筛选片上。钉住标识和调用，
+    // 不钉注释里的字——改注释不能算改了行为（2026-10-13 审查）。
+    XCTAssertFalse(source.contains("history-navigation-tags-clear"))
+    let tagsSection = section(in: source, from: "if navigationTagsExpanded {", to: "utilitiesNavigationSection")
+    XCTAssertFalse(tagsSection.contains("clearTagSelection"), "侧栏标签段不应再调用 clearTagSelection")
     let platforms = appSource("PlatformGridView.swift")
     XCTAssertTrue(platforms.contains("Text(name)"), "Platform names must remain visible without hover")
     XCTAssertTrue(platforms.contains("PlatformNavigationRow"))

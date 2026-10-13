@@ -23,9 +23,35 @@ struct TagManagerView: View {
   }
 
   private var filteredTags: [HistoryNavigationTag] {
+    let base = showsOnlyOnceUsed ? tags.filter { $0.count == 1 } : tags
     let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard !needle.isEmpty else { return tags }
-    return tags.filter { $0.tag.name.lowercased().contains(needle) }
+    guard !needle.isEmpty else { return base }
+    return base.filter { $0.tag.name.lowercased().contains(needle) }
+  }
+
+  @State private var showsOnlyOnceUsed = false
+
+  /// 只在侧栏隐藏的标签（和来源平台重名）：管理里给个数字，侧栏和这里的
+  /// 两个总数不再让人以为少了几个（2026-10-12 走查 #7）。
+  private var hiddenSidebarCount: Int {
+    tags.filter { HistoryContentView.hiddenSidebarTagNames.contains($0.tag.normalizedName) }.count
+  }
+
+  /// 和来源平台重名的标签：侧栏把它们隐藏了，管理里写明白，免得两个总数对不上。
+  /// 只提示、不给合并按钮：一点就改数据、没法确认，而且并进的同名来源标签
+  /// 本来也在侧栏隐藏名单里，合了也没有改善（2026-10-13 审查：按「先删」处理）。
+  private var sourceNameDuplicateTags: [HistoryNavigationTag] {
+    ["twitter", "youtube"].compactMap { key in
+      tags.first { $0.tag.normalizedName == key }
+    }
+  }
+
+  private func sourceDuplicateHint(for tag: HistoryNavigationTag) -> String? {
+    switch tag.tag.normalizedName {
+    case "twitter": return "「Twitter」就是来源「X」，侧栏不显示"
+    case "youtube": return "「YouTube」就是来源「YouTube」，侧栏不显示"
+    default: return nil
+    }
   }
 
   private var similarGroups: [[HistoryNavigationTag]] { HistoryTagSimilarity.groups(model.manageableTags) }
@@ -43,10 +69,28 @@ struct TagManagerView: View {
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("tag-manager-message")
       }
+      ForEach(sourceNameDuplicateTags, id: \.tag.normalizedName) { tag in
+        HStack {
+          Text(sourceDuplicateHint(for: tag) ?? "")
+            .themedFont(.callout)
+            .foregroundStyle(.secondary)
+          Spacer()
+        }
+        .accessibilityIdentifier("tag-manager-source-duplicate-\(tag.tag.normalizedName)")
+      }
       if !similarGroups.isEmpty { similarSection }
-      TextField("搜索标签", text: $search)
-        .textFieldStyle(.roundedBorder)
-        .accessibilityIdentifier("tag-manager-search")
+      HStack(spacing: 8) {
+        TextField("搜索标签", text: $search)
+          .textFieldStyle(.roundedBorder)
+          .accessibilityIdentifier("tag-manager-search")
+        Picker("只看", selection: $showsOnlyOnceUsed) {
+          Text("全部").tag(false)
+          Text("只用过一次").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 180)
+        .accessibilityIdentifier("tag-manager-once-filter")
+      }
       List(filteredTags, selection: $selection) { item in
         HStack {
           Text(item.tag.name).lineLimit(1)
@@ -97,7 +141,8 @@ struct TagManagerView: View {
       VStack(alignment: .leading, spacing: 2) {
         Text("管理标签").themedFont(.headline)
         let once = tags.filter { $0.count == 1 }.count
-        Text("共 \(tags.count) 个 · 只用过一次的 \(once) 个")
+        let hidden = hiddenSidebarCount
+        Text("共 \(tags.count) 个 · 只用过一次的 \(once) 个" + (hidden > 0 ? " · 侧栏不显示 \(hidden) 个（与来源重名等）" : ""))
           .themedFont(.caption)
           .foregroundStyle(.secondary)
       }

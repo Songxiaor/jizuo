@@ -751,7 +751,9 @@ struct HistoryContentView: View {
           .accessibilityIdentifier("delete-selected-history")
         }
         // 图库 / 博主目录只有两栏，没有列表列头可放「添加」，退回顶栏。
-        if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
+        // 「全部博主」页头已有一个「添加博主」，顶栏这个「＋」里再带一个同名项，
+        // 同一页两个添加博主的入口（2026-10-12 走查 #11）——这页不放「＋」。
+        if showsPlatformGallerySurface || (model.isCreatorDirectoryActive && !showsCreatorDirectoryCatalog) {
           addMenu
         }
       }
@@ -892,6 +894,12 @@ struct HistoryContentView: View {
   private var listColumnTitle: String {
     // 搜索时标题说清搜到多少条；原来仍写「全部」，看不出是搜索结果、有多少。
     if !model.searchText.isEmpty, let count = model.searchResultCount { return "搜索 · \(count) 条" }
+    return scopeTitle
+  }
+
+  /// 当前范围的名字：合集名 / 博主名 / 来源名 / 作用域。列标题和筛选条前的范围词
+  /// 共用这一份（2026-10-13 审查：两处各写一份 switch，改一处忘一处）。
+  private var scopeTitle: String {
     if let collection = model.selectedCollection { return collection.name }
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
     // 形式不写进标题：它就在标题右边那个「显示」按钮上（2026-10-12（Syc 定））。
@@ -1072,15 +1080,16 @@ struct HistoryContentView: View {
             Button("更新资料") {
               presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
             }
-            .buttonStyle(.appQuiet)
+            .buttonStyle(.appNormal)
             .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
             .help("只刷新姓名和头像，不必保存新作品")
             .accessibilityIdentifier("history-creator-refresh-selected")
-            // 一主一次：抓取作品是这一页的主动作。
+            // 同组按钮同样式（2026-10-12 走查 #12）：原来「更新资料」无框、「挑选作品」实心，
+            // 并排着像两种东西。统一描边，主动作靠文字顺序表达。
             Button("挑选作品") {
               presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
             }
-            .buttonStyle(.appProminent(theme.accent))
+            .buttonStyle(.appNormal)
             .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
             .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页，选要存的作品" : "暂不支持此平台主页")
             .accessibilityIdentifier("history-creator-capture-selected")
@@ -1178,11 +1187,17 @@ struct HistoryContentView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-trash-empty")
         } else if let collection = model.selectedCollection,
-                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                  // 只有合集本身没内容时才说「还是空的」；有内容但被搜索 / 形式 / 标签
+                  // 筛空了，走下面统一的「没有符合条件的内容」（2026-10-13 审查）。
+                  collection.itemCount == 0,
+                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  model.selectedForm == nil,
+                  model.selectedTagNormalizedNames.isEmpty,
+                  model.selectedHosts.isEmpty {
           HistoryInlineState(
             symbol: CollectionIcon.collection,
             title: "「\(collection.name)」还是空的",
-            message: "在列表里右键一条内容，选「加入合集」，就会按加入的先后排在这里；多选后可以一起加入。进来之后可以拖动调整顺序。",
+            message: "在列表里右键一条内容（或打开它后点「⋯」菜单），选「加入合集」，就会按加入的先后排在这里；列表多选后可以一起加入。进来之后可以拖动调整顺序。",
             actionTitle: "去全部里挑",
             action: { model.selectScope(.all) }
           )
@@ -1467,8 +1482,9 @@ struct HistoryContentView: View {
   ) -> some View {
     let scope: HistoryListScope = ownership == .own ? .own : .external
     let title = ownership.rawValue
-    // 选中的是下面某一行时只亮那一行，这一行不跟着亮（hasCategoryFilter 里有来源）。
-    let selected = model.selectedScope == scope && !model.hasCategoryFilter
+    // 选中的是下面某一行时只亮那一行，这一行不跟着亮（hasNonTagCategoryFilter 里有来源）。
+    // 只选标签时仍然亮：标签叠在当前范围上，不换地方（2026-10-12 走查 #5）。
+    let selected = model.selectedScope == scope && !model.hasNonTagCategoryFilter
       && !model.isCreatorDirectoryActive && !model.isWorkbenchActive
     let select = {
       sidebarScrollMemory.snapshot()
@@ -1624,7 +1640,8 @@ struct HistoryContentView: View {
 
   /// 正选中的那一行（如果在「实用工具」里）。收起时也要露出来。
   private var selectedUtilityScope: HistoryListScope? {
-    guard !model.hasCategoryFilter, !model.isCreatorDirectoryActive, !model.isWorkbenchActive else { return nil }
+    // 只选标签时实用工具的行仍然亮着：标签叠在当前范围上，不换地方（走查 #5 同一口径）。
+    guard !model.hasNonTagCategoryFilter, !model.isCreatorDirectoryActive, !model.isWorkbenchActive else { return nil }
     return utilityRows.first { $0.scope == model.selectedScope }?.scope
   }
 
@@ -1748,17 +1765,17 @@ struct HistoryContentView: View {
       // 最下面的「实用工具」。「来源」并进「自有 / 外部」：每一行只数这一边的，不再有混着
       // 自有和外部的「本地文件」。
       Section {
-        navigationButton("全部", systemImage: "line.3.horizontal", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
+        navigationButton("全部", systemImage: "line.3.horizontal", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasNonTagCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.all)
         }
         .help("所有记录：收集来的外部内容，和自己的笔记、作品、备忘录、录音")
         .accessibilityIdentifier("history-navigation-all")
         // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
-        navigationButton("最近 7 天", systemImage: "clock.arrow.circlepath", count: model.navigationCounts.recent, selected: model.selectedScope == .recent && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
+        navigationButton("最近 7 天", systemImage: "clock.arrow.circlepath", count: model.navigationCounts.recent, selected: model.selectedScope == .recent && !model.hasNonTagCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.recent)
         }
         .accessibilityIdentifier("history-navigation-recent")
-        navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
+        navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite && !model.hasNonTagCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.favorite)
         }
         .accessibilityIdentifier("history-navigation-favorite")
@@ -1831,46 +1848,26 @@ struct HistoryContentView: View {
           if navigationTagsExpanded {
             // 标签是跨内容的分类关键词：按引用数降序的药丸云，
             // 大类自然浮到最前。
-            let ordered = model.navigationCounts.tags
-              .filter { !Self.hiddenSidebarTagNames.contains($0.tag.normalizedName) }
-              .sorted { $0.count > $1.count }
-            let tags = model.showsAllNavigationTags ? ordered : Array(ordered.prefix(6))
+            // 常用的前几个直接摆在侧栏里；其余不再撑开侧栏（展开后曾把
+            // 「实用工具」挤出屏幕，2026-10-12 走查 #6），点「全部 N 个」弹层里看。
+            let tags = Array(sidebarTagCloud.prefix(6))
             TagPillFlowLayout(spacing: 6) {
               ForEach(tags) { item in
-                let selected = model.selectedTagNormalizedNames.contains(item.tag.normalizedName)
-                Button {
-                  // 普通点击即叠加（AND 缩小范围），再点取消；⌘点击=只看这个。
-                  model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))
-                } label: {
-                  HStack(spacing: 4) {
-                    Text(item.tag.name).lineLimit(1)
-                    Text("\(item.count)")
-                      .themedFont(.caption2, monospacedDigit: true)
-                      .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
-                  }
-                  .themedFont(.caption)
-                  .padding(.vertical, 4).padding(.horizontal, 9)
-                  // 无描边的浅底胶囊：带边框的药丸在侧栏里像一排按钮，比左边的文字还重。
-                  .background(
-                    selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
-                    in: Capsule()
-                  )
-                  .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
-                  .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
-                .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
+                sidebarTagPill(item)
               }
             }
             .padding(.vertical, 2)
             // 两个动作放一行、用主题色和图标：原来两行灰字看起来像说明文字，不像能点（2026-09-24 走查）。
             HStack(spacing: DesignTokens.Space.sm) {
-              if ordered.count > 6 {
+              // 标签多于 6 个才给「全部 N 个」；全部在弹层里，不撑开侧栏（走查 #6）。
+              if sidebarTagCloud.count > 6 {
                 sidebarLinkAction(
-                  model.showsAllNavigationTags ? "收起" : "显示全部 \(ordered.count) 个",
-                  systemImage: model.showsAllNavigationTags ? "chevron.up" : "chevron.down"
-                ) { model.showsAllNavigationTags.toggle() }
+                  "全部 \(sidebarTagCloud.count) 个",
+                  systemImage: "chevron.down"
+                ) { isAllTagsPopoverPresented = true }
+                  .popover(isPresented: $isAllTagsPopoverPresented, arrowEdge: .bottom) {
+                    allTagsPopover
+                  }
                   .accessibilityIdentifier("history-navigation-tags-all")
               }
               Spacer(minLength: 0)
@@ -1878,10 +1875,8 @@ struct HistoryContentView: View {
                 .help("改名、合并、删除标签")
                 .accessibilityIdentifier("history-navigation-tags-manage")
             }
-            if !model.selectedTagNormalizedNames.isEmpty {
-              sidebarTextAction("清空标签筛选（\(model.selectedTagNormalizedNames.count)）") { model.clearTagSelection() }
-                .accessibilityIdentifier("history-navigation-tags-clear")
-            }
+            // 清除入口只在列表筛选片上：原来这里还有一个侧栏清空入口，
+            // 两处都能清，反而不知道清的是哪个范围（2026-10-12 走查 #5）。
           }
         } header: {
           navigationSectionHeader("标签", expanded: $navigationTagsExpanded)
@@ -1964,6 +1959,59 @@ struct HistoryContentView: View {
     (["Twitter", "X", "YouTube", "GitHub", "抖音", "公众号", "微信公众号", "B站", "哔哩哔哩", "bilibili", "小红书", "Reddit", "Substack"])
       .compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
   )
+
+  /// 侧栏标签云用的标签列表（已滤掉隐藏项、按条数降序）。侧栏只摆前 6 个，
+  /// 其余在「全部 N 个」的弹层里（2026-10-12 走查 #6）。
+  private var sidebarTagCloud: [HistoryNavigationTag] {
+    model.navigationCounts.tags
+      .filter { !Self.hiddenSidebarTagNames.contains($0.tag.normalizedName) }
+      .sorted { $0.count > $1.count }
+  }
+
+  @State private var isAllTagsPopoverPresented = false
+
+  /// 「全部 N 个」标签的弹层：侧栏再也不会被几百个标签撑开（2026-10-12 走查 #6）。
+  private var allTagsPopover: some View {
+    ScrollView {
+      TagPillFlowLayout(spacing: 6) {
+        ForEach(sidebarTagCloud) { item in
+          sidebarTagPill(item)
+        }
+      }
+      .padding(12)
+    }
+    // 高度固定：药丸流自动换行，按行数估高不准（走查 #6；2026-10-13 审查）。
+    .frame(width: 320, height: 420)
+    .background(theme.canvas)
+    .accessibilityIdentifier("history-navigation-tags-popover")
+  }
+
+  /// 侧栏与弹层共用的一枚标签药丸。普通点击即叠加（AND 缩小范围），再点取消；⌘点击=只看这个。
+  private func sidebarTagPill(_ item: HistoryNavigationTag) -> some View {
+    let selected = model.selectedTagNormalizedNames.contains(item.tag.normalizedName)
+    return Button {
+      model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))
+    } label: {
+      HStack(spacing: 4) {
+        Text(item.tag.name).lineLimit(1)
+        Text("\(item.count)")
+          .themedFont(.caption2, monospacedDigit: true)
+          .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
+      }
+      .themedFont(.caption)
+      .padding(.vertical, 4).padding(.horizontal, 9)
+      // 无描边的浅底胶囊：带边框的药丸在侧栏里像一排按钮，比左边的文字还重。
+      .background(
+        selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
+        in: Capsule()
+      )
+      .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
+    .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
+  }
 
   /// 侧栏里的次要文字动作（「全部标签」「清空筛选」）：和「外部」下「还有 N 个」同一种样子，不用系统按钮。
   private func sidebarTextAction(_ title: String, action: @escaping () -> Void) -> some View {
@@ -2285,6 +2333,15 @@ struct HistoryContentView: View {
             .accessibilityIdentifier("history-creator-directory-overview")
         }
         Spacer(minLength: 0)
+        // 排序（2026-10-12 走查 #34）：按平台分组折叠是原样；新增「按最近保存」平铺，
+        // 用博主最近一条作品的存入时间排。选「按最近保存」时博主一次取完再排。
+        // 和作品页的排序下拉同一个词（2026-10-13 审查：排列/排序不要两个字眼）。
+        Picker("排序", selection: $model.creatorArrangement) {
+          ForEach(CreatorArrangement.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.menu)
+        .frame(width: 160)
+        .accessibilityIdentifier("history-creator-arrangement")
         Button {
           presentDouyinProfileImport()
         } label: {
@@ -2326,7 +2383,7 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "person.2",
           title: "还没有添加博主",
-          message: "点加号粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
+          message: "粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
           actionTitle: "添加博主",
           action: { presentDouyinProfileImport() }
         )
@@ -2345,7 +2402,9 @@ struct HistoryContentView: View {
           ScrollViewReader { proxy in
             ScrollView {
               VStack(alignment: .leading, spacing: DesignTokens.Space.xl) {
-                ForEach(CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)) { group in
+                switch model.creatorArrangement {
+                case .byPlatform:
+                  ForEach(CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)) { group in
                   CreatorDirectoryPlatformSection(
                     platform: group.id,
                     count: group.creators.count,
@@ -2367,6 +2426,17 @@ struct HistoryContentView: View {
                         creatorDirectoryRow(creator)
                           .id(creator.id)
                       }
+                    }
+                  }
+                  }
+                case .byRecentSave:
+                  LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: CreatorDirectoryChrome.xCardMinimumWidth), spacing: CreatorDirectoryChrome.xGridSpacing, alignment: .top)],
+                    spacing: CreatorDirectoryChrome.xGridSpacing
+                  ) {
+                    ForEach(Self.creatorsByRecentSave(model.creatorDirectoryRows)) { creator in
+                      creatorDirectoryRow(creator)
+                        .id(creator.id)
                     }
                   }
                 }
@@ -2414,7 +2484,10 @@ struct HistoryContentView: View {
       CreatorDirectoryCard(
         creator: creator,
         theme: theme,
-        isSelected: model.selectedCreatorID == creator.id,
+        // 目录里不默认高亮任何一张：上次看过的博主在侧栏会话里记着，回到目录时
+        // 第一张卡带着选中高亮，看着像已选好（2026-10-12 走查 #11）。
+        // 高亮只在点的那一下有意义，而点了就离开目录，这里恒为不亮。
+        isSelected: false,
         onRetryAvatar: { presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true) }
       )
     }
@@ -2469,6 +2542,22 @@ struct HistoryContentView: View {
     ]
     if creator.isPinned { parts.append("已置顶") }
     return parts.joined(separator: " · ")
+  }
+
+  /// 「按最近保存」：用博主最近一条作品的存入时间排，新的在前；还没存过作品的
+  /// 按名字跟在后面。和作品页的排序同一口径：只排已加载的内容（选这个排序时
+  /// 博主列表已经一次取完，见 reloadCreators）。
+  static func creatorsByRecentSave(_ creators: [CreatorSummary]) -> [CreatorSummary] {
+    creators.sorted { lhs, rhs in
+      switch (lhs.lastSavedAtMilliseconds, rhs.lastSavedAtMilliseconds) {
+      case let (l?, r?):
+        if l != r { return l > r }
+        return lhs.listingTitle < rhs.listingTitle
+      case (.some, nil): return true
+      case (nil, .some): return false
+      default: return lhs.listingTitle < rhs.listingTitle
+      }
+    }
   }
 
   /// 计数只是一个数字，用次要灰的等宽数字直接右对齐；不再套灰底胶囊——
@@ -2547,6 +2636,15 @@ struct HistoryContentView: View {
     HStack(alignment: .center, spacing: 6) {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
+          // 选了标签时先说在哪个范围里筛：标签是叠在「全部 / 自有 / 外部…」上的「且」，
+          // 不写范围就看不出筛的是哪里（2026-10-12 走查 #5）。
+          if !activeFilterTags.isEmpty {
+            Text("\(filterScopeTitle) ·")
+              .themedFont(.caption)
+              .foregroundStyle(theme.secondaryText)
+              .fixedSize()
+              .accessibilityIdentifier("history-filter-scope-label")
+          }
           if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             filterChip("“\(model.searchText.trimmingCharacters(in: .whitespacesAndNewlines))”") {
               model.searchText = ""
@@ -2558,7 +2656,7 @@ struct HistoryContentView: View {
             }
           }
           ForEach(activeFilterTags, id: \.normalizedName) { tag in
-            filterChip(tag.name) { model.toggleTag(tag, additive: true) }
+            filterChip("标签：\(tag.name)") { model.toggleTag(tag, additive: true) }
           }
         }
       }
@@ -2593,6 +2691,10 @@ struct HistoryContentView: View {
       .map(\.tag)
       .filter { model.selectedTagNormalizedNames.contains($0.normalizedName) }
   }
+
+  /// 筛选片开头那个范围词（「全部 · 标签：AI Agent」里前半段）：和列标题同一个口径，
+  /// 但去掉搜索分支——搜索词自己就是一枚片。
+  private var filterScopeTitle: String { scopeTitle }
 
   private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
     Button(action: clear) {
@@ -3061,9 +3163,11 @@ struct HistoryContentView: View {
             .lineLimit(2)
           // 「互动数据是保存时的数字」并进这一行：原来单独一行顶格在头像下面，
           // 和名字不在一条线上（2026-10-01 走查）。公众号没有互动数据，不写。
+          // 排序基准写在页头（2026-10-12 走查 #12）：默认按保存先后、新的在前，
+          // 下方可以改；日期当年省年、往年带年是同一套规则，这里不另说。
           Text(HistoryPlatformRegistry.canonicalHost(for: creator.identity.platform) == "mp.weixin.qq.com"
-            ? creatorDirectorySubtitle(creator)
-            : "\(creatorDirectorySubtitle(creator)) · 互动数据是保存时的数字")
+            ? "\(creatorDirectorySubtitle(creator)) · 默认按保存先后排（新的在前，下方可改）"
+            : "\(creatorDirectorySubtitle(creator)) · 互动数据是保存时的数字 · 默认按保存先后排（新的在前，下方可改）")
             .themedFont(.caption)
             .foregroundStyle(theme.secondaryText)
         }
@@ -3072,15 +3176,15 @@ struct HistoryContentView: View {
         Button("更新资料") {
           presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
         }
-        .buttonStyle(.appQuiet)
+        .buttonStyle(.appNormal)
         .disabled(!canCapture)
         .help("只刷新姓名和头像，不必保存新作品")
         .accessibilityIdentifier("history-creator-refresh-selected")
-        // 一主一次：抓取作品是这一页的主动作。
+        // 同组按钮同样式（2026-10-12 走查 #12），和三栏页博主页头那一对一致。
         Button("挑选作品") {
           presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
         }
-        .buttonStyle(.appProminent(theme.accent))
+        .buttonStyle(.appNormal)
         .disabled(!canCapture)
         .help(canCapture ? "打开主页，选要存的作品" : "暂不支持此平台主页")
         .accessibilityIdentifier("history-creator-capture-selected")
@@ -3440,7 +3544,7 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "person.2",
           title: "还没有添加博主",
-          message: "点加号粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
+          message: "粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
           actionTitle: "添加博主",
           action: { presentDouyinProfileImport() }
         )
@@ -3693,6 +3797,27 @@ struct HistoryContentView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("history-select-item-detail")
+      )
+    }
+    // 空合集：阅读区原来整块空白，☆ ⋯ 灰着，不知道是坏了还是本来就没什么可看
+    // （2026-10-12 走查 #10）。列表列已有完整的加入方法，这里只放一句占位。
+    // 有内容但被筛空的不算：那走「筛选没结果」的静默分支（2026-10-13 审查）。
+    if let collection = model.selectedCollection,
+       collection.itemCount == 0,
+       model.rows.isEmpty,
+       model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+       model.selectedForm == nil,
+       model.selectedTagNormalizedNames.isEmpty,
+       model.selectedHosts.isEmpty {
+      return AnyView(
+        HistoryInlineState(
+          symbol: CollectionIcon.collection,
+          title: "这里还没有内容",
+          message: "把内容加进这个合集后，就会在这里打开。",
+          seal: (.external, theme.seal.opacity(0.75))
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("history-collection-empty-detail")
       )
     }
     // 筛选/搜索没结果时，提示和「清除筛选」只在列表里说一次；详情区留白，
