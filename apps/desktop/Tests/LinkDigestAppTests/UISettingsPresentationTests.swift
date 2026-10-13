@@ -61,6 +61,47 @@ final class UISettingsPresentationTests: XCTestCase {
     XCTAssertFalse(tab.contains("save-appearance"))
   }
 
+  /// 「模型服务」卡片标题不再和页标题重复（同名两次是走查 #27）；副标题直接说明分组方式。
+  func testModelServicesCardTitleNoLongerRepeatsPageTitle() throws {
+    XCTAssertEqual(UISettingsPresentation.modelServicesCardTitle, "已添加的模型")
+    XCTAssertNotEqual(UISettingsPresentation.modelServicesCardTitle, "模型服务")
+    XCTAssertTrue(UISettingsPresentation.modelServicesSummary.contains("分组"))
+  }
+
+  /// 字号显示取整：「15」不是「15.0」（走查 #16），半档仍写「15.5」。
+  func testReadingFontSizeTextFormatsIntegersWithoutDecimals() throws {
+    XCTAssertEqual(ProviderSettingsView.readingFontSizeText(15.0), "15")
+    XCTAssertEqual(ProviderSettingsView.readingFontSizeText(15.5), "15.5")
+    XCTAssertEqual(ProviderSettingsView.readingFontSizeText(13.0), "13")
+    XCTAssertEqual(ProviderSettingsView.readingFontSizeText(24.0), "24")
+  }
+
+  /// 设置里「AI 处理」改名「AI 模型与工序」（和「处理流程」只差两个字，
+  /// https://github.com/Songxiaor/jizuo 走查命名对照表），别处跟读 `SettingsTab` 的 title。
+  func testProcessingTabTitleAvoidsCollisionWithProcessChain() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let source = try String(
+      contentsOf: root.appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("case .processing: return \"AI 模型与工序\""))
+    XCTAssertFalse(source.contains("case .processing: return \"AI 处理\""))
+  }
+
+  /// 阅读风格分段选择器的读取必须把旧偏好（sansSerif / serif / songti / kaiti）归一
+  /// 成新家族（"sansSerif" 迁到 "PingFang SC"），不然旧用户选的「黑体」档不亮
+  /// （2026-10-13 审查 #8）。断言源码里通过 `ReadingFontSelection(storedValue:)` 归一。
+  func testReadingStylePickerNormalizesLegacyFontValues() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let source = try String(
+      contentsOf: root.appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("ReadingFontSelection(storedValue: readingFontRaw).storedValue"))
+  }
+
   private func section(in source: String, from start: String, to end: String) -> String {
     let afterStart = source.range(of: start).map { source[$0.lowerBound...] } ?? Substring()
     return afterStart.range(of: end).map { String(afterStart[..<$0.lowerBound]) } ?? String(afterStart)

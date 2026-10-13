@@ -52,17 +52,43 @@ struct AppUpdateSettingsView: View {
         fill: SettingsCategoryChip.fill(for: "updates", theme: appTheme)
       )
 
+      // 应用名片：图标 + 名字 + 版本。原来这页只有一行「当前版本」，往下一拉
+      // 是来干嘛的都不说——「关于」页该有的身份先亮出来，下面才是动作。
+      HStack(spacing: DesignTokens.Space.md) {
+        if let icon = NSApp.applicationIconImage {
+          Image(nsImage: icon)
+            .resizable()
+            .frame(width: 56, height: 56)
+            .accessibilityHidden(true)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(ProductDisplay.name)
+            .themedFont(.title3, weight: .semibold)
+          Text(model.versionLine)
+            .themedFont(.body, monospacedDigit: true)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("app-update-version")
+          Text(model.buildLine)
+            .themedFont(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.vertical, DesignTokens.Space.md)
+      .padding(.horizontal, DesignTokens.Space.lg)
+      .modifier(SettingsThemedCardChrome())
+
       SettingsRowGroup {
         // 「检查更新」和版本号同一行：它是这页唯一的动作，原来裸露在卡片外的左下角。
         SettingsRow(
-          title: "当前版本",
-          caption: model.buildLine
+          title: "获取更新",
+          caption: "看这一版改了什么，或主动去查新版"
         ) {
           HStack(spacing: DesignTokens.Space.md) {
-            Text(model.versionLine)
-              .themedFont(.body, monospacedDigit: true)
-              .foregroundStyle(.secondary)
-              .accessibilityIdentifier("app-update-version")
+            // 「更新内容」：去 GitHub 看这一版改了什么（发布说明都在那里，App 里不另抄一份）。
+            Button("更新内容") { NSWorkspace.shared.open(AppUpdateSettingsModel.releaseNotesURL) }
+              .buttonStyle(.appQuiet)
+              .accessibilityIdentifier("app-update-release-notes")
             Button("检查更新") { model.checkForUpdates() }
               .buttonStyle(.appNormal)
               .disabled(!model.canCheckForUpdates)
@@ -132,6 +158,9 @@ final class AppUpdateSettingsModel: ObservableObject {
   let buildLine: String
   let canManageReminder: Bool
   let reminderCaption: String
+
+  /// 「更新内容」链接：发布说明集中在 GitHub Releases 的 Latest 页，App 里不抄第二份。
+  static let releaseNotesURL = URL(string: "https://github.com/Songxiaor/jizuo/releases/latest")!
 
   private let updater: SPUUpdater?
 

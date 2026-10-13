@@ -726,6 +726,9 @@ struct SettingsActionRow<Actions: View>: View {
 struct SettingsMenuLabel: View {
   let title: String
   var subtitle: String? = nil
+  /// true 时占满父视图给的宽度（用于「默认模型」这类独行长下拉）；
+  /// false 保持标准 240pt 列宽（多级下拉在一列里对齐）。
+  var fillsWidth = false
 
   var body: some View {
     HStack(spacing: DesignTokens.Space.sm) {
@@ -751,7 +754,8 @@ struct SettingsMenuLabel: View {
     }
     .padding(.horizontal, DesignTokens.Space.sm)
     .frame(height: 22)
-    .frame(width: DesignTokens.Layout.settingsControlWidth, alignment: .leading)
+    .frame(width: fillsWidth ? nil : DesignTokens.Layout.settingsControlWidth, alignment: .leading)
+    .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.sm + 1, style: .continuous)
         .fill(Color.primary.opacity(0.05))
@@ -784,6 +788,8 @@ struct SettingsMenuPicker<Value: Hashable>: View {
   var sectionTitles: [String?] = []
   @Binding var selection: Value
   var identifier: String? = nil
+  /// true 时按钮占满父视图宽度（「默认模型」这类独行长下拉）；false 保持 240pt 标准列。
+  var fillsWidth = false
   @State private var isPresented = false
 
   private var selected: Option? {
@@ -794,7 +800,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
     Button {
       isPresented = true
     } label: {
-      SettingsMenuLabel(title: selected?.title ?? "", subtitle: selected?.subtitle)
+      SettingsMenuLabel(title: selected?.title ?? "", subtitle: selected?.subtitle, fillsWidth: fillsWidth)
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier(identifier ?? "")

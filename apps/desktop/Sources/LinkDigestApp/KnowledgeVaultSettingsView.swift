@@ -105,12 +105,17 @@ struct KnowledgeVaultSettingsView: View {
 
           // 手排页里默认 Toggle 是勾选框；设置窗口的开关统一用拨杆并靠右，
           // 和视频存储页保持同一形态。
+          // 没选文件夹（或记住的文件夹丢了）时拨杆开着也是空转（ViewModel 那层
+          // 不会排期），和「立即同步」一样置灰，和「请先选择知识库文件夹」对得上。
+          let canAutoSync = model.hasDirectory && !model.isDirectoryMissing
           HStack {
             Text("自动同步")
+              .foregroundStyle(canAutoSync ? .primary : .secondary)
             Spacer(minLength: 12)
             Toggle("", isOn: $model.isAutoSyncEnabled)
               .toggleStyle(.switch)
               .labelsHidden()
+              .disabled(!canAutoSync)
               .accessibilityLabel("自动同步")
               .accessibilityIdentifier("knowledge-vault-auto-sync")
           }

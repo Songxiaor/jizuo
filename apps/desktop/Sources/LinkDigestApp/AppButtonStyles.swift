@@ -82,8 +82,9 @@ struct AppButtonStyle: ButtonStyle {
     case normal
     /// 辅助动作：无背景无描边，只有 hover 时浮出底色。
     case quiet
-    /// 危险动作：和 quiet 同形，但字用危险色（传进 `accent`，不传取主题 danger）。
-    /// 清除、删除、断开走这一档。
+    /// 危险动作：红字描边（传进 `accent`，不传取主题 danger）。
+    /// 2026-10-12 走查 #25：设置页按钮收成三种——实心 / 描边 / 红字描边；
+    /// 它和 quiet 不再是同一形，一眼就能看出「这一下下去不一样」。
     case destructive
   }
 
@@ -159,14 +160,15 @@ struct AppButtonStyle: ButtonStyle {
       case .quiet:
         Color.primary.opacity(configuration.isPressed ? 0.08 : (isHovering ? 0.05 : 0))
       case .destructive:
-        danger.opacity(configuration.isPressed ? 0.14 : (isHovering ? 0.08 : 0))
+        danger.opacity(configuration.isPressed ? 0.18 : (isHovering ? 0.10 : 0.04))
       }
     }
 
     private var border: Color {
       switch emphasis {
-      case .prominent, .quiet, .destructive: .clear
+      case .prominent, .quiet: .clear
       case .normal: Color.primary.opacity(0.15)
+      case .destructive: danger.opacity(isEnabled ? 0.55 : 0.3)
       }
     }
   }

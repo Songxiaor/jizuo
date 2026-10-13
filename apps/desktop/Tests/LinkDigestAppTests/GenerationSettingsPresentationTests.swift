@@ -79,8 +79,10 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     let pages = try stepPages(in: text)
     XCTAssertTrue(pages.contains("SettingsRowGroup"), "设置项要收进行组卡")
     XCTAssertTrue(page("commentsTab", in: pages).contains("details:"), "行自己的详细说明要跟控件走")
-    // 2026-10-04 发送授权挪到「数据与备份」：它是一份可清除的记录，和备份同一类。
-    XCTAssertTrue(page("dataTab", in: pages).contains("sendAuthorizationSection"), "发送授权在数据与备份页")
+    // 2026-10-13 审查：发送授权挪去「AI 模型与工序」，和按意思搜、数据去向说明一起——
+    // 原走查要求「AI 处理或隐私」，备份页只留备份。
+    XCTAssertTrue(page("processingTab", in: pages).contains("sendAuthorizationSection"), "发送授权在 AI 模型与工序页")
+    XCTAssertFalse(page("dataTab", in: pages).contains("sendAuthorizationSection"), "备份页不再装发送授权")
     let consent = try XCTUnwrap(text.range(of: "@ViewBuilder private var sendAuthorizationSection: some View").map { String(text[$0.lowerBound...].prefix(3_000)) })
     XCTAssertTrue(consent.contains("DisclosureGroup(\"了解更多\")"))
     XCTAssertTrue(consent.contains("SettingsThemedCardChrome()"))
