@@ -6941,10 +6941,11 @@ private struct HistoryDetailView: View, Equatable {
     }
     guard let snapshot, snapshot.captureMethod == Self.tidyCaptureMethod,
           machineTranscriptSnapshot != nil else { return nil }
-    return derivedMemo.value("manuscriptSwitch", snapshot: snapshot) {
-      let body = displayedSourceMarkdown(snapshot, bodyOverride: nil)
-      return SpeakerTranscript.turns(in: body).isEmpty && TranscriptManuscript.looksLikeTranscript(body) ? snapshot : nil
-    }
+    // 两项判断各自已按正文记住答案（speakerTurns、looksLikeTranscript），这里不再套一层按快照的缓存：
+    // 套了以后，哪次求值时正文还没就位，「没有开关」就会被记成这条的答案。
+    let body = displayedSourceMarkdown(snapshot, bodyOverride: nil)
+    guard speakerTurns(body, snapshot: snapshot).isEmpty, TranscriptManuscript.looksLikeTranscript(body) else { return nil }
+    return snapshot
   }
 
   /// 表头右边的三选一：校对稿（默认）/ 朱批 / 机器原稿。

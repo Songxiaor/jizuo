@@ -98,6 +98,18 @@ final class NamingSecondPassTests: XCTestCase {
     XCTAssertFalse(naming.contains("bodyText"))
   }
 
+  /// 「校对稿 / 朱批 / 机器原稿」开关是否出现，不能被「按快照缓存」的结果卡住：
+  /// 2026-10-13 实测，套了 derivedMemo 以后，某次求值时的「没有」被记成这条的答案，开关再也不出现。
+  func testManuscriptSwitchDecisionIsNotCachedPerSnapshot() throws {
+    let content = try appSource("HistoryContentView.swift")
+    let start = try XCTUnwrap(content.range(of: "private var manuscriptSwitchSnapshot"))
+    let end = try XCTUnwrap(content.range(of: "@ViewBuilder private var manuscriptSwitch:", range: start.upperBound..<content.endIndex))
+    let body = String(content[start.lowerBound..<end.lowerBound])
+    XCTAssertFalse(body.contains("derivedMemo"))
+    XCTAssertTrue(body.contains("looksLikeTranscript"))
+    XCTAssertTrue(body.contains("speakerTurns("))
+  }
+
   private func appSource(_ name: String) throws -> String {
     var url = URL(fileURLWithPath: #filePath)
     for _ in 0..<3 { url.deleteLastPathComponent() }
