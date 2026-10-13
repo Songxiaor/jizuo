@@ -4721,6 +4721,8 @@ private struct HistoryDetailView: View, Equatable {
     case quote
     case subtitles
     case transcript
+    /// 抓到的评论：单独一页，排在最后。
+    case comments
     var id: String { rawValue }
     var heading: String {
       switch self {
@@ -4728,6 +4730,7 @@ private struct HistoryDetailView: View, Equatable {
       case .quote: "引用"
       case .subtitles: LayeredSourceDocument.subtitleHeading
       case .transcript: LayeredSourceDocument.transcriptHeading
+      case .comments: "评论"
       }
     }
 
@@ -4738,6 +4741,7 @@ private struct HistoryDetailView: View, Equatable {
       case .quote: "引用"
       case .subtitles: "字幕"
       case .transcript: "转写稿"
+      case .comments: "评论"
       }
     }
 
@@ -4745,8 +4749,8 @@ private struct HistoryDetailView: View, Equatable {
     ///
     /// 翻译是整份文档一次翻完的，回来时只剩 `## 配文` 这样的文本，没有类型信息。
     init?(heading: String) {
-      // 「引用」不是译文里的小标题（它藏在配文里），反查时跳过，免得译文里恰好有一节叫「引用」被认错。
-      guard let match = Self.allCases.first(where: { $0 != .quote && $0.heading == heading }) else { return nil }
+      // 「引用」「评论」不是译文里的层标题（引用藏在配文里，评论是 `## 评论（…）` 的计数标题），反查时跳过，免得被认错。
+      guard let match = Self.allCases.first(where: { $0 != .quote && $0 != .comments && $0.heading == heading }) else { return nil }
       self = match
     }
   }
@@ -4942,15 +4946,36 @@ private struct HistoryDetailView: View, Equatable {
   private var latestSubtitleSnapshot: ContentSnapshot? {
     LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)
   }
-  /// 抓来的那段文字拆成两块：作者自己写的「文案」，和他引用的别人的内容「引用」。
-  /// 库里是同一份正文，这里只在显示时拆（见 `LayeredSourceDocument.splittingQuotes`）。
-  private var captionSplit: (text: String, quotes: String) {
-    guard hasPresentableCaption, let snapshot = latestSourceSnapshot else { return ("", "") }
-    return derivedMemo.value("captionSplit", snapshot: snapshot) {
-      LayeredSourceDocument.splittingQuotes(LayeredSourceDocument.body(of: snapshot))
+  /// 抓来的那段文字拆成三块：作者自己写的「文案」、他引用的别人的内容「引用」、抓到的「评论」。
+  /// 库里是同一份正文，这里只在显示时拆（见 `LayeredSourceDocument.splittingQuotes`、`CommentsTabSplit`）。
+  /// 自己写的笔记、稿件不拆：它们要原样编辑。
+  private var captionParts: (text: String, quotes: String, comments: String) {
+    guard !isOwnWriting, hasPresentableCaption, let snapshot = latestSourceSnapshot else { return ("", "", "") }
+    return derivedMemo.value("captionParts", snapshot: snapshot) {
+      let body = LayeredSourceDocument.body(of: snapshot)
+      let withoutComments = CommentsTabSplit.split(body)
+      let parts = LayeredSourceDocument.splittingQuotes(withoutComments.article)
+      return (parts.text, parts.quotes, withoutComments.comments)
     }
   }
-  private var captionHasQuote: Bool { !captionSplit.quotes.isEmpty }
+  private var captionHasQuote: Bool { !captionParts.quotes.isEmpty }
+  /// 评论段：配文里的优先；老记录里评论接在转写稿末尾的，也收进这一页。
+  private var commentsMarkdown: String {
+    if !captionParts.comments.isEmpty { return captionParts.comments }
+    guard !isOwnWriting, let transcript = latestTranscriptionSnapshot else { return "" }
+    return derivedMemo.value("transcriptComments", snapshot: transcript) {
+      CommentsTabSplit.split(LayeredSourceDocument.body(of: transcript)).comments
+    }
+  }
+  private var commentsCount: Int {
+    let markdown = commentsMarkdown
+    guard !markdown.isEmpty else { return 0 }
+    return derivedMemo.value("commentsCount|\(markdown.count)", snapshot: latestSourceSnapshot) {
+      CommentsTabSplit.count(inComments: markdown)
+    }
+  }
+  /// 配文被拆过（有引用或评论）：这一页只显示拆剩的文字。
+  private var captionIsSplit: Bool { captionHasQuote || !captionParts.comments.isEmpty }
 
   /// 配文层：抓取正文非空就呈现。抖音即使配文与标题相同也要能读，不能藏掉。
   /// 只有一层文字时叫「文案」还是「正文」，按帖子的结构判断（2026-10-13 Syc 定，见 `SourceTabNaming`）：
@@ -4988,10 +5013,12 @@ private struct HistoryDetailView: View, Equatable {
   private var availableSourceLayers: [SourceLayer] {
     var layers: [SourceLayer] = []
     // 引用拆出去以后，文案可能是空的（只转发、没写话）：这时只剩「引用」一页。
-    if hasPresentableCaption, !captionHasQuote || !captionSplit.text.isEmpty { layers.append(.caption) }
+    if hasPresentableCaption, !captionIsSplit || !captionParts.text.isEmpty { layers.append(.caption) }
     if captionHasQuote { layers.append(.quote) }
     if latestSubtitleSnapshot != nil { layers.append(.subtitles) }
     if latestTranscriptionSnapshot != nil { layers.append(.transcript) }
+    // 评论排在所有页签里原文各层的最后（见 readingTabs，它还在总结、译文之后）。
+    if commentsCount > 0 { layers.append(.comments) }
     return layers
   }
 
@@ -5109,8 +5136,10 @@ private struct HistoryDetailView: View, Equatable {
     // 配文**不是**分层的前提。字幕和听写同时在，就必须分层，不能因为配文与标题
     // 相同就把整页退回单层、只画听写稿。
     if latestSubtitleSnapshot != nil, latestTranscriptionSnapshot != nil { return true }
-    // 带引用的帖子：文案和引用各是一页，也走分层。
-    if hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil || captionHasQuote) {
+    // 老记录里评论接在转写稿末尾的：评论是单独一页，转写稿也要走分层。
+    if commentsCount > 0, latestTranscriptionSnapshot != nil { return true }
+    // 带引用或评论的帖子：文案、引用、评论各是一页，也走分层。
+    if hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil || captionIsSplit) {
       return true
     }
     // 抖音只有配文、还没转写时也要走配文层，避免退回「只显示转写」而整页空白。
@@ -6717,13 +6746,17 @@ private struct HistoryDetailView: View, Equatable {
     var tabs: [ReadingTab] = []
     if availableReadingPanes.contains(.source) {
       if showsSourceLayerPicker {
-        tabs += availableSourceLayers.map { ReadingTab.source($0) }
+        tabs += availableSourceLayers.filter { $0 != .comments }.map { ReadingTab.source($0) }
       } else {
         tabs.append(.source(nil))
       }
     }
     if availableReadingPanes.contains(.summary) { tabs.append(.summary) }
     if availableReadingPanes.contains(.translation) { tabs.append(.translation) }
+    // 评论排在最后，和总结、译文并排（2026-10-13 Syc 定）。
+    if availableReadingPanes.contains(.source), showsSourceLayerPicker, availableSourceLayers.contains(.comments) {
+      tabs.append(.source(.comments))
+    }
     return tabs
   }
 
@@ -6739,14 +6772,28 @@ private struct HistoryDetailView: View, Equatable {
     switch tab {
     case let .source(layer):
       // 校对稿和机器原稿是同一个「转写稿」页签里的两个版本，切换在表头右边（manuscriptSwitch）。
-      layer?.tabTitle ?? (singlePaneTranscriptSnapshot != nil
+      // 配文层叫「文案」还是「正文」，和只有一层时同一个判断（带评论的文章是「正文 / 评论」）。
+      layer.map { $0 == .caption ? captionTabTitle : $0.tabTitle } ?? (singlePaneTranscriptSnapshot != nil
         ? SourceLayer.transcript.tabTitle
         : (availableSourceLayers == [.quote]
           ? SourceLayer.quote.tabTitle
-          : (singleSourceIsCaption ? SourceLayer.caption.tabTitle : "正文")))
+          : (availableSourceLayers == [.comments]
+            ? SourceLayer.comments.tabTitle
+            : captionTabTitle)))
     case .summary: "总结"
     case .translation: "译文"
     }
+  }
+
+  private var captionTabTitle: String {
+    singleSourceIsCaption ? SourceLayer.caption.tabTitle : "正文"
+  }
+
+  /// 页签名后面灰字写的数：评论页签写已保存条数。
+  private func readingTabCount(_ tab: ReadingTab) -> Int? {
+    if case .source(.comments) = tab, commentsCount > 0 { return commentsCount }
+    if case .source(nil) = tab, availableSourceLayers == [.comments], commentsCount > 0 { return commentsCount }
+    return nil
   }
 
   private func selectReadingTab(_ tab: ReadingTab) {
@@ -6869,11 +6916,15 @@ private struct HistoryDetailView: View, Equatable {
     HStack(spacing: DesignTokens.Space.md) {
       ForEach(readingTabs) { tab in
         let isActive = tab == activeReadingTab
+        let count = readingTabCount(tab)
         let title = readingTabTitle(tab)
         Button {
           selectReadingTab(tab)
         } label: {
-          Text(title)
+          (Text(title)
+            + Text(count.map { " \($0)" } ?? "")
+            .font(.system(size: 12))
+            .foregroundStyle(theme.secondaryText.opacity(0.8)))
             .themedFont(.callout, weight: isActive ? .semibold : .regular)
             .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
             // 字距算在这块矩形里，不按笔画的透明缝隙算。左右各留一点，
@@ -6885,7 +6936,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         .buttonStyle(ReadingTabHitStyle())
         .help(isActive ? "正在看\(title)" : "切换到\(title)")
-        .accessibilityLabel(title)
+        .accessibilityLabel(count.map { "\(title) \($0)" } ?? title)
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier("history-reading-tab-\(tab.id)")
       }
@@ -8204,7 +8255,7 @@ private struct HistoryDetailView: View, Equatable {
 
   private func sourceSnapshot(for layer: SourceLayer) -> ContentSnapshot? {
     switch layer {
-    case .caption, .quote: latestSourceSnapshot
+    case .caption, .quote, .comments: latestSourceSnapshot
     case .subtitles: latestSubtitleSnapshot
     case .transcript: latestTranscriptionSnapshot
     }
@@ -9257,7 +9308,11 @@ private struct HistoryDetailView: View, Equatable {
     if showsReplacingLiveTranscript {
       VStack(alignment: .leading, spacing: 18) {
         if hasPresentableCaption, let caption = latestSourceSnapshot {
-          sourceLayer(heading: SourceLayer.caption.tabTitle, snapshot: caption)
+          sourceLayer(
+            heading: captionTabTitle,
+            snapshot: caption,
+            bodyOverride: captionIsSplit ? captionParts.text : nil
+          )
         }
         // 已经读到的画面字幕，在实时转写进行时也必须留在页面上。
         //
@@ -9288,10 +9343,10 @@ private struct HistoryDetailView: View, Equatable {
         case .caption:
           if let caption = latestSourceSnapshot {
             collapsibleSourceSection(
-              heading: showsSourceLayerPicker ? SourceLayer.caption.tabTitle : readingTabTitle(.source(nil)),
+              heading: showsSourceLayerPicker ? captionTabTitle : readingTabTitle(.source(nil)),
               snapshot: caption,
               isExpanded: $isCaptionExpanded,
-              layerBody: captionHasQuote ? captionSplit.text : nil
+              layerBody: captionIsSplit ? captionParts.text : nil
             )
           }
         case .quote:
@@ -9300,9 +9355,11 @@ private struct HistoryDetailView: View, Equatable {
               heading: SourceLayer.quote.tabTitle,
               snapshot: caption,
               isExpanded: $isQuoteExpanded,
-              layerBody: captionSplit.quotes
+              layerBody: captionParts.quotes
             )
           }
+        case .comments:
+          commentsPage
         case .subtitles:
           if let subtitles = latestSubtitleSnapshot {
             collapsibleSourceSection(
@@ -9401,6 +9458,25 @@ private struct HistoryDetailView: View, Equatable {
     return TranscriptGutter.textInset
   }
 
+  /// 「评论」页签的内容：抓到的评论，用评论组件排。
+  @ViewBuilder private var commentsPage: some View {
+    MarkdownContentView(
+      source: commentsMarkdown,
+      sourceURL: URL(string: sourceURL),
+      localImageURLs: localImageURLs,
+      localMediaFileURL: nil,
+      readingFont: sourcePaneReadingFont(latestSourceSnapshot ?? detail.snapshots.last!),
+      primaryTextColor: theme.primaryText,
+      secondaryTextColor: theme.secondaryText,
+      accentColor: theme.accent,
+      showsPlainText: .constant(false),
+      showsInlinePlainTextToggle: false,
+      anchorScope: anchorScope(for: .source) + ".comments"
+    )
+    .environment(\.commentsInOwnTab, true)
+    .accessibilityIdentifier("history-reading-comments")
+  }
+
   @ViewBuilder
   private func collapsibleSourceSection(
     heading: String,
@@ -9468,12 +9544,12 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   @ViewBuilder
-  private func sourceLayer(heading: String?, snapshot: ContentSnapshot) -> some View {
+  private func sourceLayer(heading: String?, snapshot: ContentSnapshot, bodyOverride: String? = nil) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       if let heading {
         sourceLayerHeading(heading)
       }
-      sourceSnapshotReader(snapshot)
+      sourceSnapshotReader(snapshot, bodyOverride: bodyOverride)
     }
   }
 
@@ -9531,24 +9607,7 @@ private struct HistoryDetailView: View, Equatable {
           ? { beginSourceEditing(snapshot, displayedSnippet: nil) }
           : nil
       )
-      // 评论单独成一节，用评论组件排；折叠预览时不露（它在全文最后）。
-      if previewLimit == nil, mode != .original, let comments = split.comments {
-        MarkdownContentView(
-          source: comments,
-          sourceURL: URL(string: sourceURL),
-          localImageURLs: localImageURLs,
-          localMediaFileURL: nil,
-          readingFont: sourcePaneReadingFont(snapshot),
-          primaryTextColor: theme.primaryText,
-          secondaryTextColor: theme.secondaryText,
-          accentColor: theme.accent,
-          showsPlainText: .constant(false),
-          showsInlinePlainTextToggle: false,
-          anchorScope: anchorScope(for: .source) + ".comments"
-        )
-        .padding(.leading, showsTranscriptTimecodes ? TranscriptGutter.textInset : 0)
-        .accessibilityIdentifier("transcript-comments")
-      }
+      // 评论不再接在转写稿下面，在自己的「评论」页签里（2026-10-13）。
     }
   }
 

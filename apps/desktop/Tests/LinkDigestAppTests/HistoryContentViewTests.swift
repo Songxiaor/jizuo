@@ -2018,7 +2018,8 @@ final class HistoryContentViewTests: XCTestCase {
       from: "private var readingTabs: [ReadingTab]",
       to: "private var activeReadingTab"
     )
-    XCTAssertTrue(tabs.contains("availableSourceLayers.map { ReadingTab.source($0) }"), "多层时每层一个页签")
+    XCTAssertTrue(tabs.contains(".map { ReadingTab.source($0) }"), "多层时每层一个页签")
+    XCTAssertTrue(tabs.contains("tabs.append(.source(.comments))"), "评论页签排在总结、译文之后")
     XCTAssertTrue(tabs.contains("tabs.append(.source(nil))"), "单层时仍叫「原文」")
     XCTAssertLessThan(
       tabs.range(of: "availableSourceLayers")!.lowerBound,
@@ -2046,7 +2047,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(tabsOnly.contains(".buttonStyle(ReadingTabHitStyle())"))
     XCTAssertFalse(tabsOnly.contains(".buttonStyle(.plain)"), "plain 只按笔画命中")
     XCTAssertEqual(tabsOnly.components(separatedBy: "Button {").count - 1, 1, "每个页签共用同一个按钮，不能给「翻译」单独做一套")
-    XCTAssertTrue(tabsOnly.contains(".accessibilityLabel(title)"))
+    XCTAssertTrue(tabsOnly.contains(".accessibilityLabel(count.map"))
     XCTAssertTrue(tabsOnly.contains(".accessibilityElement(children: .contain)"))
     XCTAssertTrue(tabsOnly.contains(".backgroundPreferenceValue(ReadingTabBoundsKey.self)"), "下划线要画在页签后面")
     XCTAssertFalse(tabsOnly.contains(".overlayPreferenceValue(ReadingTabBoundsKey.self)"), "盖在上面的下划线会吃掉「翻译」的点击")

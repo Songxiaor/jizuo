@@ -1086,7 +1086,7 @@ enum MarkdownPresentation {
       // 勾选保存的评论段（扩展与 App「抓取评论」）：说「已保存」，不说「已加载」。
       if isSelection {
         guard let expectedCount, expectedCount > loadedCount else { return "已保存 \(loadedCount) 条" }
-        return "已保存 \(loadedCount) 条 · 共约 \(expectedCount) 条"
+        return "已保存 \(loadedCount) 条 · 平台共约 \(expectedCount) 条"
       }
       guard let expectedCount, expectedCount > 0 else { return "已加载 \(loadedCount) 条" }
       if loadedCount >= expectedCount { return "已加载全部" }

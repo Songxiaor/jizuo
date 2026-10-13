@@ -124,6 +124,7 @@ struct ExportContentDocument: Sendable {
     case "文案", "配文":
       return [ExportContentLayer.caption, .source].first { available.contains($0) } ?? .caption
     case "引用": return .quote
+    case "评论": return available.contains(.comments) ? .comments : nil
     case "转写稿", "转写":
       if machineVersion, available.contains(.machineTranscript) { return .machineTranscript }
       return available.contains(.proofread) ? .proofread : .transcript
@@ -378,7 +379,7 @@ struct ExportContentDocument: Sendable {
       let parts = LayeredSourceDocument.splittingQuotes(split.article)
       if !parts.text.isEmpty {
         layers.append(SourceLayerText(
-          kind: transcript == nil ? captionKind(in: detail) : .caption,
+          kind: captionKind(in: detail),
           body: parts.text
         ))
       }
