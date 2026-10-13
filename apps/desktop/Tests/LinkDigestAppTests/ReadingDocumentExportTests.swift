@@ -173,7 +173,7 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertLessThan(article.lowerBound, translation.lowerBound)
     XCTAssertLessThan(translation.lowerBound, comments.lowerBound)
     XCTAssertEqual(body.components(separatedBy: "\n").filter { $0.hasPrefix("## 评论") }.count, 1)
-    XCTAssertTrue(body.contains("## 原文"))
+    XCTAssertTrue(body.contains("## 正文"))
     XCTAssertTrue(body.contains("### 小节"))
     XCTAssertFalse(body.contains("# 例"))
     // 按整行比，免得 `#### 要点` 也算含有 `### 要点`。总结标题只降一级。
@@ -218,7 +218,7 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertEqual(onSummary.layers, [.summary, .source, .comments])
     let both = ExportContentSelection(layers: [.source, .translation, .comments], current: .translation)
     let body = document.body(selecting: both)
-    let article = try XCTUnwrap(body.range(of: "## 原文"))
+    let article = try XCTUnwrap(body.range(of: "## 正文"))
     let translation = try XCTUnwrap(body.range(of: "## 译文"))
     let sourceComment = try XCTUnwrap(body.range(of: "原评一句"))
     let translatedComment = try XCTUnwrap(body.range(of: "  译评一句\n  > 原评一句"))
@@ -268,7 +268,7 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertFalse(body.contains("原评一句"))
   }
 
-  /// 只有配文和转写时列出这两层。只导出转写时文件名加「转写」，正文带转写标题。
+  /// 只有配文和转写时列出这两层。只导出转写时文件名加「转写稿」，正文带转写稿标题。
   func testTranscriptExportListsCaptionAndTranscriptSeparately() throws {
     let detail = sampleTranscript(proofread: false)
     let document = ExportContentDocument(detail: detail)
@@ -277,9 +277,10 @@ final class ReadingDocumentExportTests: XCTestCase {
       available: document.available, current: .transcript, includeComments: true
     )
     XCTAssertEqual(onTranscript.layers, [.transcript])
-    XCTAssertEqual(onTranscript.filenameSuffix, "转写")
+    XCTAssertEqual(onTranscript.filenameSuffix, "转写稿")
     let body = document.body(selecting: onTranscript)
-    XCTAssertTrue(body.contains("## 转写"))
+    XCTAssertTrue(body.contains("## 转写稿"))
+    XCTAssertFalse(body.contains("## 转写\n"))
     XCTAssertTrue(body.contains("转写正文"))
     XCTAssertFalse(body.contains("配文正文"))
   }
@@ -296,7 +297,7 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertNil(selection.filenameSuffix)
   }
 
-  /// 只有原文、没有总结和译文时，不额外加「原文」标题。
+  /// 只有正文、没有总结和译文时，不额外加「正文」标题。
   func testSourceOnlyExportStaysUnlabeled() throws {
     let document = ExportContentDocument(detail: sampleArticle(withDerived: false))
     XCTAssertEqual(document.available, [.source, .comments])
@@ -304,11 +305,109 @@ final class ReadingDocumentExportTests: XCTestCase {
       available: document.available, current: .source, includeComments: false
     )
     XCTAssertEqual(onSource.layers, [.source])
-    XCTAssertEqual(onSource.filenameSuffix, "原文")
+    XCTAssertEqual(onSource.filenameSuffix, "正文")
     let body = document.body(selecting: onSource)
     XCTAssertTrue(body.contains("原文很长"))
-    XCTAssertFalse(body.contains("## 原文"))
+    XCTAssertFalse(body.contains("## 正文"))
     XCTAssertFalse(body.contains("原评一句"))
+  }
+
+  /// 带引用的 X 推文：导出里「文案」和「引用」是两层，和阅读页的两个页签一一对应。
+  func testQuoteTweetExportSplitsCaptionFromQuote() throws {
+    let document = ExportContentDocument(detail: sampleTweet(text: Self.quoteTweetBody))
+    XCTAssertEqual(document.available, [.caption, .quote])
+    XCTAssertEqual(ExportContentLayer.quote.title, "引用")
+    let captionOnly = document.body(selecting: ExportContentSelection(layers: [.caption], current: .caption))
+    XCTAssertTrue(captionOnly.contains("这是我自己写的话"))
+    XCTAssertFalse(captionOnly.contains("被引用的那条"))
+    XCTAssertFalse(captionOnly.contains("LDQUOTE"))
+    let quoteOnly = document.body(selecting: ExportContentSelection(layers: [.quote], current: .quote))
+    XCTAssertTrue(quoteOnly.contains("## 引用"))
+    XCTAssertTrue(quoteOnly.contains("被引用的那条"))
+    XCTAssertFalse(quoteOnly.contains("这是我自己写的话"))
+    XCTAssertEqual(ExportContentSelection(layers: [.quote], current: .quote).filenameSuffix, "引用")
+  }
+
+  /// 纯文字推文只有一层，叫「文案」；整篇文章叫「正文」。
+  func testSinglePostLayerIsNamedByStructure() throws {
+    let tweet = ExportContentDocument(detail: sampleTweet(text: "只有一句话的推文"))
+    XCTAssertEqual(tweet.available, [.caption])
+    let article = ExportContentDocument(detail: sampleArticle(withDerived: false))
+    XCTAssertEqual(article.available, [.source, .comments])
+    XCTAssertEqual(
+      ExportContentSelection(layers: [.caption], current: .caption).filenameSuffix, "文案"
+    )
+  }
+
+  /// 转写稿页签下，校对稿 / 朱批停在校对稿，机器原稿停在机器原稿；导出的小标题按实际选的版本。
+  func testTranscriptTabFollowsTheSelectedVersion() throws {
+    let proofread = ExportContentDocument(detail: sampleTranscript(proofread: true))
+    XCTAssertEqual(proofread.layer(forReadingTitle: "转写稿"), .proofread)
+    XCTAssertEqual(proofread.layer(forReadingTitle: "转写稿", machineVersion: true), .machineTranscript)
+    let machine = proofread.body(selecting: ExportContentSelection(layers: [.machineTranscript], current: .machineTranscript))
+    XCTAssertTrue(machine.contains("## 机器原稿"))
+    XCTAssertEqual(
+      ExportContentSelection(layers: [.machineTranscript], current: .machineTranscript).filenameSuffix, "机器原稿"
+    )
+    // 没校对过：只有「转写稿」，开关不存在，machineVersion 不起作用。
+    let plain = ExportContentDocument(detail: sampleTranscript(proofread: false))
+    XCTAssertEqual(plain.layer(forReadingTitle: "转写稿", machineVersion: true), .transcript)
+  }
+
+  /// 旧名字仍然认：以前的页签名、存下的选择都能落到现在的层上，不丢用户勾过的那一层。
+  func testOldLayerNamesStillResolve() throws {
+    let transcript = ExportContentDocument(detail: sampleTranscript(proofread: true))
+    XCTAssertEqual(transcript.layer(forReadingTitle: "翻译"), .translation)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "译文"), .translation)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "配文"), .caption)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "文案"), .caption)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "转写"), .proofread)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "校对稿"), .proofread)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "原稿"), .machineTranscript)
+    XCTAssertEqual(transcript.layer(forReadingTitle: "机器原稿"), .machineTranscript)
+    // 「原文」以前是文章的页签：现在这一层叫「正文」（社交帖则是「文案」）。
+    let article = ExportContentDocument(detail: sampleArticle(withDerived: false))
+    XCTAssertEqual(article.layer(forReadingTitle: "原文"), .source)
+    XCTAssertEqual(article.layer(forReadingTitle: "正文"), .source)
+    let tweet = ExportContentDocument(detail: sampleTweet(text: "一句话"))
+    XCTAssertEqual(tweet.layer(forReadingTitle: "原文"), .caption)
+    XCTAssertEqual(tweet.layer(forReadingTitle: "配文"), .caption)
+    XCTAssertNil(tweet.layer(forReadingTitle: "不存在的页签"))
+  }
+
+  /// 导出里不再出现旧名字：原文、配文、转写、原稿。
+  func testExportLayerTitlesDropTheOldNames() {
+    let titles = ExportContentLayer.allCases.map(\.title)
+    XCTAssertEqual(
+      titles, ["总结", "正文", "文案", "引用", "转写稿", "校对稿", "机器原稿", "译文", "评论"]
+    )
+    for old in ["原文", "配文", "转写", "原稿"] {
+      XCTAssertFalse(titles.contains(old), old)
+    }
+  }
+
+  private static let quoteTweetBody = """
+  这是我自己写的话
+
+  <!--LDQUOTE author="@someone" url="https://x.com/someone/status/1"-->
+  被引用的那条推文
+  <!--/LDQUOTE-->
+  """
+
+  private func sampleTweet(text: String) -> HistoryDetailProjection {
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "https://x.com/a/status/9", canonicalizationVersion: 1,
+      createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    )
+    let snapshot = ContentSnapshot(
+      id: ContentSnapshotID(), taskID: task.id, sequence: 1,
+      envelopeCreatedAtMilliseconds: 10, capturedAtMilliseconds: 10,
+      sourceKind: "browser_capture", sourceURL: task.canonicalURL, title: "一条推文",
+      platform: "x", captureMethod: "browser_capture", completeness: "complete",
+      bodyText: text, characterCount: text.count, bodySHA256: String(repeating: "c", count: 64),
+      sourceLabel: "X", usedCookie: false
+    )
+    return HistoryDetailProjection(task: task, snapshots: [snapshot], runs: [])
   }
 
   /// 一项都不勾时，保存框的校验拒绝导出。

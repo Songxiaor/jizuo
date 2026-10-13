@@ -8,23 +8,29 @@ import LinkDigestCore
 /// 提到总结之后，不改变这里的顺序。
 enum ExportContentLayer: String, CaseIterable, Hashable, Sendable {
   case summary
+  /// 整篇文章、笔记这类没有附件和引用的条目：叫「正文」。
   case source
+  /// 作者自己写的那段（推文、抖音 / 小红书配文）：叫「文案」。
   case caption
+  /// 帖子里引用的别人的内容（X 引用推文）。
+  case quote
   case transcript
   case proofread
   case machineTranscript
   case translation
   case comments
 
-  /// 页签上的叫法。翻译页签叫「翻译」，导出的这一层叫「译文」。
+  /// 阅读页签上的叫法，也是勾选框和导出文件里的小标题（2026-10-13 起统一）。
+  /// 转写稿没校对过叫「转写稿」；校对过的，校对稿和机器原稿各是一个版本，各用各的名字。
   var title: String {
     switch self {
     case .summary: "总结"
-    case .source: "原文"
-    case .caption: "配文"
-    case .transcript: "转写"
+    case .source: "正文"
+    case .caption: "文案"
+    case .quote: "引用"
+    case .transcript: "转写稿"
     case .proofread: "校对稿"
-    case .machineTranscript: "原稿"
+    case .machineTranscript: "机器原稿"
     case .translation: "译文"
     case .comments: "评论"
     }
@@ -50,8 +56,8 @@ struct ExportContentSelection: Equatable, Sendable {
 
   /// 打开保存框时的默认勾选。
   ///
-  /// 停在「翻译」只勾译文。停在原文、配文、转写、校对稿、原稿，只勾那一层。
-  /// 停在「总结」勾总结和原文那一层（普通文章是原文，转写类是当前那一层）。
+  /// 停在「译文」只勾译文。停在正文、文案、引用、转写稿、校对稿、机器原稿，只勾那一层。
+  /// 停在「总结」勾总结和正文那一层（普通文章是正文，转写类是当前那一层）。
   /// 评论用上次记住的选择，第一次默认勾上。
   static func initial(
     available: [ExportContentLayer],
@@ -76,7 +82,7 @@ struct ExportContentSelection: Equatable, Sendable {
 private extension ExportContentLayer {
   var isSourceBody: Bool {
     switch self {
-    case .source, .caption, .transcript, .proofread, .machineTranscript: true
+    case .source, .caption, .quote, .transcript, .proofread, .machineTranscript: true
     case .summary, .translation, .comments: false
     }
   }
@@ -104,17 +110,26 @@ struct ExportContentDocument: Sendable {
     var unlabeledWhenAlone: Bool
   }
 
-  /// 当前页签对应哪一层。转写类按页签名字对应；普通文章的「原文」页对应 `.source`。
-  func layer(forReadingTitle title: String) -> ExportContentLayer? {
+  /// 当前页签对应哪一层。转写稿页签下校对稿和机器原稿共用一个页签名，
+  /// `machineVersion` 说明表头开关停在「机器原稿」。
+  ///
+  /// 旧名字（翻译、原文、配文、转写、原稿）仍然认：以前存下的选择、旧页签名不能因为改名就对不上，
+  /// 也不能丢掉用户勾过的那一层。「原文」「配文」按现在的结构落到正文或文案上。
+  func layer(forReadingTitle title: String, machineVersion: Bool = false) -> ExportContentLayer? {
     switch title {
-    case "总结": .summary
-    case "翻译": .translation
-    case "原文": available.contains(.source) ? .source : nil
-    case "配文": .caption
-    case "转写", "转写稿": available.contains(.proofread) ? .proofread : .transcript
-    case "校对稿": .proofread
-    case "原稿": .machineTranscript
-    default: nil
+    case "总结": return .summary
+    case "译文", "翻译": return .translation
+    case "正文", "原文":
+      return [ExportContentLayer.source, .caption].first { available.contains($0) }
+    case "文案", "配文":
+      return [ExportContentLayer.caption, .source].first { available.contains($0) } ?? .caption
+    case "引用": return .quote
+    case "转写稿", "转写":
+      if machineVersion, available.contains(.machineTranscript) { return .machineTranscript }
+      return available.contains(.proofread) ? .proofread : .transcript
+    case "校对稿": return .proofread
+    case "机器原稿", "原稿": return .machineTranscript
+    default: return nil
     }
   }
 
@@ -300,14 +315,18 @@ struct ExportContentDocument: Sendable {
     }
 
     let layered = sourceLayers(in: detail)
-    if layered.count > 1 {
+    if layered.count > 1 || layered.first?.kind == .quote {
       for layer in layered where !layer.body.isEmpty {
         built.available.append(layer.kind)
         built.pieces[layer.kind] = Piece(heading: layer.kind.title, body: layer.body, unlabeledWhenAlone: false)
       }
     } else if !source.article.isEmpty {
-      built.available.append(.source)
-      built.pieces[.source] = Piece(heading: "原文", body: source.article, unlabeledWhenAlone: true)
+      // 只有一层文字：按帖子结构叫「文案」或「正文」，和阅读页签一致。
+      let transcriptKinds: Set<ExportContentLayer> = [.transcript, .proofread, .machineTranscript]
+      let kind = layered.first.map(\.kind).flatMap { transcriptKinds.contains($0) ? $0 : nil }
+        ?? captionKind(in: detail)
+      built.available.append(kind)
+      built.pieces[kind] = Piece(heading: kind.title, body: source.article, unlabeledWhenAlone: true)
     }
 
     if let article = translation?.article, !article.isEmpty {
@@ -328,7 +347,20 @@ struct ExportContentDocument: Sendable {
     var body: String
   }
 
-  /// 配文、转写、校对稿、原稿。只有转写、没有配文时仍叫「转写」，不叫「原文」。
+  /// 抓来的那一层文字叫「文案」还是「正文」。判断规则同阅读页签（`SourceTabNaming`）。
+  private static func captionKind(in detail: HistoryDetailProjection) -> ExportContentLayer {
+    guard let caption = LayeredSourceDocument.captionSnapshot(in: detail.snapshots) else { return .source }
+    let hasQuote = !LayeredSourceDocument.splittingQuotes(LayeredSourceDocument.body(of: caption)).quotes.isEmpty
+    return SourceTabNaming.isCaption(
+      platform: caption.platform,
+      sourceLabel: caption.sourceLabel,
+      hasVideoOrAudioFile: detail.media != nil,
+      isUnsavedVideo: false,
+      hasQuote: hasQuote
+    ) ? .caption : .source
+  }
+
+  /// 文案 / 正文、引用、转写稿、校对稿、机器原稿。只有转写、没有配文时叫「转写稿」，不叫「正文」。
   private static func sourceLayers(in detail: HistoryDetailProjection) -> [SourceLayerText] {
     let snapshots = detail.snapshots
     let caption = LayeredSourceDocument.captionSnapshot(in: snapshots)
@@ -342,11 +374,16 @@ struct ExportContentDocument: Sendable {
     var layers: [SourceLayerText] = []
     if let caption, let body = nonEmpty(LayeredSourceDocument.body(of: caption)) {
       let split = splittingComments(from: body)
-      if !split.article.isEmpty {
+      // 引用块（X 的被引用推文）拆成单独一层，和阅读页的「文案 / 引用」两页一一对应。
+      let parts = LayeredSourceDocument.splittingQuotes(split.article)
+      if !parts.text.isEmpty {
         layers.append(SourceLayerText(
-          kind: transcript == nil ? .source : .caption,
-          body: split.article
+          kind: transcript == nil ? captionKind(in: detail) : .caption,
+          body: parts.text
         ))
+      }
+      if !parts.quotes.isEmpty {
+        layers.append(SourceLayerText(kind: .quote, body: parts.quotes))
       }
     }
     if let transcript {

@@ -50,6 +50,30 @@ public enum LayeredSourceDocument {
     nil
   }
 
+  /// 把配文里的引用块（X 的被引用推文，`<!--LDQUOTE …-->…<!--/LDQUOTE-->`）拆出来。
+  ///
+  /// 阅读页上「文案」是作者自己写的那段，「引用」是他引的别人的内容，两者分页签显示。
+  /// 数据不动：库里仍是同一份正文，引用块原样留在 `quotes` 里（卡片还要靠它渲染）。
+  public static func splittingQuotes(_ body: String) -> (text: String, quotes: String) {
+    let opening = "<!--LDQUOTE "
+    let closing = "<!--/LDQUOTE-->"
+    var text = ""
+    var quotes: [String] = []
+    var rest = body[...]
+    while let start = rest.range(of: opening),
+          let end = rest.range(of: closing, range: start.upperBound..<rest.endIndex) {
+      text += rest[..<start.lowerBound]
+      quotes.append(String(rest[start.lowerBound..<end.upperBound]))
+      rest = rest[end.upperBound...]
+    }
+    guard !quotes.isEmpty else { return (body, "") }
+    text += rest
+    let cleaned = text
+      .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return (cleaned, quotes.joined(separator: "\n\n"))
+  }
+
   public static func body(of snapshot: ContentSnapshot) -> String {
     let parsed = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
       .trimmingCharacters(in: .whitespacesAndNewlines)

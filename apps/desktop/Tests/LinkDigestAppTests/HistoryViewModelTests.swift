@@ -86,11 +86,11 @@ final class HistoryViewModelTests: XCTestCase {
     // 写死文案，改文案时这条不该假失败。
     XCTAssertTrue(exported.markdown.contains(caption), "分层导出应当保留配文")
     let captionHeading = try XCTUnwrap(
-      exported.markdown.range(of: LayeredSourceDocument.captionHeading),
+      exported.markdown.range(of: "## 文案"),
       "配文层缺少标题：\(exported.markdown)"
     )
     let transcriptHeading = try XCTUnwrap(
-      exported.markdown.range(of: "## 转写"),
+      exported.markdown.range(of: "## 转写稿"),
       "转写层缺少标题：\(exported.markdown)"
     )
     // 顺序与阅读区一致：配文在前，转写在后。

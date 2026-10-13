@@ -4600,6 +4600,7 @@ private struct HistoryDetailView: View, Equatable {
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   /// 长配文 / 长转写默认收起，避免把「重新转写」顶出一屏。
   @State private var isCaptionExpanded = false
+  @State private var isQuoteExpanded = false
   @State private var isTranscriptExpanded = false
   @State private var isImportedImageTextExpanded = false
   @State private var renamingSpeaker: String?
@@ -4716,12 +4717,15 @@ private struct HistoryDetailView: View, Equatable {
   /// 这里改成一次只显示一层，用和顶上「总结/翻译/原文」相同的分段控件切换。
   private enum SourceLayer: String, CaseIterable, Identifiable {
     case caption
+    /// 被引用的内容（X 引用推文）：从配文里拆出来单列一页，库里仍是同一份正文。
+    case quote
     case subtitles
     case transcript
     var id: String { rawValue }
     var heading: String {
       switch self {
       case .caption: LayeredSourceDocument.captionHeading
+      case .quote: "引用"
       case .subtitles: LayeredSourceDocument.subtitleHeading
       case .transcript: LayeredSourceDocument.transcriptHeading
       }
@@ -4730,7 +4734,8 @@ private struct HistoryDetailView: View, Equatable {
     /// 表头页签上的短名。`heading` 是文档里的小标题（「视频转写」），页签只放一个词。
     var tabTitle: String {
       switch self {
-      case .caption: "配文"
+      case .caption: "文案"
+      case .quote: "引用"
       case .subtitles: "字幕"
       case .transcript: "转写稿"
       }
@@ -4740,7 +4745,8 @@ private struct HistoryDetailView: View, Equatable {
     ///
     /// 翻译是整份文档一次翻完的，回来时只剩 `## 配文` 这样的文本，没有类型信息。
     init?(heading: String) {
-      guard let match = Self.allCases.first(where: { $0.heading == heading }) else { return nil }
+      // 「引用」不是译文里的小标题（它藏在配文里），反查时跳过，免得译文里恰好有一节叫「引用」被认错。
+      guard let match = Self.allCases.first(where: { $0 != .quote && $0.heading == heading }) else { return nil }
       self = match
     }
   }
@@ -4936,21 +4942,28 @@ private struct HistoryDetailView: View, Equatable {
   private var latestSubtitleSnapshot: ContentSnapshot? {
     LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)
   }
+  /// 抓来的那段文字拆成两块：作者自己写的「文案」，和他引用的别人的内容「引用」。
+  /// 库里是同一份正文，这里只在显示时拆（见 `LayeredSourceDocument.splittingQuotes`）。
+  private var captionSplit: (text: String, quotes: String) {
+    guard hasPresentableCaption, let snapshot = latestSourceSnapshot else { return ("", "") }
+    return derivedMemo.value("captionSplit", snapshot: snapshot) {
+      LayeredSourceDocument.splittingQuotes(LayeredSourceDocument.body(of: snapshot))
+    }
+  }
+  private var captionHasQuote: Bool { !captionSplit.quotes.isEmpty }
+
   /// 配文层：抓取正文非空就呈现。抖音即使配文与标题相同也要能读，不能藏掉。
-  /// 只有一层文字、但这条是带视频的帖子：那段文字就是视频的配文，页签叫「配文」。
-  ///
-  /// 原来只有一层时一律叫「原文」，转写完分成两层才改叫「配文 / 转写」——同一段字
-  /// 点一次转写就换了名字，像换了一份内容（2026-10-03 Syc 走查）。
+  /// 只有一层文字时叫「文案」还是「正文」，按帖子的结构判断（2026-10-13 Syc 定，见 `SourceTabNaming`）：
+  /// 社交平台上的帖子、带视频或引用的，叫「文案」；整篇文章、笔记、网页这类叫「正文」。
   private var singleSourceIsCaption: Bool {
     // `latestSourceSnapshot` 已经只取抓取来源那一层（见 captionSnapshot），不会是转写。
     guard !isOwnWriting, hasPresentableCaption, let snapshot = latestSourceSnapshot else { return false }
-    // 按内容类型判断（2026-10-13 Syc 定）：视频帖、图片帖下面的文字叫「配文」，文章和纯文字帖子叫「原文」。
-    // 原来「抓取走的是 V2 合同」就算视频帖，X 的纯文字推文也被叫成「配文」。
     return SourceTabNaming.isCaption(
+      platform: snapshot.platform,
+      sourceLabel: snapshot.sourceLabel,
       hasVideoOrAudioFile: localMediaFileURL != nil || detail.media != nil,
       isUnsavedVideo: isUnsavedXVideo,
-      isVideoPlatform: isDouyinCapture || snapshot.platform == "bilibili",
-      bodyText: LayeredSourceDocument.body(of: snapshot)
+      hasQuote: captionHasQuote
     )
   }
 
@@ -4974,7 +4987,9 @@ private struct HistoryDetailView: View, Equatable {
   /// 三处顺序必须一样，否则切换控件的排列、阅读区的内容、喂给模型的正文各说各话。
   private var availableSourceLayers: [SourceLayer] {
     var layers: [SourceLayer] = []
-    if hasPresentableCaption { layers.append(.caption) }
+    // 引用拆出去以后，文案可能是空的（只转发、没写话）：这时只剩「引用」一页。
+    if hasPresentableCaption, !captionHasQuote || !captionSplit.text.isEmpty { layers.append(.caption) }
+    if captionHasQuote { layers.append(.quote) }
     if latestSubtitleSnapshot != nil { layers.append(.subtitles) }
     if latestTranscriptionSnapshot != nil { layers.append(.transcript) }
     return layers
@@ -5094,7 +5109,8 @@ private struct HistoryDetailView: View, Equatable {
     // 配文**不是**分层的前提。字幕和听写同时在，就必须分层，不能因为配文与标题
     // 相同就把整页退回单层、只画听写稿。
     if latestSubtitleSnapshot != nil, latestTranscriptionSnapshot != nil { return true }
-    if hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil) {
+    // 带引用的帖子：文案和引用各是一页，也走分层。
+    if hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil || captionHasQuote) {
       return true
     }
     // 抖音只有配文、还没转写时也要走配文层，避免退回「只显示转写」而整页空白。
@@ -5115,8 +5131,8 @@ private struct HistoryDetailView: View, Equatable {
   private func paneLabel(_ pane: ReadingPane) -> String {
     switch pane {
     case .summary: "总结"
-    case .translation: "翻译"
-    case .source: "原文"
+    case .translation: "译文"
+    case .source: readingTabTitle(.source(nil))
     }
   }
   private var title: String {
@@ -6024,6 +6040,7 @@ private struct HistoryDetailView: View, Equatable {
       completionBanner = nil
       pendingRunPane = nil
       isCaptionExpanded = false
+      isQuoteExpanded = false
       isTranscriptExpanded = false
       isImportedImageTextExpanded = false
       isInlineNoteRequested = false
@@ -6206,7 +6223,7 @@ private struct HistoryDetailView: View, Equatable {
   private func copyFullArticle() {
     guard let detail = model.detail else { return }
     let document = ExportContentDocument(detail: detail)
-    let current = document.layer(forReadingTitle: readingTabTitle(activeReadingTab)) ?? .source
+    let current = document.layer(forReadingTitle: readingTabTitle(activeReadingTab), machineVersion: manuscriptMode == .original) ?? .source
     let selection = ExportContentSelection(layers: [current], current: current)
     guard let composed = model.composeExportMarkdown(selection: selection) else { return }
     let body = MarkdownNoteFrontmatter.parse(composed.markdown).body
@@ -6292,7 +6309,7 @@ private struct HistoryDetailView: View, Equatable {
   /// 保存框下方的「内容」勾选。只列这一条实际有的层，默认勾当前页签。
   private func exportContentChooser(for detail: HistoryDetailProjection) -> ExportContentChooser {
     let document = ExportContentDocument(detail: detail)
-    let current = document.layer(forReadingTitle: readingTabTitle(activeReadingTab)) ?? document.available.first ?? .source
+    let current = document.layer(forReadingTitle: readingTabTitle(activeReadingTab), machineVersion: manuscriptMode == .original) ?? document.available.first ?? .source
     let selection = ExportContentSelection.initial(
       available: document.available,
       current: current,
@@ -6684,14 +6701,10 @@ private struct HistoryDetailView: View, Equatable {
   /// 动作——换一份读——那就该是同一排、同一种样子。原文只有一层时仍叫「原文」。
   private enum ReadingTab: Hashable, Identifiable {
     case source(SourceLayer?)
-    /// 校对过的转写稿的机器原稿：和「校对稿」平级的一个页签（2026-10-04 详情页精简，
-    /// 原来是「原文」页签里面再分一排「校对稿 / 原稿」）。
-    case sourceOriginal
     case summary
     case translation
     var id: String {
       switch self {
-      case .sourceOriginal: "source-original"
       case let .source(layer): "source-\(layer?.rawValue ?? "single")"
       case .summary: "summary"
       case .translation: "translation"
@@ -6707,7 +6720,6 @@ private struct HistoryDetailView: View, Equatable {
         tabs += availableSourceLayers.map { ReadingTab.source($0) }
       } else {
         tabs.append(.source(nil))
-        if splitsManuscriptTabs { tabs.append(.sourceOriginal) }
       }
     }
     if availableReadingPanes.contains(.summary) { tabs.append(.summary) }
@@ -6719,22 +6731,21 @@ private struct HistoryDetailView: View, Equatable {
     switch effectiveReadingPane {
     case .summary: .summary
     case .translation: .translation
-    case .source:
-      splitsManuscriptTabs && manuscriptMode == .original
-        ? .sourceOriginal
-        : .source(showsSourceLayerPicker ? activeSourceLayer : nil)
+    case .source: .source(showsSourceLayerPicker ? activeSourceLayer : nil)
     }
   }
 
   private func readingTabTitle(_ tab: ReadingTab) -> String {
     switch tab {
     case let .source(layer):
+      // 校对稿和机器原稿是同一个「转写稿」页签里的两个版本，切换在表头右边（manuscriptSwitch）。
       layer?.tabTitle ?? (singlePaneTranscriptSnapshot != nil
-        ? (splitsManuscriptTabs ? TranscriptManuscript.Mode.revised.title : "转写稿")
-        : (singleSourceIsCaption ? SourceLayer.caption.tabTitle : "原文"))
-    case .sourceOriginal: TranscriptManuscript.Mode.original.title
+        ? SourceLayer.transcript.tabTitle
+        : (availableSourceLayers == [.quote]
+          ? SourceLayer.quote.tabTitle
+          : (singleSourceIsCaption ? SourceLayer.caption.tabTitle : "正文")))
     case .summary: "总结"
-    case .translation: "翻译"
+    case .translation: "译文"
     }
   }
 
@@ -6743,10 +6754,6 @@ private struct HistoryDetailView: View, Equatable {
     case let .source(layer):
       readingPane = .source
       selectedSourceLayer = layer
-      if manuscriptMode == .original { manuscriptMode = .revised }
-    case .sourceOriginal:
-      readingPane = .source
-      manuscriptMode = .original
     case .summary: readingPane = .summary
     case .translation: readingPane = .translation
     }
@@ -6769,7 +6776,7 @@ private struct HistoryDetailView: View, Equatable {
         readingTabStrip(pinned: pinned)
         if effectiveReadingPane == .source { reformatToggle }
         Spacer(minLength: DesignTokens.Space.md)
-        if effectiveReadingPane == .source, splitsManuscriptTabs { manuscriptMarkToggle }
+        if effectiveReadingPane == .source { manuscriptSwitch }
         readingVerbs(pinned: pinned)
       }
       // 静止时这一行跟着「处理」按钮的高度。进行中那组如果更高，居中对齐会把
@@ -6918,33 +6925,54 @@ private struct HistoryDetailView: View, Equatable {
     return snapshot
   }
 
-  /// 这份转写稿校对过、机器原稿也在，而且按逐字稿排（没分说话人、不是纯文本模式）：
-  /// 「校对稿」「原稿」拆成表头上两个平级页签。
-  private var splitsManuscriptTabs: Bool {
-    guard !showsPlainText, let snapshot = singlePaneTranscriptSnapshot,
-          snapshot.captureMethod == Self.tidyCaptureMethod, machineTranscriptSnapshot != nil else { return false }
-    return derivedMemo.value("splitsManuscriptTabs", snapshot: snapshot) {
+  /// 现在读的是校对过的转写稿、机器原稿也在、而且按逐字稿排（没分说话人、不是纯文本模式）：
+  /// 返回这份校对稿。表头右边这时出现「校对稿 / 朱批 / 机器原稿」三选一。
+  ///
+  /// 校对稿和机器原稿是同一个「转写稿」页签里的两个版本（2026-10-13 Syc 定），不再各占一个页签，
+  /// 正文上方那排切换也撤了。单人、多段（配文 + 转写）两种排法共用这一处。
+  private var manuscriptSwitchSnapshot: ContentSnapshot? {
+    guard !showsPlainText else { return nil }
+    let snapshot: ContentSnapshot?
+    if showsLayeredSource {
+      guard activeSourceLayer == .transcript else { return nil }
+      snapshot = latestTranscriptionSnapshot
+    } else {
+      snapshot = singlePaneTranscriptSnapshot
+    }
+    guard let snapshot, snapshot.captureMethod == Self.tidyCaptureMethod,
+          machineTranscriptSnapshot != nil else { return nil }
+    return derivedMemo.value("manuscriptSwitch", snapshot: snapshot) {
       let body = displayedSourceMarkdown(snapshot, bodyOverride: nil)
-      return SpeakerTranscript.turns(in: body).isEmpty && TranscriptManuscript.looksLikeTranscript(body)
+      return SpeakerTranscript.turns(in: body).isEmpty && TranscriptManuscript.looksLikeTranscript(body) ? snapshot : nil
     }
   }
 
-  /// 校对稿上的「朱批 · 改字 N 处」开关：原来和「校对稿 / 原稿」一起占正文上方一整行，
-  /// 现在挂在表头右边，和「处理」同一排。
-  @ViewBuilder private var manuscriptMarkToggle: some View {
-    if manuscriptMode != .original, let snapshot = singlePaneTranscriptSnapshot, let machine = machineTranscriptSnapshot {
-      let marked = manuscriptMode == .marked
-      Button {
-        manuscriptMode = marked ? .revised : .marked
-      } label: {
-        Text(marked ? "收起朱批" : manuscriptSummary(manuscriptRevision(snapshot: snapshot, machine: machine)))
-          .themedFont(.caption, weight: .medium)
-          .foregroundStyle(theme.seal)
-          .lineLimit(1)
+  /// 表头右边的三选一：校对稿（默认）/ 朱批 / 机器原稿。
+  /// 朱批是同一篇校对稿加上批改记号；机器原稿是 Apple 本机听写原样。
+  /// 「朱批 · 改字 N 处」的数字在选中朱批时写在开关左边，平时放在悬停提示里。
+  @ViewBuilder private var manuscriptSwitch: some View {
+    if let snapshot = manuscriptSwitchSnapshot, let machine = machineTranscriptSnapshot {
+      let summary = manuscriptSummary(manuscriptRevision(snapshot: snapshot, machine: machine))
+      HStack(spacing: DesignTokens.Space.sm) {
+        if manuscriptMode == .marked {
+          Text(summary)
+            .themedFont(.caption, weight: .medium)
+            .foregroundStyle(theme.seal)
+            .lineLimit(1)
+            .accessibilityIdentifier("transcript-manuscript-summary")
+        }
+        Picker("转写稿版本", selection: $manuscriptMode) {
+          ForEach(TranscriptManuscript.Mode.allCases) { mode in
+            Text(mode.title).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .labelsHidden()
+        .fixedSize()
+        .help("校对稿：模型校对后的定稿。朱批：在校对稿上标出改了哪些字（\(summary)）。机器原稿：本机听写原样。")
+        .accessibilityIdentifier("transcript-manuscript-modes")
       }
-      .buttonStyle(.plain)
-      .help(marked ? "收起批改记号" : "显示模型相对本机转写改了哪些字")
-      .accessibilityIdentifier("transcript-manuscript-mode-marked")
     }
   }
 
@@ -7317,7 +7345,7 @@ private struct HistoryDetailView: View, Equatable {
       HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
         ProgressView().controlSize(.small)
         VStack(alignment: .leading, spacing: 2) {
-          Text("下面是转写稿，模型正在补标点、改错字")
+          Text("下面是机器原稿，模型正在补标点、改错字")
             .themedFont(.subheadline)
             .foregroundStyle(.primary)
           Text(tidyRunningDetail)
@@ -8175,7 +8203,7 @@ private struct HistoryDetailView: View, Equatable {
 
   private func sourceSnapshot(for layer: SourceLayer) -> ContentSnapshot? {
     switch layer {
-    case .caption: latestSourceSnapshot
+    case .caption, .quote: latestSourceSnapshot
     case .subtitles: latestSubtitleSnapshot
     case .transcript: latestTranscriptionSnapshot
     }
@@ -9228,7 +9256,7 @@ private struct HistoryDetailView: View, Equatable {
     if showsReplacingLiveTranscript {
       VStack(alignment: .leading, spacing: 18) {
         if hasPresentableCaption, let caption = latestSourceSnapshot {
-          sourceLayer(heading: LayeredSourceDocument.captionHeading, snapshot: caption)
+          sourceLayer(heading: SourceLayer.caption.tabTitle, snapshot: caption)
         }
         // 已经读到的画面字幕，在实时转写进行时也必须留在页面上。
         //
@@ -9259,9 +9287,19 @@ private struct HistoryDetailView: View, Equatable {
         case .caption:
           if let caption = latestSourceSnapshot {
             collapsibleSourceSection(
-              heading: LayeredSourceDocument.captionHeading,
+              heading: showsSourceLayerPicker ? SourceLayer.caption.tabTitle : readingTabTitle(.source(nil)),
               snapshot: caption,
-              isExpanded: $isCaptionExpanded
+              isExpanded: $isCaptionExpanded,
+              layerBody: captionHasQuote ? captionSplit.text : nil
+            )
+          }
+        case .quote:
+          if let caption = latestSourceSnapshot {
+            collapsibleSourceSection(
+              heading: SourceLayer.quote.tabTitle,
+              snapshot: caption,
+              isExpanded: $isQuoteExpanded,
+              layerBody: captionSplit.quotes
             )
           }
         case .subtitles:
@@ -9332,7 +9370,10 @@ private struct HistoryDetailView: View, Equatable {
   /// 只按评论之前的正文算长短（2026-10-07 检查）：评论有自己的「还有 N 条 · 展开」。原来连评论一起算，
   /// 一句话的抖音配文带 20 条评论就被折叠，预览又刚好截在评论中间，显示「还有 7 条」，实际还有 17 条。
   private func isLongSource(_ snapshot: ContentSnapshot) -> Bool {
-    let body = LayeredSourceDocument.body(of: snapshot)
+    isLongText(LayeredSourceDocument.body(of: snapshot))
+  }
+
+  private func isLongText(_ body: String) -> Bool {
     let beforeComments = body.range(of: #"(?m)^#{1,6}\s*评论"#, options: .regularExpression)
       .map { String(body[..<$0.lowerBound]) } ?? body
     return beforeComments.count > Self.sourceCollapseCharacterLimit
@@ -9364,10 +9405,12 @@ private struct HistoryDetailView: View, Equatable {
     heading: String,
     snapshot: ContentSnapshot,
     isExpanded: Binding<Bool>,
-    showsSpeakerBar: Bool = false
+    showsSpeakerBar: Bool = false,
+    layerBody: String? = nil
   ) -> some View {
-    let body = LayeredSourceDocument.body(of: snapshot)
-    let long = isLongSource(snapshot)
+    // `layerBody`：这一页只是抓来那段文字的一部分（文案 / 引用），按这一部分算长短、排版。
+    let body = layerBody ?? LayeredSourceDocument.body(of: snapshot)
+    let long = layerBody.map(isLongText) ?? isLongSource(snapshot)
     let collapsed = long && !isExpanded.wrappedValue && !isEditingTranscription
     // 有切换控件时不再重复一遍层名：控件上就写着「配文 / 视频转写」，
     // 底下再来一行同样的字只是多占一行高度。没有控件的路径（只有一层、
@@ -9389,7 +9432,7 @@ private struct HistoryDetailView: View, Equatable {
       // 预览和全文共用这一处正文，只换字数（2026-10-07）：原来分在 if / else 两边，展开、收起
       // 都会拆掉原生文字块再新建一块，新块刚建好时只有 1 点高，整页一下变短，滚动位置被压回
       // 视频那一屏，排完版也回不去了。
-      sourceSnapshotReader(snapshot, bodyOverride: collapsed ? sourcePreview(body) : nil)
+      sourceSnapshotReader(snapshot, bodyOverride: collapsed ? sourcePreview(body) : layerBody)
       if collapsed {
         Button("展开全文") { isExpanded.wrappedValue = true }
           .buttonStyle(.plain)
@@ -9472,10 +9515,6 @@ private struct HistoryDetailView: View, Equatable {
     }()
     let shown = mode == .original ? (machineBody ?? body) : body
     VStack(alignment: .leading, spacing: 18) {
-      // 表头已经拆成「校对稿 / 原稿」两个页签、朱批开关也在表头时，这里不再画第二排。
-      if machine != nil, !splitsManuscriptTabs {
-        manuscriptModePicker(current: mode, revision: revision)
-      }
       TranscriptManuscriptView(
         paragraphs: TranscriptManuscript.paragraphs(of: shown, revision: mode == .marked ? revision : nil)
           .filter { previewLimit == nil || $0.offset < previewLimit! },
@@ -9510,53 +9549,6 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityIdentifier("transcript-comments")
       }
     }
-  }
-
-  /// 「校对稿 / 原稿」两个选项，右边一个「朱批」开关（2026-09-28 Syc 选定）。
-  ///
-  /// 朱批是同一篇校对稿加上批改记号，不单独成一页：平时读干净的，想核对时点开。
-  private func manuscriptModePicker(current: TranscriptManuscript.Mode, revision: TranscriptRevision.Result?) -> some View {
-    let showsOriginal = current == .original
-    // 二级切换，用小胶囊（2026-10-06 排版对齐）。原来是「文字 + 下划线」，和上面一排
-    // 「配文 / 转写」页签一模一样，看不出谁管谁。
-    // 前面的「版本」小字 2026-10-09 撤掉：胶囊上写着「校对稿」「原稿」，一看就是切版本（Syc 走查）。
-    return HStack(spacing: DesignTokens.Space.sm) {
-      ForEach([TranscriptManuscript.Mode.revised, .original]) { mode in
-        let selected = (mode == .original) == showsOriginal
-        Button { manuscriptMode = mode } label: {
-          Text(mode.title)
-            .themedFont(.caption, weight: selected ? .semibold : .regular)
-            .foregroundStyle(selected ? theme.selectionText : theme.secondaryText)
-            .padding(.horizontal, 8).padding(.vertical, 2)
-            .background(
-              selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
-              in: Capsule()
-            )
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("transcript-manuscript-mode-\(mode.rawValue)")
-      }
-      Spacer(minLength: 0)
-      if showsOriginal {
-        Text("Apple 本机听写原样")
-          .themedFont(.caption)
-          .foregroundStyle(theme.secondaryText)
-      } else {
-        Button {
-          manuscriptMode = current == .marked ? .revised : .marked
-        } label: {
-          Text(current == .marked ? "收起朱批" : manuscriptSummary(revision))
-            .themedFont(.caption, weight: .medium)
-            .foregroundStyle(theme.seal)
-        }
-        .buttonStyle(.plain)
-        .help(current == .marked ? "收起批改记号" : "显示模型相对本机转写改了哪些字")
-        .accessibilityIdentifier("transcript-manuscript-mode-marked")
-      }
-    }
-    .accessibilityIdentifier("transcript-manuscript-modes")
   }
 
   private func manuscriptSummary(_ revision: TranscriptRevision.Result?) -> String {
@@ -11797,7 +11789,7 @@ struct HorizontalBleedClip: Shape {
 struct SampleReadingPreviewSheet: View {
   enum Layer: String, CaseIterable, Identifiable {
     case summary = "总结"
-    case source = "原文"
+    case source = "正文"
     var id: String { rawValue }
   }
 

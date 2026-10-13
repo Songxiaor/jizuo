@@ -278,4 +278,54 @@ final class LayeredSourceDocumentTests: XCTestCase {
     XCTAssertTrue(LayeredSourceDocument.isSupersededPlaceholder(placeholder, in: all))
     XCTAssertEqual(LayeredSourceDocument.modelInput(from: all), "00:00 这是录音。")
   }
+
+  // MARK: 引用拆分
+
+  func testSplittingQuotesSeparatesAuthorTextFromQuotedTweet() {
+    let body = """
+    我的话第一段
+
+    <!--LDQUOTE author="@a" url="https://x.com/a/status/1"-->
+    被引用的内容
+    <!--/LDQUOTE-->
+
+    我的话第二段
+    """
+    let parts = LayeredSourceDocument.splittingQuotes(body)
+    XCTAssertEqual(parts.text, "我的话第一段\n\n我的话第二段")
+    XCTAssertTrue(parts.quotes.hasPrefix("<!--LDQUOTE author=\"@a\""))
+    XCTAssertTrue(parts.quotes.hasSuffix("<!--/LDQUOTE-->"))
+    XCTAssertTrue(parts.quotes.contains("被引用的内容"))
+    XCTAssertFalse(parts.text.contains("LDQUOTE"))
+  }
+
+  func testSplittingQuotesLeavesPlainBodyUntouched() {
+    let parts = LayeredSourceDocument.splittingQuotes("只有自己的话\n\n还有一段")
+    XCTAssertEqual(parts.text, "只有自己的话\n\n还有一段")
+    XCTAssertEqual(parts.quotes, "")
+  }
+
+  func testSplittingQuotesKeepsAQuoteOnlyPostAsQuoteWithEmptyText() {
+    let parts = LayeredSourceDocument.splittingQuotes(
+      "<!--LDQUOTE author=\"@a\" url=\"u\"-->\n转发的内容\n<!--/LDQUOTE-->"
+    )
+    XCTAssertEqual(parts.text, "")
+    XCTAssertTrue(parts.quotes.contains("转发的内容"))
+  }
+
+  func testSplittingQuotesCollectsEveryQuoteBlock() {
+    let block = { (n: Int) in "<!--LDQUOTE author=\"@\(n)\" url=\"u\"-->\n第\(n)条\n<!--/LDQUOTE-->" }
+    let parts = LayeredSourceDocument.splittingQuotes("正文\n\n\(block(1))\n\n\(block(2))")
+    XCTAssertEqual(parts.text, "正文")
+    XCTAssertTrue(parts.quotes.contains("第1条"))
+    XCTAssertTrue(parts.quotes.contains("第2条"))
+  }
+
+  /// 没有收尾标记的残缺块不当引用拆：宁可多显示，也不能把后面的正文吞掉。
+  func testSplittingQuotesIgnoresAnUnterminatedBlock() {
+    let body = "开头\n\n<!--LDQUOTE author=\"@a\" url=\"u\"-->\n没有收尾\n\n后面的正文"
+    let parts = LayeredSourceDocument.splittingQuotes(body)
+    XCTAssertEqual(parts.text, body)
+    XCTAssertEqual(parts.quotes, "")
+  }
 }

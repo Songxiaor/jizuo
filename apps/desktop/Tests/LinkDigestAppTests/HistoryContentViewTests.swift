@@ -337,7 +337,7 @@ final class HistoryContentViewTests: XCTestCase {
     )
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    let kept = section(in: detail, from: "private var singlePaneTranscriptSnapshot", to: "private var splitsManuscriptTabs")
+    let kept = section(in: detail, from: "private var singlePaneTranscriptSnapshot", to: "private var manuscriptSwitchSnapshot")
     XCTAssertTrue(detail.contains("if showsReplacingLiveTranscript {"))
     XCTAssertTrue(kept.contains("!showsReplacingLiveTranscript"))
     XCTAssertFalse(kept.contains("hasLiveTranscription"), "旧稿还在时，页签不能因为转写刚开跑就消失")
@@ -1418,17 +1418,17 @@ final class HistoryContentViewTests: XCTestCase {
     }
   }
 
-  /// 带视频的帖子只有配文一层时，页签就叫「配文」，转写之后不改名（2026-10-03）。
-  func testVideoPostSingleSourceTabIsNamedCaption() {
+  /// 只有一层文字时，页签叫「文案」还是「正文」按帖子结构判断（2026-10-13 第三批）。
+  func testSingleSourceTabIsNamedByPostStructure() {
     let source = historyContentViewSource()
     let title = section(in: source, from: "private func readingTabTitle", to: "private func selectReadingTab")
-    XCTAssertTrue(title.contains("singleSourceIsCaption ? SourceLayer.caption.tabTitle"))
+    XCTAssertTrue(title.contains("singleSourceIsCaption"))
+    XCTAssertTrue(title.contains("SourceLayer.caption.tabTitle"))
+    XCTAssertTrue(title.contains("\"正文\""))
     let rule = section(in: source, from: "private var singleSourceIsCaption", to: "private var hasPresentableCaption")
-    // 2026-10-13：按内容类型判断（视频帖、图片帖叫配文；文章、纯文字帖叫原文），
-    // 不再因为走了 V2 合同（hadMediaDescriptor）就把纯文字推文叫成配文。
     XCTAssertTrue(rule.contains("SourceTabNaming.isCaption("))
     XCTAssertFalse(rule.contains("hadMediaDescriptor"))
-    XCTAssertTrue(rule.contains("isDouyinCapture"))
+    XCTAssertFalse(rule.contains("bodyText"), "字数 / 正文长短不再参与判断")
   }
 
   func testWeChatPropertiesShowSourceFieldsWithoutInventingEngagementStats() {
@@ -2032,7 +2032,7 @@ final class HistoryContentViewTests: XCTestCase {
     let strip = section(
       in: source,
       from: "private func readingTabStrip(pinned: Bool) -> some View",
-      to: "private var reformatToggle"
+      to: "private var singlePaneTranscriptSnapshot"
     )
     XCTAssertFalse(strip.contains(".pickerStyle(.segmented)"))
     XCTAssertTrue(strip.contains("ForEach(readingTabs)"))
@@ -2055,14 +2055,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(hitStyle.contains("configuration.label"))
     XCTAssertTrue(hitStyle.contains(".contentShape(.interaction, Rectangle())"))
     XCTAssertTrue(hitStyle.contains("configuration.trigger()"))
-    // 原文、翻译、总结、配文、转写都进上面这一个按钮，名字从同一处取。
+    // 正文、译文、总结、文案、引用、转写稿都进上面这一个按钮，名字从同一处取。
     let titles = section(in: source, from: "private func readingTabTitle(", to: "private func selectReadingTab")
-    XCTAssertTrue(titles.contains("\"原文\""))
-    XCTAssertTrue(titles.contains("\"翻译\""))
+    XCTAssertTrue(titles.contains("\"正文\""))
+    XCTAssertTrue(titles.contains("\"译文\""))
+    XCTAssertFalse(titles.contains("\"原文\""))
+    XCTAssertFalse(titles.contains("\"翻译\""))
     XCTAssertTrue(titles.contains("\"总结\""))
     XCTAssertTrue(titles.contains("tabTitle"))
     let layers = section(in: source, from: "var tabTitle: String", to: "init?(heading: String)")
-    XCTAssertTrue(layers.contains("\"配文\""))
+    XCTAssertTrue(layers.contains("\"文案\""))
+    XCTAssertTrue(layers.contains("\"引用\""))
+    XCTAssertFalse(layers.contains("\"配文\""), "页签上不再出现「配文」")
     XCTAssertTrue(layers.contains("\"转写稿\""), "转写层页签叫「转写稿」（2026-10-13 Syc 定）")
 
     // 译文内部仍按层切换（翻译是整份文档一次翻完的），控件保持轻量。
@@ -3158,12 +3162,15 @@ final class HistoryContentViewTests: XCTestCase {
   func testReadingPaneRendersAllThreeSourceLayersInOrder() {
     let source = historyContentViewSource()
     let pane = section(in: source, from: "private var sourcePaneBody: some View", to: "private func collapsibleSourceSection")
-    for heading in ["captionHeading", "subtitleHeading", "transcriptHeading"] {
+    for heading in ["subtitleHeading", "transcriptHeading"] {
       XCTAssertTrue(
         pane.contains("LayeredSourceDocument.\(heading)"),
         "阅读区漏渲染 \(heading) 这一层——数据会静默不可见"
       )
     }
+    // 配文层现在叫「文案」，还拆出「引用」：两页都必须有渲染分支。
+    XCTAssertTrue(pane.contains("case .caption:"), "阅读区漏渲染文案这一层——数据会静默不可见")
+    XCTAssertTrue(pane.contains("case .quote:"), "阅读区漏渲染引用这一层——数据会静默不可见")
     // 这里**不**比较三个 heading 的先后：`sourcePaneBody` 有多个分支，实时转写
     // 那支里也出现 transcriptHeading，而 `range(of:)` 只找第一次出现，跨分支比
     // 位置得不出任何结论。层次顺序由 `LayeredSourceDocumentTests` 直接对
@@ -3349,7 +3356,7 @@ final class HistoryContentViewTests: XCTestCase {
       "收起时按钮应留在原处，不再滚回该层顶部"
     )
     XCTAssertTrue(
-      chrome.contains("sourceSnapshotReader(snapshot, bodyOverride: collapsed ? sourcePreview(body) : nil)"),
+      chrome.contains("sourceSnapshotReader(snapshot, bodyOverride: collapsed ? sourcePreview(body) : layerBody)"),
       "预览和全文必须共用一处正文：分在 if / else 两边会重建文字块，滚动位置被压回页面开头"
     )
   }

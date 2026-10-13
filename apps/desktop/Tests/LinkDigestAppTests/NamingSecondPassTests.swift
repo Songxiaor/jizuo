@@ -55,38 +55,47 @@ final class NamingSecondPassTests: XCTestCase {
 
   // MARK: 页签
 
-  func testSingleSourceTabIsCaptionOnlyForVideoAndImagePosts() {
-    // 视频、音频帖：有本机媒体文件、没存下来的视频、视频平台。
-    XCTAssertTrue(SourceTabNaming.isCaption(hasVideoOrAudioFile: true, isUnsavedVideo: false, isVideoPlatform: false, bodyText: "一句话"))
-    XCTAssertTrue(SourceTabNaming.isCaption(hasVideoOrAudioFile: false, isUnsavedVideo: true, isVideoPlatform: false, bodyText: "一句话"))
-    XCTAssertTrue(SourceTabNaming.isCaption(hasVideoOrAudioFile: false, isUnsavedVideo: false, isVideoPlatform: true, bodyText: "一句话"))
-    // 图片帖：有图、字很短。
-    XCTAssertTrue(SourceTabNaming.isCaption(
-      hasVideoOrAudioFile: false, isUnsavedVideo: false, isVideoPlatform: false,
-      bodyText: "今天的晚霞\n\n![图](https://pbs.twimg.com/media/a.jpg)"
-    ))
-    // X 的纯文字推文：没有视频、没有图 → 原文（以前因为走 V2 合同被叫成「配文」）。
-    XCTAssertFalse(SourceTabNaming.isCaption(
-      hasVideoOrAudioFile: false, isUnsavedVideo: false, isVideoPlatform: false, bodyText: "只有文字的一条推文"
-    ))
-    // 文章：有图但很长 → 原文。
-    let article = String(repeating: "这是一篇文章的正文。", count: 120) + "\n![配图](https://example.com/a.png)"
-    XCTAssertFalse(SourceTabNaming.isCaption(
-      hasVideoOrAudioFile: false, isUnsavedVideo: false, isVideoPlatform: false, bodyText: article
-    ))
+  func testSingleSourceTabIsNamedByPostStructureNotByLength() {
+    func isCaption(
+      _ platform: String, label: String = "", media: Bool = false, unsavedVideo: Bool = false, quote: Bool = false
+    ) -> Bool {
+      SourceTabNaming.isCaption(
+        platform: platform, sourceLabel: label, hasVideoOrAudioFile: media, isUnsavedVideo: unsavedVideo, hasQuote: quote
+      )
+    }
+    // 社交平台上的帖子：作者那段文字都是「文案」，纯文字推文也是。
+    for platform in ["x", "douyin", "xiaohongshu", "bilibili", "youtube", "weibo"] {
+      XCTAssertTrue(isCaption(platform), platform)
+    }
+    // 带视频、没存下来的视频、带引用：不管什么平台都是「文案」。
+    XCTAssertTrue(isCaption("generic", media: true))
+    XCTAssertTrue(isCaption("generic", unsavedVideo: true))
+    XCTAssertTrue(isCaption("generic", quote: true))
+    // 整篇文章、笔记、网页：「正文」。
+    for platform in ["wechat", "applenotes", "generic", "manual", "github"] {
+      XCTAssertFalse(isCaption(platform), platform)
+    }
+    // X 的长文章是一整篇文章，不是一条推文。
+    XCTAssertFalse(isCaption("x", label: SourceTabNaming.xArticleSourceLabel))
   }
 
-  func testReadingTabsUseOnlyFourNames() throws {
+  func testReadingTabsUseTheThirdPassNames() throws {
     XCTAssertEqual(TranscriptManuscript.Mode.revised.title, "校对稿")
-    XCTAssertEqual(TranscriptManuscript.Mode.original.title, "转写稿", "原来叫「原稿」")
+    XCTAssertEqual(TranscriptManuscript.Mode.marked.title, "朱批")
+    XCTAssertEqual(TranscriptManuscript.Mode.original.title, "机器原稿")
     let content = try appSource("HistoryContentView.swift")
-    XCTAssertTrue(content.contains("case .transcript: \"转写稿\""), "转写层页签原来叫「转写」")
-    XCTAssertFalse(content.contains("下面是机器原稿"))
+    XCTAssertTrue(content.contains("case .transcript: \"转写稿\""))
+    XCTAssertTrue(content.contains("下面是机器原稿，模型正在补标点、改错字"))
     XCTAssertTrue(content.contains("SourceTabNaming.isCaption("))
-    XCTAssertFalse(
-      content.contains("localMediaFileURL != nil || detail.media != nil || detail.hadMediaDescriptor"),
-      "不能再因为走了 V2 合同就把纯文字帖当视频帖"
-    )
+    // 校对稿并进「转写稿」页签：不再有单独的原稿页签，也没有正文上方那一排切换。
+    XCTAssertFalse(content.contains("case sourceOriginal"))
+    XCTAssertFalse(content.contains("manuscriptModePicker"))
+    XCTAssertFalse(content.contains("splitsManuscriptTabs"))
+    XCTAssertTrue(content.contains("manuscriptSwitch"))
+    XCTAssertFalse(content.contains("SourceTabNaming.isShortImagePost"), "500 字的规则已删")
+    let naming = try appSource("SourceTabNaming.swift")
+    XCTAssertFalse(naming.contains("500"))
+    XCTAssertFalse(naming.contains("bodyText"))
   }
 
   private func appSource(_ name: String) throws -> String {

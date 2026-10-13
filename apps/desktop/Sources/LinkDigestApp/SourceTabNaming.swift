@@ -1,32 +1,31 @@
 import Foundation
 
-/// 阅读页「原文层」只有一层文字时，页签叫什么。按内容类型判断，不按平台（2026-10-13 Syc 定）：
-/// - **配文**：视频帖、图片帖下面的那段文字；
-/// - **原文**：文章、纯文字帖子（包括 X 的纯文字推文）。
+/// 阅读页「抓来的那层文字」叫什么，按帖子的结构判断，不按字数（2026-10-13 Syc 定）：
+/// - **文案**：作者自己写的那段——X 推文正文、抖音 / 小红书 / B 站 / YouTube 的配文，
+///   视频或图片帖下面的文字，纯文字推文也算；
+/// - **正文**：整篇文章，或没有附件、没有引用的纯文字条目（笔记、备忘录、网页文章）。
 ///
-/// 只有一层、又分不出类型时一律叫「原文」。转写出来的文字叫「转写稿」，校对过的叫「校对稿」，
-/// 两个名字在别处处理，不走这里。
+/// 「转写稿」「引用」「译文」在别处处理，不走这里。文字多少不参与判断（原来图片帖按字数分的规则已删）。
 enum SourceTabNaming {
-  /// 图片帖配的文字一般很短；超过这个字数当文章，叫「原文」。
-  static let imagePostCaptionLimit = 500
+  /// 社交平台上的帖子：不论带不带附件，作者那段文字都是「文案」。
+  /// `platform` 是快照里存的平台标识。
+  static let socialPostPlatforms: Set<String> = [
+    "x", "douyin", "xiaohongshu", "bilibili", "youtube", "weibo", "tiktok", "instagram", "kuaishou"
+  ]
 
+  /// X 的长文章（Article）走这个来源：整篇文章，不是一条推文。
+  static let xArticleSourceLabel = "X public article endpoint"
+
+  /// 只有一层文字时叫「文案」还是「正文」。
   static func isCaption(
+    platform: String,
+    sourceLabel: String,
     hasVideoOrAudioFile: Bool,
     isUnsavedVideo: Bool,
-    isVideoPlatform: Bool,
-    bodyText: String
+    hasQuote: Bool
   ) -> Bool {
-    if hasVideoOrAudioFile || isUnsavedVideo || isVideoPlatform { return true }
-    return isShortImagePost(bodyText)
-  }
-
-  /// 正文里有图片，而除去图片之后文字很短。
-  static func isShortImagePost(_ bodyText: String) -> Bool {
-    let imagePattern = #"!\[[^\]]*\]\([^)]*\)"#
-    guard bodyText.range(of: imagePattern, options: .regularExpression) != nil else { return false }
-    let text = bodyText
-      .replacingOccurrences(of: imagePattern, with: "", options: .regularExpression)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    return text.count <= imagePostCaptionLimit
+    if sourceLabel == xArticleSourceLabel { return false }
+    if hasVideoOrAudioFile || isUnsavedVideo || hasQuote { return true }
+    return socialPostPlatforms.contains(platform)
   }
 }
