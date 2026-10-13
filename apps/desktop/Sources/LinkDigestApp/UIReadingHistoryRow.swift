@@ -217,7 +217,7 @@ struct UIReadingHistoryRow: View {
     } else if row.transcriptionFailed == true {
       values.append("上次转写没成功")
     } else if row.hasMedia == true {
-      values.append(text.isAudioOnly ? "有录音，还没转写" : "有视频，还没转写")
+      values.append(text.isAudioOnly ? "有录音，待转写" : "有视频，待转写")
     }
     if row.hasMindMap == true { values.append("已生成脑图") }
     return values.joined(separator: "，")

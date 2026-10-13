@@ -97,7 +97,7 @@ struct ManualLinkSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("添加网页链接").themedFont(.title3, weight: .semibold)
+      Text("添加链接").themedFont(.title3, weight: .semibold)
       // 2026-10-02：App 和扩展用同一套提取，区别只剩登录状态从哪来（Syc：区别要写进 App 让用户看到）。
       Text("粘贴网页或视频链接。\(ProductDisplay.name)会在内置网页里打开它，和浏览器扩展用同一套规则提取正文、图片和字幕。")
         .themedFont(.callout).foregroundStyle(.secondary)

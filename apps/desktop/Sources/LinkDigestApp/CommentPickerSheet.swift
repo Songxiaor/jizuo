@@ -132,7 +132,7 @@ struct CommentPickerSheet: View {
     case .loading:
       VStack(spacing: DesignTokens.Space.sm) {
         ProgressView()
-        Text("正在打开原文并读取前 \(model.limit) 条评论…")
+        Text("正在打开原页面并读取前 \(model.limit) 条评论…")
           .themedFont(.callout)
           .foregroundStyle(.secondary)
         Text("会用「设置 → 网站登录」里的登录状态；页面不会显示出来。")

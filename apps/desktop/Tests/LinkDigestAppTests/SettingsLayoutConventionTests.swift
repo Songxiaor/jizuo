@@ -127,7 +127,7 @@ final class SettingsLayoutConventionTests: XCTestCase {
     let media = try source("MediaStorageSettingsView")
     XCTAssertEqual(
       occurrences(of: "summaryPlacement: .aboveControl", in: media), 3,
-      "「历史在线播放」「B 站清晰度」「转写后清理视频」三张卡的控件都自带逐项解释，说明必须前置")
+      "「历史在线播放」「哔哩哔哩清晰度」「转写后清理视频」三张卡的控件都自带逐项解释，说明必须前置")
 
     let shared = try source("SettingsCard")
     XCTAssertTrue(
@@ -231,8 +231,8 @@ final class SettingsLayoutConventionTests: XCTestCase {
     let media = try source("MediaStorageSettingsView")
     XCTAssertTrue(
       media.contains("SettingsCrossReference("),
-      "B 站清晰度依赖网站登录，必须指明去哪一页")
-    XCTAssertTrue(media.contains("网站登录 → B 站"))
+      "哔哩哔哩清晰度依赖网站登录，必须指明去哪一页")
+    XCTAssertTrue(media.contains("网站登录 → 哔哩哔哩"))
   }
 
   // MARK: - 危险动作

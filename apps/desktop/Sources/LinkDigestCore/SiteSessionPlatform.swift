@@ -18,7 +18,7 @@ public enum SiteSessionPlatform: String, Codable, Sendable, Equatable, CaseItera
 
   public var displayName: String {
     switch self {
-    case .bilibili: "B 站"
+    case .bilibili: "哔哩哔哩"
     case .douyin: "抖音"
     case .xiaohongshu: "小红书"
     case .x: "X"

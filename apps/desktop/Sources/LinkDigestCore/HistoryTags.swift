@@ -332,7 +332,6 @@ public enum HistoryPlatformDisplay {
   public static func shortName(forHost rawHost: String) -> String {
     switch name(forHost: rawHost) {
     case "微信公众号": return "公众号"
-    case "哔哩哔哩": return "B 站"
     case "待分类": return "其他"
     case let full: return full
     }

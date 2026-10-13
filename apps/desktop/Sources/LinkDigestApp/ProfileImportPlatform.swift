@@ -7,7 +7,7 @@ enum ProfileImportPlatform: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 
   var displayName: String {
-    switch self { case .douyin: "抖音"; case .xiaohongshu: "小红书"; case .x: "X"; case .bilibili: "B 站" }
+    switch self { case .douyin: "抖音"; case .xiaohongshu: "小红书"; case .x: "X"; case .bilibili: "哔哩哔哩" }
   }
   var host: String {
     switch self { case .douyin: "douyin.com"; case .xiaohongshu: "xiaohongshu.com"; case .x: "x.com"; case .bilibili: "bilibili.com" }

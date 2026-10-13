@@ -72,7 +72,7 @@ enum CurrentCaptureMediaPreview {
       return .degraded(.init(
         kindLabel: kindLabel(descriptor.kind),
         message: "这个视频只能在原网页里看。",
-        nextAction: "点「在浏览器中打开」去原网页观看。"
+        nextAction: "点「打开原页面」去原网页观看。"
       ))
     case .browserSessionOnly, .unsupported:
       return .degraded(failurePresentation(for: descriptor))
@@ -155,10 +155,10 @@ enum CurrentCaptureMediaPreview {
     // 只留三类说法：只能在原网页看 / 播放地址过期 / 有版权保护（2026-10-01）。
     case .blobOrMSE:
       message = "这个视频只能在原网页里看。"
-      nextAction = "点「在浏览器中打开」去原网页观看。"
+      nextAction = "点「打开原页面」去原网页观看。"
     case .drmOrEncrypted:
       message = "这个视频有版权保护，\(ProductDisplay.name)不能播放。"
-      nextAction = "点「在浏览器中打开」去原网页观看。"
+      nextAction = "点「打开原页面」去原网页观看。"
     case .multipleCandidates:
       message = "页面上有好几个视频，\(ProductDisplay.name)分不清你要的是哪一个。"
       nextAction = "请在浏览器里先播放想要的那个视频，再重新保存。"
@@ -167,16 +167,16 @@ enum CurrentCaptureMediaPreview {
       nextAction = "请先在浏览器里播放一下视频，再重新保存。"
     case .browserSessionRequired:
       message = "这个视频只能在原网页里看（要用浏览器里的登录）。"
-      nextAction = "点「在浏览器中打开」去原网页观看。"
+      nextAction = "点「打开原页面」去原网页观看。"
     case .noTransferableSource:
       message = "这个视频只能在原网页里看。"
-      nextAction = "确认视频在浏览器里能播放后再重新保存；也可以点「在浏览器中打开」去原网页观看。"
+      nextAction = "确认视频在浏览器里能播放后再重新保存；也可以点「打开原页面」去原网页观看。"
     case .unsupportedMediaType:
       message = "这个视频的格式\(ProductDisplay.name)播放不了，只能在原网页里看。"
-      nextAction = "点「在浏览器中打开」去原网页观看。"
+      nextAction = "点「打开原页面」去原网页观看。"
     case .unknown:
       message = "这个视频只能在原网页里看。"
-      nextAction = "点「在浏览器中打开」去原网页观看，或稍后重新保存。"
+      nextAction = "点「打开原页面」去原网页观看，或稍后重新保存。"
     }
     return .init(kindLabel: kindLabel(descriptor.kind), message: message, nextAction: nextAction)
   }
@@ -1369,7 +1369,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           .accessibilityIdentifier("history-video-preview-cinema")
           .accessibilityLabel("放大")
       }
-      Button("在浏览器中打开", action: openInBrowser)
+      Button("打开原页面", action: openInBrowser)
         .buttonStyle(.link)
         .controlSize(.small)
     }
@@ -3004,7 +3004,7 @@ private struct HistoryStreamingMediaCard: View {
       }
 
       HStack(spacing: 10) {
-        Button("在浏览器中打开", action: openInBrowser)
+        Button("打开原页面", action: openInBrowser)
           .buttonStyle(.bordered)
           .controlSize(.small)
           .accessibilityIdentifier("history-video-streaming-open-browser")

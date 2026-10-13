@@ -98,7 +98,7 @@ enum HistorySessionMediaPresentation {
   /// 卡片正面一句话：直说这件事的机制，而不是只报「没拿到」。
   /// 详细原理仍收在「播放详情」里，不占正面。
   static let compactSummary = "在线播放地址每次打开都要重新取一次，不会保存到本机。"
-  static let openSourceActionTitle = "在浏览器中打开"
+  static let openSourceActionTitle = "打开原页面"
   static let refreshActionTitle = "重新获取播放"
   // 与设置里的说法对齐成同一个名字（2026-10-01）。
   static let technicalDetailsTitle = "播放详情"

@@ -112,7 +112,7 @@ struct HistoryRowView: View {
     if row.hasTranscript == true {
       values.append("已转写")
     } else if row.hasMedia == true {
-      values.append("有视频，还没转写")
+      values.append("有视频，待转写")
     }
     if row.hasMindMap == true { values.append("已生成脑图") }
     return values.joined(separator: "，")
@@ -169,8 +169,8 @@ struct HistoryRowView: View {
             } else if row.hasMedia == true {
               Image(systemName: "waveform.slash")
                 .foregroundStyle(theme.warning)
-                .help("有视频，还没转写")
-                .accessibilityLabel("有视频，还没转写")
+                .help("有视频，待转写")
+                .accessibilityLabel("有视频，待转写")
                 .accessibilityIdentifier("history-row-needs-transcript")
             }
             if row.hasMindMap == true {

@@ -4583,7 +4583,7 @@ final class HistoryViewModel {
     if mindMapSourceText() == nil { return "还没有可用来生成脑图的文字" }
     // 和总结、翻译同一道闸：只有占位说明时，脑图只会画出「还没有转写」几个字（2026-10-01 自查）。
     if let body = detail.snapshots.last?.bodyText, LocalImportDocument.isUntranscribedPlaceholder(body) {
-      return "还没转写：先点「转写」，有了文字稿再生成脑图"
+      return "待转写：先点「转写」，有了文字稿再生成脑图"
     }
     if Self.isTooShortForMindMap(detail) { return Self.mindMapTooShortReason }
     return nil

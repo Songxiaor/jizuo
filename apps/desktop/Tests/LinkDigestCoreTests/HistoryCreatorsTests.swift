@@ -32,7 +32,7 @@ final class HistoryCreatorsTests: XCTestCase {
   }
 
   func testUnnamedDirectoryTitleUsesAccountSegment() {
-    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "bilibili.com", profileURL: "https://space.bilibili.com/12345/video"), "未命名 B 站博主")
+    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "bilibili.com", profileURL: "https://space.bilibili.com/12345/video"), "未命名哔哩哔哩博主")
     XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "reddit.com", profileURL: "https://www.reddit.com/user/spez/"), "Reddit 博主 spez")
     XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "youtube.com", profileURL: "https://www.youtube.com/@someone/videos"), "@someone")
     XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "x.com", profileURL: "https://x.com/thedankoe"), "@thedankoe")
