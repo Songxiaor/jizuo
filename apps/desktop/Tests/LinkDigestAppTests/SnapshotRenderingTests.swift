@@ -35,9 +35,8 @@ final class SnapshotRenderingTests: XCTestCase {
 
 private struct GallerySnapshotFixture: View {
   var body: some View {
-    HistoryGallerySplitView {
-      List { Text("全部"); Text("X") }
-    } detail: {
+    HStack(spacing: 0) {
+      List { Text("全部"); Text("X") }.frame(width: 220)
       Text("图库").frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }

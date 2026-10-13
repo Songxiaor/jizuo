@@ -172,24 +172,6 @@ final class SidebarScopeFixTests: XCTestCase {
     XCTAssertTrue(order.contains(older.id), "一次取完：后面页的博主也在排序里")
     XCTAssertEqual(order.count, model.navigationCounts.creatorCount, "排序覆盖全部博主，不只是第一页")
   }
-
-  /// 走查·侧栏上移：两张侧栏容器几何不同时，偏移先换算到同一基准。
-  /// 新列表的可视区顶更高（基准小 40）时，偏移减 40，内容回落原位；不够减时停在 0。
-  func testOffsetAcrossViewportsConvertsToSameBaseline() {
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetAcrossViewports(previous: 40, oldConstant: 500, newConstant: 460),
-      0
-    )
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetAcrossViewports(previous: 180, oldConstant: 500, newConstant: 460),
-      140
-    )
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetAcrossViewports(previous: 180, oldConstant: 500, newConstant: 500),
-      180,
-      "同一容器（分组展开收起）不换算"
-    )
-  }
 }
 
 private func upsertCommand(

@@ -152,9 +152,6 @@ enum CreatorDirectoryChrome {
     return parts.joined(separator: " · ")
   }
 
-  static let listColumnMin: CGFloat = 260
-  static let listColumnIdeal: CGFloat = 270
-  static let listColumnMax: CGFloat = 270
   static let xCardMinimumWidth: CGFloat = 230
   static let xGridSpacing: CGFloat = 10
   static let xGridHorizontalPadding: CGFloat = 24

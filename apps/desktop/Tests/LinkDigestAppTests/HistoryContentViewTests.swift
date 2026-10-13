@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 import LinkDigestCore
 @testable import LinkDigestApp
@@ -397,17 +398,77 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 整窗只有一个分栏容器（2026-10-13 侧栏漂移）：卡片墙、博主页只换中间和右边，
+  /// 侧栏所在的 NavigationSplitView 不换。以前这两类页面换成 HSplitView，进出一次侧栏拆掉重建，
+  /// 两个容器顶部留白不同，整列侧栏上下跳、点按落到相邻一行。
+  func testSidebarLivesInOneContainerForEveryPage() {
+    let source = historyContentViewSource()
+    let creators = appSource("CreatorDirectoryViews.swift")
+    XCTAssertFalse(creators.contains("HistoryGallerySplitView"), "第二个分栏容器已删除，不要加回来")
+    XCTAssertFalse(source.contains("HistoryGallerySplitView"))
+    XCTAssertFalse(source.contains("history-gallery-navigation"), "不能再用 .id 强制重建侧栏")
+    let body = section(in: source, from: "private var themedBody: some View {", to: "WindowColumnDividerInstaller(")
+    XCTAssertEqual(
+      body.components(separatedBy: "NavigationSplitView(columnVisibility:").count - 1, 1,
+      "themedBody 里只能有一个 NavigationSplitView；专注阅读（detailOnly）是唯一不带侧栏的分支"
+    )
+    XCTAssertEqual(body.components(separatedBy: "navigationRail").count - 1, 1, "侧栏只在容器里出现一次")
+    XCTAssertTrue(body.contains("usesFullWidthSurface ? 0 : DesignTokens.Layout.listMin"),
+                  "卡片墙、博主页时中间列折成 0 宽，而不是换容器")
+  }
+
+  /// 同一个 NavigationSplitView 里只换中间和右边：侧栏的 NSView 是同一个对象、位置不变，
+  /// 窗口不被压窄。夹具和 themedBody 同一结构（侧栏 | 可折成 0 宽的中间列 | 右边）。
+  @MainActor
+  func testSidebarViewSurvivesSwitchingBetweenListAndFullWidthSurface() async throws {
+    _ = NSApplication.shared
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1245, height: 700),
+      styleMask: [.titled, .resizable], backing: .buffered, defer: false
+    )
+    window.isReleasedWhenClosed = false
+    defer { window.close() }
+    let state = SidebarContainerFixtureState()
+    let host = NSHostingView(rootView: SidebarContainerFixture(state: state))
+    window.contentView = host
+    window.setContentSize(NSSize(width: 1245, height: 700))
+    try await Task.sleep(for: .milliseconds(200))
+    host.layoutSubtreeIfNeeded()
+    let marker = try XCTUnwrap(Self.findMarker(in: host))
+    let before = marker.convert(marker.bounds, to: host)
+    XCTAssertGreaterThan(before.width, 0)
+
+    for fullWidth in [true, false, true, false] {
+      state.fullWidth = fullWidth
+      try await Task.sleep(for: .milliseconds(200))
+      host.layoutSubtreeIfNeeded()
+      let now = try XCTUnwrap(Self.findMarker(in: host))
+      XCTAssertTrue(now === marker, "切页面不能换掉侧栏的视图（fullWidth=\(fullWidth)）")
+      let frame = now.convert(now.bounds, to: host)
+      XCTAssertEqual(frame.minX, before.minX, accuracy: 0.5, "侧栏左缘（fullWidth=\(fullWidth)）")
+      XCTAssertEqual(frame.minY, before.minY, accuracy: 0.5, "侧栏顶缘（fullWidth=\(fullWidth)）")
+      XCTAssertEqual(frame.width, before.width, accuracy: 0.5, "侧栏宽度（fullWidth=\(fullWidth)）")
+      XCTAssertEqual(window.contentView?.bounds.width ?? 0, 1245, accuracy: 0.5, "窗口宽度不被压窄（fullWidth=\(fullWidth)）")
+    }
+  }
+
+  @MainActor
+  private static func findMarker(in root: NSView) -> SidebarIdentityMarkerView? {
+    if let marker = root as? SidebarIdentityMarkerView { return marker }
+    return root.subviews.lazy.compactMap { findMarker(in: $0) }.first
+  }
+
   /// 博主页用的是同一条侧栏。展开必须换掉分组本身：组内 Group 的 id 会被 List 摊平，
   /// 新建出来、当时是空的那一组，后来插入的行画不出来。
   func testCreatorPageSectionIdentityFollowsExpansion() {
     let source = historyContentViewSource()
-    let gallery = section(
+    let sidebarColumn = section(
       in: source,
-      from: "HistoryGallerySplitView(sidebarWidth:",
-      to: "} detail:"
+      from: "NavigationSplitView(columnVisibility: $columnVisibility) {",
+      to: "} content: {"
     )
     XCTAssertTrue(
-      gallery.contains("navigationRail"),
+      sidebarColumn.contains("navigationRail"),
       "全部博主页必须用同一条侧栏"
     )
     // 2026-10-12（Syc 定）：「视图」拆掉，收着的分组换成「实用工具」；顶部一组跟着「自有 / 外部」的展开换 id。
@@ -997,10 +1058,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarMin"))
     XCTAssertTrue(source.contains("ideal: threeColumnWidths.sidebar"))
     XCTAssertTrue(source.contains("max: DesignTokens.Layout.sidebarMax"))
-    XCTAssertTrue(source.contains("HistoryGallerySplitView(sidebarWidth: DesignTokens.Layout.storedSidebarWidth(storedSidebarWidth))"))
-    XCTAssertTrue(source.contains("min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin"))
-    XCTAssertTrue(source.contains("ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : threeColumnWidths.list"))
-    XCTAssertTrue(source.contains("CreatorDirectoryChrome.listColumnMin"), "博主目录中栏才缩窄，历史列表仍用 listMin")
+    XCTAssertFalse(source.contains("HistoryGallerySplitView"), "卡片墙、博主页不再有自己的分栏容器")
+    // 卡片墙、博主页占满右边：中间列折成 0 宽；其余页面照常用记下的列表宽度。
+    XCTAssertTrue(source.contains("min: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMin"))
+    XCTAssertTrue(source.contains("ideal: usesFullWidthSurface ? 0 : threeColumnWidths.list"))
+    XCTAssertTrue(source.contains("max: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMax"))
     XCTAssertTrue(source.contains("互动数据是保存时的数字"))
     XCTAssertTrue(source.contains(".modifier(HistoryWindowToolbarThemeModifier(theme: theme))"))
     // 工具栏背景必须逐列挂载：根部那一份对 macOS 分栏窗口不生效，表现是
@@ -1094,8 +1156,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains(".id(row.taskID)"))
     XCTAssertFalse(source.contains("NavigationSplitView {"), "每个分栏容器都必须绑定共享的可见性状态")
     XCTAssertTrue(source.contains("showsPlatformGallerySurface || model.isCreatorDirectoryActive"))
-    XCTAssertTrue(source.contains(".id(\"history-gallery-navigation\")"))
-    XCTAssertTrue(source.contains("HistoryGallerySplitView(sidebarWidth:"))
+    XCTAssertFalse(source.contains("history-gallery-navigation"), "不能再用 .id 强制重建侧栏")
     XCTAssertTrue(source.contains("history-gallery-sidebar-toggle"))
     XCTAssertTrue(source.contains("withMenuCommands(themedBody)\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
@@ -3868,5 +3929,48 @@ final class ReadingTextDeleteCommandTests: XCTestCase {
       enabledWithoutDeleteValidator,
       "删除的校验不该单独把编辑 → 拷贝关掉"
     )
+  }
+}
+
+// MARK: - 侧栏容器夹具
+
+private final class SidebarIdentityMarkerView: NSView {}
+
+private struct SidebarIdentityMarker: NSViewRepresentable {
+  func makeNSView(context: Context) -> SidebarIdentityMarkerView { SidebarIdentityMarkerView() }
+  func updateNSView(_ nsView: SidebarIdentityMarkerView, context: Context) {}
+}
+
+@MainActor
+private final class SidebarContainerFixtureState: ObservableObject {
+  @Published var fullWidth = false
+}
+
+private struct SidebarContainerFixture: View {
+  @ObservedObject var state: SidebarContainerFixtureState
+  @State private var visibility: NavigationSplitViewVisibility = .all
+
+  var body: some View {
+    NavigationSplitView(columnVisibility: $visibility) {
+      List { Text("全部"); Text("全部博主") }
+        .listStyle(.sidebar)
+        .background(SidebarIdentityMarker())
+        .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 300)
+    } content: {
+      Group {
+        if state.fullWidth { Color.clear } else { List { Text("列表一"); Text("列表二") } }
+      }
+      .navigationSplitViewColumnWidth(
+        min: state.fullWidth ? 0 : 240, ideal: state.fullWidth ? 0 : 280, max: state.fullWidth ? 0 : 340
+      )
+    } detail: {
+      Group {
+        if state.fullWidth {
+          ScrollView { Text("卡片墙").frame(maxWidth: .infinity) }
+        } else {
+          ScrollViewReader { _ in ScrollView { Text("阅读").frame(maxWidth: .infinity) } }
+        }
+      }
+    }
   }
 }

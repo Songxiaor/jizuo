@@ -269,6 +269,19 @@ struct HistoryContentView: View {
       && isPlatformGalleryRequested
   }
 
+  /// 卡片墙和博主页不分「列表 | 阅读」，整个右边都是它们的内容。
+  private var usesFullWidthSurface: Bool {
+    showsPlatformGallerySurface || model.isCreatorDirectoryActive
+  }
+
+  private var contentColumnTitle: String {
+    if showsPlatformGallerySurface {
+      return PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
+    }
+    if model.isCreatorDirectoryActive { return "博主" }
+    return listColumnTitle
+  }
+
   private var platformGalleryAccessibilityPrefix: String {
     if model.selectedHosts == Set(["x.com"]) { return "x-post-gallery" }
     if model.selectedHosts == Set(["mp.weixin.qq.com"]) { return "wechat-article-gallery" }
@@ -371,7 +384,6 @@ struct HistoryContentView: View {
   }
 
   private func platformGalleryGoBack() {
-    sidebarScrollMemory.snapshot()
     // 卡片墙里勾着几张时，Esc / ⌘[ 先取消选择，再按一次才离开。
     if !isReadingPlatformGalleryItem, !model.selectedTaskIDs.isEmpty {
       model.selectedTaskIDs = []
@@ -414,30 +426,10 @@ struct HistoryContentView: View {
               .frame(maxWidth: .infinity, maxHeight: .infinity)
               .background(theme.card)
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
-          } else if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
-            // A gallery is a desktop split, not an adaptive navigation stack.
-            // NavigationSplitView can collapse its own host to the reader's
-            // intrinsic width when the detail swaps back to a ScrollViewReader.
-            HistoryGallerySplitView(sidebarWidth: DesignTokens.Layout.storedSidebarWidth(storedSidebarWidth)) {
-              navigationRail.modifier(HistoryWindowToolbarThemeModifier(theme: theme))
-            } detail: {
-              Group {
-                if model.isCreatorDirectoryActive { creatorDirectorySurface }
-                else { platformGallerySurface }
-              }
-              .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .id("history-gallery-navigation")
-            // 窗口名跟着页面走；工具栏里不重复画标题——页面自己的页头已经写着「X · 已保存…」「全部博主」。
-            // 原来这里没有标题，工具栏左上角落成 App 名「汲作」（2026-09-25 走查）。
-            .navigationTitle(showsPlatformGallerySurface
-              ? PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
-              : "博主")
-            .toolbar(removing: .title)
-            // 回到三栏时从图库页之前记下的宽度起步。
-            .onDisappear { threeColumnWidths = .stored() }
           } else {
+            // 整个窗口只有这一个分栏容器：卡片墙、博主页只换中间和右边，侧栏的视图身份不变。
+            // 以前这两类页面换成另一个容器（HSplitView），每进出一次侧栏就拆掉重建，
+            // 两个容器顶部留白不同，整列侧栏上下跳、点按落到相邻一行（2026-10-13 Syc 指出）。
             NavigationSplitView(columnVisibility: $columnVisibility) {
               // 左侧栏可拖；拖出的宽度由 WindowColumnDividerInstaller 记下，
               // 这里和图库页都从同一个值起步，切换分类不再各自一个宽度。
@@ -451,14 +443,15 @@ struct HistoryContentView: View {
               // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
               // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
               Group {
-                if model.isWorkbenchActive, isWorkbenchVisible {
+                if usesFullWidthSurface {
+                  // 卡片墙、博主页占满右边：中间这一列折成 0 宽，留着它只为让侧栏的容器不变。
+                  Color.clear
+                } else if model.isWorkbenchActive, isWorkbenchVisible {
                   WorkbenchListView(
                     model: model,
                     onNewSpark: { isNewSparkPresented = true },
                     onTakeTopic: takeTopic
                   )
-                } else if model.isCreatorDirectoryActive {
-                  creatorDirectory
                 } else {
                   sidebar
                 }
@@ -466,18 +459,28 @@ struct HistoryContentView: View {
               // 列表滚动时行文字原样从「全部」标题和搜索、「＋」图标底下穿过（2026-09-24
               // 走查实测；系统 scroll edge 在这一列同样不生效）。和详情列同一层渐隐遮罩。
               .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
-              .navigationTitle(listColumnTitle)
+              // 窗口名跟着页面走；工具栏里不重复画标题——页面自己的页头已经写着「X · 已保存…」「全部博主」。
+              // 原来这里没有标题，工具栏左上角落成 App 名「汲作」（2026-09-25 走查）。
+              .navigationTitle(contentColumnTitle)
               .toolbar(removing: .title)
-              .toolbar { listColumnToolbar }
+              .toolbar { if !usesFullWidthSurface { listColumnToolbar } }
               .navigationSplitViewColumnWidth(
-                min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin,
-                ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : threeColumnWidths.list,
-                max: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMax : DesignTokens.Layout.listMax
+                min: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMin,
+                ideal: usesFullWidthSurface ? 0 : threeColumnWidths.list,
+                max: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMax
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
             } detail: {
-              detailColumn
-                .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
+              Group {
+                if model.isCreatorDirectoryActive { creatorDirectorySurface }
+                else if showsPlatformGallerySurface { platformGallerySurface }
+                else { detailColumn }
+              }
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
+            }
+            // 从卡片墙、博主页回到「列表 | 阅读」时，列表列从用户上次拖出的宽度起步。
+            .onChange(of: usesFullWidthSurface) { _, isFullWidth in
+              if !isFullWidth { threeColumnWidths = .stored() }
             }
           }
         }
@@ -665,7 +668,7 @@ struct HistoryContentView: View {
     }
     .toolbar {
       ToolbarItem(placement: .navigation) {
-        if showsPlatformGallerySurface || model.isCreatorDirectoryActive || columnVisibility == .detailOnly {
+        if columnVisibility == .detailOnly {
           Button {
             columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
           } label: {
@@ -999,7 +1002,6 @@ struct HistoryContentView: View {
       }
       if !model.selectedHosts.isEmpty {
         Button {
-          sidebarScrollMemory.snapshot()
           isPlatformGalleryRequested = true
         } label: {
           Label("卡片视图", systemImage: "square.grid.2x2")
@@ -1497,7 +1499,6 @@ struct HistoryContentView: View {
     let selected = model.selectedScope == scope && !model.hasNonTagCategoryFilter
       && !model.isCreatorDirectoryActive && !model.isWorkbenchActive
     let select = {
-      sidebarScrollMemory.snapshot()
       isReadingPlatformGalleryItem = false
       model.selectScope(scope)
     }
@@ -2148,8 +2149,6 @@ struct HistoryContentView: View {
     action: @escaping () -> Void
   ) -> some View {
     Button {
-      // 进「全部博主」、来源卡片墙这类两栏页面时侧栏会换一张，先把位置定住（见 SidebarScrollMemory）。
-      sidebarScrollMemory.snapshot()
       action()
     } label: {
       HStack(spacing: 8) {
