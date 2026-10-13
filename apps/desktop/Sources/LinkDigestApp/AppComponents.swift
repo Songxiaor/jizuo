@@ -221,3 +221,71 @@ struct ThemedWindowRoot<Content: View>: View {
       .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)
   }
 }
+
+/// 提示条：左边图标加文字，右边一个主按钮。
+///
+/// 待转写、未总结、回收站（列表顶和详情顶）原来各写一份：有的按钮在右上、有的在左下，
+/// 底色和字号也不同，按钮还被截成「全部转写…」「总结前 20 条…」（2026-10-13 走查 #22/#3/#8）。
+/// 现在都走这一个：按钮不缩、不截（`fixedSize`），文字在它左边自己折行。
+struct NoticeBanner: View {
+  enum ActionStyle { case prominent, destructive }
+
+  let icon: String
+  let title: String
+  var detail: String? = nil
+  let actionTitle: String
+  var actionStyle: ActionStyle = .prominent
+  var isActionDisabled = false
+  var actionHelp: String? = nil
+  var actionIdentifier: String
+  var identifier: String
+  /// 整条左右留白：列表里 10，通栏的详情顶部 16。
+  var horizontalInset: CGFloat = 10
+  let action: () -> Void
+
+  @Environment(\.appTheme) private var theme
+
+  var body: some View {
+    // 第一行：图标、标题、右边的主按钮；说明另起一行占满整条宽度。列表列只有两百来点宽，
+    // 说明和按钮挤在同一排时，说明被挤成八九行窄条（2026-10-13 截图实测）。
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+        Image(systemName: icon)
+          .foregroundStyle(theme.info)
+          .accessibilityHidden(true)
+        Text(title)
+          .themedFont(.caption, weight: .semibold)
+          .foregroundStyle(theme.primaryText)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+          switch actionStyle {
+          case .prominent:
+            Button(actionTitle, action: action).buttonStyle(.appProminent(theme.accent))
+          case .destructive:
+            Button(actionTitle, action: action).buttonStyle(.appDestructive(theme.danger))
+          }
+        }
+        .fixedSize()
+        .layoutPriority(1)
+        .disabled(isActionDisabled)
+        .help(actionHelp ?? "")
+        .accessibilityIdentifier(actionIdentifier)
+      }
+      if let detail {
+        Text(detail)
+          .themedFont(.caption2)
+          .foregroundStyle(theme.secondaryText)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .padding(.vertical, DesignTokens.Space.sm)
+    .background(theme.info.opacity(0.10), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+    .padding(.horizontal, horizontalInset)
+    .padding(.bottom, 8)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier(identifier)
+  }
+}

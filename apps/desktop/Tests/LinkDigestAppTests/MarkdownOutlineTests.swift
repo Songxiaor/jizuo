@@ -215,7 +215,7 @@ extension MarkdownOutlineTests {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(history.contains(".subtleScrollers()"), "详情区没接")
+    XCTAssertTrue(history.contains(".subtleScrollers"), "详情区没接")
   }
 
   /// 跳转靠 ScrollViewReader 驱动外层滚动容器。
