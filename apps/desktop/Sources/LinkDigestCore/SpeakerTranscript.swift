@@ -66,6 +66,14 @@ public enum SpeakerTranscript {
   /// 两位编号（「说话人 01」）：对齐常见会议纪要的写法，十人以内的列表也整齐。
   public static func defaultName(_ index: Int) -> String { String(format: "说话人 %02d", index) }
 
+  /// 旧稿写成「说话人 1」，新稿写成「说话人 01」。阅读时统一成两位，不改已存的正文。
+  public static func displayLabel(_ stored: String) -> String {
+    guard let match = stored.wholeMatch(of: /^说话人\s*(\d+)$/),
+          let number = Int(match.1), number >= 0, number < 100
+    else { return stored }
+    return defaultName(number)
+  }
+
   /// 引擎的原始编号 → 「说话人 01、02……」，按首次出现的先后编号。
   public static func displayNames(for segments: [SpeakerSegment]) -> [String: String] {
     var names: [String: String] = [:]

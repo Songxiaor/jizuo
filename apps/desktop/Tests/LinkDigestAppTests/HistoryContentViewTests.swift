@@ -1270,7 +1270,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(byline.contains("HistorySourceLinkPresentation.host"), "站点看列表行的平台图标")
     XCTAssertFalse(byline.contains("\"存于 \""), "存入日期看列表分组和行尾")
     XCTAssertFalse(byline.contains("bylineText(for: detail.media)"), "时长看播放条，体积进访达按钮的悬停")
-    XCTAssertTrue(byline.contains("+ \"发布\""))
+    XCTAssertTrue(byline.contains("\" 发布\""), "外部内容的日期写「发布」")
+    XCTAssertTrue(byline.contains("\" 存入\""), "自己导入或另外存入的日期写「存入」")
+    XCTAssertTrue(byline.contains("\" 创建\""), "笔记的日期写「创建」")
 
     let header = section(in: source, from: "private var sourceByline: some View {", to: "private enum VideoFetchNoticeKind")
     XCTAssertTrue(header.contains(".help(sourceDateHelp)"), "完整的发布 / 保存时间放悬停")
@@ -2942,6 +2944,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2025-08-20 15:21:07", now: now), "2025年8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00Z", now: now),
                    HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00.000Z", now: now))
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.calendarDayLabel("2026-09-04", now: now), "9月4日")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.calendarDayLabel("2016-04-07", now: now), "2016年4月7日")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.calendarDayLabel("2026-01-07 21:53・北京", now: now), "1月7日")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.location(in: "2026-01-07 21:53・北京"), "北京")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.stableDayLabel("2026-03-15"), "2026年3月15日")
   }
 
   func testPublishedTimestampFormatterParsesStandardAndFractionalISOWithoutImportFallback() {
