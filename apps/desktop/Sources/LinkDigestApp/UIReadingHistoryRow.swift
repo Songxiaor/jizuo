@@ -662,7 +662,10 @@ enum DailyNoteTitleFormat {
       lines.append(line)
     }
     guard !lines.isEmpty else { return nil }
-    return String(lines.joined(separator: " ").prefix(240))
+    // 列表只显示字：成对的加粗、斜体去掉，被截断后只剩半边的 ** 也去掉（2026-10-13「回复格式」笔记）。
+    // 只改列表这一行；笔记原文和导出不动。
+    let text = HistoryRowProjection.strippingInlineMarkup(lines.joined(separator: " "))
+    return text.isEmpty ? nil : String(text.prefix(240))
   }
 
   /// 首个非空行是与 `title` 相同的 `#` 标题时去掉它。
@@ -687,6 +690,7 @@ enum DailyNoteTitleFormat {
     guard let raw = cleaned.split(whereSeparator: \.isNewline).first else { return nil }
     var line = String(raw).trimmingCharacters(in: .whitespacesAndNewlines)
     if line.hasPrefix("# ") { line = String(line.dropFirst(2)) }
+    line = HistoryRowProjection.strippingInlineMarkup(line)
     if line.isEmpty { return nil }
     return String(line.prefix(240))
   }

@@ -150,7 +150,24 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     while text.hasPrefix(">") {
       text = String(text.dropFirst())
     }
+    text = strippingUnpairedEmphasis(text)
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// 预览被截断后只剩半边的格式符号。列表预览是正文开头的前 240 个字，加粗的一段如果在
+  /// 240 字之后才收尾，成对去除认不出它，开头的 `**` 就留在列表里（2026-10-13：
+  /// 「**多给具体事实和过程，…」）。
+  ///
+  /// 只清两种一眼看出是半边记号的情形：
+  /// - 开头的 `**` / `__` 紧跟的不是英文字母数字（紧跟英文的是 `**kwargs`、`__name__` 这类代码，留下）；
+  /// - 整段文字最末尾剩下的 1～2 个 `*`（收尾的记号被截了一半）。
+  static func strippingUnpairedEmphasis(_ text: String) -> String {
+    var value = text
+    value = value.replacingOccurrences(
+      of: #"(?<![*A-Za-z0-9_])(?:\*\*|__)(?=[^\s*_A-Za-z0-9])"#, with: "", options: .regularExpression
+    )
+    value = value.replacingOccurrences(of: #"(?<=[^\s*])\*{1,2}$"#, with: "", options: .regularExpression)
+    return value
   }
 
   /// `marker` 传一个字符，函数按两个连用的记号处理（`**` 或 `__`）。

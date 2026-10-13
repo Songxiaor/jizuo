@@ -45,7 +45,6 @@ struct HistoryContentView: View {
   @State private var creatorWorkScrollTarget: TaskID?
   // 2026-09-23 侧栏分层（对标应用）：顶部固定入口常驻，博主 / 标签这些次要分组默认收起，
   // 展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
-  @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
   // 2026-10-12（Syc 定）：「来源」并进「自有 / 外部」，两行各带展开箭头，默认展开——
   // 东西从哪来是最常用的入口，不能一打开就藏着。「视图」拆掉，「形式」挪到列头。
@@ -439,6 +438,9 @@ struct HistoryContentView: View {
                 max: DesignTokens.Layout.sidebarMax
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+              // 系统自带的收起按钮跟着「中间列有没有工具栏项」跑：普通页在左上，进博主页
+              // 就掉到侧栏右缘（2026-10-13 Syc 点出来）。换成下面自己放的一个，所有页面同一处。
+              .toolbar(removing: .sidebarToggle)
             } content: {
               // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
               // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
@@ -667,17 +669,17 @@ struct HistoryContentView: View {
       }
     }
     .toolbar {
+      // 收起 / 展开侧栏：所有页面同一个按钮、同一个位置（窗口左上角红绿灯右边）。
+      // 侧栏显示时点它只收侧栏（中间列表和阅读区留着）；已收起或在专注阅读里点它回到完整三栏。
       ToolbarItem(placement: .navigation) {
-        if columnVisibility == .detailOnly {
-          Button {
-            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-          } label: {
-            Image(systemName: "sidebar.left")
-          }
-          .help(columnVisibility == .detailOnly ? "显示边栏" : "隐藏边栏")
-          .accessibilityLabel(columnVisibility == .detailOnly ? "显示边栏" : "隐藏边栏")
-          .accessibilityIdentifier("history-gallery-sidebar-toggle")
+        Button {
+          columnVisibility = columnVisibility == .all ? .doubleColumn : .all
+        } label: {
+          Image(systemName: "sidebar.left")
         }
+        .help(columnVisibility == .all ? "隐藏边栏" : "显示边栏")
+        .accessibilityLabel(columnVisibility == .all ? "隐藏边栏" : "显示边栏")
+        .accessibilityIdentifier("history-sidebar-toggle")
       }
       // 卡片墙的出口放在工具栏左上，和系统「返回」同一个位置；原来是页面里的一行字。
       // 一层一层退：在读卡片墙里的一条 → 回卡片墙；在卡片墙 → 回三栏列表。
@@ -1807,6 +1809,29 @@ struct HistoryContentView: View {
           identifier: "history-navigation-external"
         )
         ownershipSourceRows(.external, expanded: navigationExternalExpanded)
+        // 「博主」是一行，不是一个分组（2026-10-13 Syc：「博主」下面只有一个「全部博主」，看着重复）：
+        // 点开就是原来的全部博主页。置顶过的博主仍跟在这一行下面。
+        navigationButton(
+          "博主",
+          systemImage: "person.2",
+          count: model.navigationCounts.creatorCount,
+          // 正在看某位置顶博主时只亮那一行，不和「博主」一起亮（2026-10-01 体检）。
+          selected: model.isCreatorDirectoryActive
+            && !model.navigationCounts.pinnedCreators.contains { isPinnedCreatorHighlighted($0.id) }
+        ) {
+          showsCreatorDirectoryCatalog = true
+          creatorWorkScrollTarget = nil
+          creatorDirectoryScrollTarget = model.selectedCreatorID
+          model.enterCreatorDirectory()
+        }
+        .help("所有已添加的博主，点进去看他们保存过的作品")
+        .accessibilityIdentifier("history-navigation-creators-all")
+        ForEach(model.navigationCounts.pinnedCreators) { creator in
+          creatorPinRow(creator)
+            .padding(.leading, 14)
+        }
+        // 「导入博主」是个动作不是去处，不常驻侧栏；入口放在博主页标题右侧，
+        // 列表为空时空状态里也有同一个按钮。
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
       // 展开 / 收起换掉这一组（不是整张侧栏），行跟着重新生出来；滚动位置由箭头按钮按住。
@@ -1814,35 +1839,6 @@ struct HistoryContentView: View {
 
       collectionsNavigationSection
 
-
-      Section {
-        if navigationCreatorsExpanded {
-          navigationButton(
-            "全部博主",
-            systemImage: "person.2",
-            count: model.navigationCounts.creatorCount,
-            // 正在看某位置顶博主时只亮那一行，不和「全部博主」一起亮（2026-10-01 体检）。
-            selected: model.isCreatorDirectoryActive
-              && !model.navigationCounts.pinnedCreators.contains { isPinnedCreatorHighlighted($0.id) }
-          ) {
-            showsCreatorDirectoryCatalog = true
-            creatorWorkScrollTarget = nil
-            creatorDirectoryScrollTarget = model.selectedCreatorID
-            model.enterCreatorDirectory()
-          }
-          .accessibilityIdentifier("history-navigation-creators-all")
-          ForEach(model.navigationCounts.pinnedCreators) { creator in
-            creatorPinRow(creator)
-              .padding(.leading, 14)
-          }
-          // 「导入博主」是个动作不是去处，不再常驻侧栏；入口放在「全部博主」页标题右侧，
-          // 列表为空时空状态里也有同一个按钮。
-        }
-      } header: {
-        navigationSectionHeader("博主", expanded: $navigationCreatorsExpanded)
-      }
-      .id("creators-\(navigationCreatorsExpanded)")
-      .accessibilityIdentifier("history-navigation-creators")
 
       if model.navigationCounts.tags.isEmpty {
         // 标签是"内容讲什么"：总结后由模型生成，也可在详情里手动添加。
@@ -3695,12 +3691,7 @@ struct HistoryContentView: View {
         // 列表列头的搜索、「＋」挤到窗口最右边（2026-09-24 走查）。留灰着的占位，
         // 工具栏布局就和选中时一致；灰着也如实说明「现在没东西可操作」。
         // 选中时的标签按钮 2026-10-01 撤掉了，这里跟着去掉，两种状态的图标一一对应。
-        .toolbar {
-          ToolbarItemGroup(placement: .primaryAction) {
-            Button {} label: { Label("收藏", systemImage: "star") }.disabled(true)
-            Button {} label: { Label("更多", systemImage: "ellipsis") }.disabled(true)
-          }
-        }
+        .modifier(PlaceholderDetailToolbar())
       }
     }
   }
@@ -6141,147 +6132,13 @@ private struct HistoryDetailView: View, Equatable {
       }
     }
     .toolbar {
-      ToolbarItemGroup(placement: .primaryAction) {
-        // 上一条／下一条原来是工具栏最前面的两个按钮。工具栏一排九个图标分不清
-        // 主次，而它们有 ⌘↑ / ⌘↓，鼠标入口收进「更多」菜单就够了。
-
-        // 阅读设置（字号）和专注阅读 2026-09-23 收进下面的「更多」：顶栏只留收藏、标签、更多。
-        // 标签按钮（2026-10-01）撤掉：标题下面那行已经有「添加标签」，两处做同一件事。
-        if model.canToggleFavorite {
-          ControlGroup {
-            let favorited = model.isSelectedFavorite
-            Button { model.toggleFavorite() } label: {
-              Label(
-                favorited ? "取消收藏" : "收藏",
-                systemImage: favorited ? "star.fill" : "star")
-            }
-            .help(favorited ? "取消收藏" : "收藏")
-            .accessibilityLabel(favorited ? "取消收藏" : "收藏")
-            .accessibilityIdentifier("reading-toggle-favorite")
-          }
-        }
-
-        // 溢出菜单：分享、重新生成、删除三组低频操作收进这里。
-        //
-        // 原本它们和「设置」「新建笔记」「上一条」并排成一长条，12 个图标
-        // 平铺，用户分不出哪些作用于当前这条、哪些是全局动作。更糟的是
-        // **删除就裸露在最右端**，紧挨着刷新——误点的代价是一条内容没了。
-        //
-        // 导出那一组直接平铺进来，不做二级菜单：它们本来就属于「对这条做点
-        // 什么」，多一层嵌套只是多一次点击。
-        Menu {
-          // 收藏（顶栏星标、⌘D）、上一条 / 下一条（⌘↑ / ⌘↓，菜单栏「显示」里也有）
-          // 各有固定入口，不再在这里重复（2026-10-04 详情页精简）。
-          // 阅读相关六项收进一个子菜单，菜单从 21 项减到 10 项上下。
-          Menu {
-            Button(action: toggleFocusReading) {
-              Label(
-                isFocusReading ? "退出专注" : "专注阅读",
-                systemImage: isFocusReading ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
-              )
-            }
-            .accessibilityIdentifier("history-focus-reading-toggle")
-            if hasReadableBody {
-              Button {
-                adjustReadingFontSize(by: ReadingFontSize.step)
-              } label: {
-                Label("放大字号", systemImage: "textformat.size.larger")
-              }
-              .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
-              .accessibilityIdentifier("reading-font-larger")
-              Button {
-                adjustReadingFontSize(by: -ReadingFontSize.step)
-              } label: {
-                Label("缩小字号", systemImage: "textformat.size.smaller")
-              }
-              .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
-              .accessibilityIdentifier("reading-font-smaller")
-              Button {
-                readingFontSizeRaw = Double(ReadingFontSize.default)
-              } label: {
-                Label("实际大小（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
-              }
-              .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
-              .accessibilityIdentifier("reading-font-reset")
-            }
-            Toggle(isOn: $readingUsesWideLayout) { Label("加宽正文（⌥⌘\\）", systemImage: "arrow.left.and.right") }
-              .accessibilityIdentifier("reading-wide-layout-toggle")
-            // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
-            Toggle(isOn: $showsPlainText) { Label("纯文本", systemImage: "text.alignleft") }
-              .help("去掉排版和图片，只看字")
-              .accessibilityIdentifier("history-content-plain-text-toggle")
-          } label: {
-            Label("阅读设置", systemImage: "textformat")
-          }
-          .accessibilityIdentifier("history-reading-settings-menu")
-          // 合集：「加入合集 ▸」和（正在看某个合集时）「从此合集移出」，和列表右键同一份。
-          if model.canEditCollections, model.selectedScope != .trash {
-            Section {
-              CollectionMenuItems(model: model, taskIDs: [detail.task.id])
-            }
-          }
-          // 改为自有 / 外部：原来是标题下常驻的「外部」标签，2026-10-09 挪回这里——归属按规则
-          // 自动判定，判错才改；列表右键里也有同一个按钮。
-          if model.canEditTags {
-            Section {
-              OwnershipToggleButton(
-                model: model, taskID: detail.task.id, canonicalURL: detail.task.canonicalURL,
-                host: HistoryPlatformRegistry.canonicalHost(
-                  for: URLComponents(string: detail.task.canonicalURL)?.host ?? ""
-                ),
-                tagNames: detail.tags.map(\.name)
-              )
-            }
-          }
-          Section("复制") {
-            Button { copyFullArticle() } label: { Label("复制全文", systemImage: MenuIcon.copy) }
-              .accessibilityIdentifier("history-copy-full-text")
-          }
-          Section("导出") {
-            Button { exportCleanText(.markdown) } label: { Label("Markdown", systemImage: MenuIcon.export) }
-              .help("给 Obsidian 等笔记软件用")
-            Button { exportCleanText(.plainText) } label: { Label("纯文本", systemImage: MenuIcon.export) }
-            Button { exportStyledDocument(.pdf) } label: { Label("PDF", systemImage: MenuIcon.export) }
-              .accessibilityIdentifier("history-export-pdf")
-            Button { exportStyledDocument(.docx) } label: { Label("Word", systemImage: MenuIcon.export) }
-              .accessibilityIdentifier("history-export-docx")
-            Button { model.requestExport(.json) } label: { Label("全部数据", systemImage: MenuIcon.export) }
-              .help("含总结、转写，留档用")
-          }
-          // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
-          // 一起收在正文表头的「处理」菜单里，不再和导出、删除混在窗口工具栏。
-          // 只有能重抓时才出这一组：原来无条件画分组标题，本地文件上只剩一行灰字标题（2026-09-25）。
-          if canRecaptureSource {
-            Section("原文") {
-              Button { openRecapture(sourceURL) } label: { Label("刷新原文…", systemImage: MenuIcon.recapture) }
-                .help("从原网页重新取一次")
-                .accessibilityIdentifier("history-recapture-source")
-            }
-          }
-          Section {
-            Button(role: .destructive) {
-              model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
-            } label: {
-              Label(model.deletionConfirmationActionTitle, systemImage: MenuIcon.trash)
-            }
-            .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
-            .foregroundStyle(theme.danger)
-            .accessibilityIdentifier("delete-history")
-          }
-        } label: {
-          Label("更多", systemImage: "ellipsis")
-        }
-        .menuIndicator(.hidden)
-        .help("阅读、导出、删除等")
-        .accessibilityLabel("更多")
-        .accessibilityIdentifier("export-history")
-      }
-      // 打开原文 · 复制链接 · 在访达中显示：推到这一列的右缘，和左边的收藏、更多分开。
+      // 收藏、来源按钮、更多都在右上角同一个胶囊里（2026-10-13 Syc：左上角的星标和三个点，
+      // 放进右上角那个胶囊、跟别的功能放一起）。推到这一列的右缘。
       if #available(macOS 26.0, *) {
         ToolbarSpacer(.flexible)
       }
       ToolbarItemGroup(placement: .primaryAction) {
-        sourceActionsGroup
+        detailActionsCapsule
       }
     }
     .accessibilityIdentifier("history-detail")
@@ -8500,7 +8357,7 @@ private struct HistoryDetailView: View, Equatable {
   /// 2026-10-09 Syc 走查：原来一行八段（作者、发布、存于、站点、时长、体积、两个按钮），
   /// 其中一半别处已经写着——站点看列表行的平台图标，存入时间看列表分组和行尾，时长看播放条，
   /// 「已存本机」看播放器在不在。这里只留别处没有的；完整时间放悬停。
-  /// 打开原文、复制链接、在访达中显示挪到顶栏（`sourceActionsGroup`）。
+  /// 打开原文、复制链接、在访达中显示挪到顶栏（`detailActionsCapsule`）。
   private var sourceByline: some View {
     Text(sourceBylineText)
       .themedFont(.callout)
@@ -8533,52 +8390,186 @@ private struct HistoryDetailView: View, Equatable {
     return url
   }
 
-  /// 顶栏右侧的一组来源按钮：打开原文、复制链接、在访达中显示。
+  /// 顶栏右上角的一个胶囊：收藏 · 打开原文 · 复制链接 · 在访达中显示 · 更多。
   ///
-  /// 原来前两个挂在标题下那行字的末尾，没有底，悬停提示又被整行的网址提示盖住
-  /// （2026-10-09 Syc 走查）。和收藏、更多一样是「对这一条」的操作，放进顶栏成一组。
-  /// 只有网页来源才有原文可开、可复制；笔记和本机导入的地址是内部地址（2026-09-24 走查）。
-  @ViewBuilder private var sourceActionsGroup: some View {
+  /// 原来收藏和更多单独放在这一列的左上角，右上角的胶囊只有三个来源按钮（2026-10-13 Syc：
+  /// 放进同一个胶囊更合理）。收藏在最左、更多在最右；打开原文、复制链接只有网页来源才有，
+  /// 在访达中显示只有本机留着媒体文件才有（笔记和本机导入的地址是内部地址，2026-09-24 走查）。
+  /// 收藏的显示条件和以前一样（`canToggleFavorite`）；更多一直在。
+  /// 自己画底片而不用 ControlGroup：工具栏背景是隐藏的（`HistoryWindowToolbarThemeModifier`），
+  /// ControlGroup 在这里只剩几个散开的图标，看不出是一组（2026-10-09 部署后实测）。
+  @ViewBuilder private var detailActionsCapsule: some View {
     let isWeb = Self.isWebURL(sourceURL)
     let mediaFile = revealableMediaFileURL
-    if isWeb || mediaFile != nil {
-      // 自己画底片而不用 ControlGroup：工具栏背景是隐藏的（`HistoryWindowToolbarThemeModifier`），
-      // ControlGroup 在这里只剩三个散开的图标，看不出是一组（2026-10-09 部署后实测）。
-      HStack(spacing: 0) {
-        if isWeb {
-          Button { openSourceURL() } label: { Image(systemName: "safari") }
-            .buttonStyle(AppIconButtonStyle(size: 28))
-            .help("在浏览器中打开原文")
-            .accessibilityLabel("打开原文")
-            .accessibilityIdentifier("history-source-url-open")
-          sourceActionsSeparator
-          Button { CopyFeedbackController.shared.copy(sourceURL) } label: { Image(systemName: "link") }
-            .buttonStyle(AppIconButtonStyle(size: 28))
-            .help("复制原文链接")
-            .accessibilityLabel("复制链接")
-            .accessibilityIdentifier("history-source-url-copy")
+    let showsFavorite = model.canToggleFavorite
+    HStack(spacing: 0) {
+      if showsFavorite {
+        let favorited = model.isSelectedFavorite
+        Button { model.toggleFavorite() } label: {
+          Image(systemName: favorited ? "star.fill" : "star")
         }
-        if let mediaFile {
-          if isWeb { sourceActionsSeparator }
+        .buttonStyle(AppIconButtonStyle(size: 28))
+        .help(favorited ? "取消收藏" : "收藏")
+        .accessibilityLabel(favorited ? "取消收藏" : "收藏")
+        .accessibilityIdentifier("reading-toggle-favorite")
+        sourceActionsSeparator
+      }
+      if isWeb {
+        Button { openSourceURL() } label: { Image(systemName: "safari") }
+          .buttonStyle(AppIconButtonStyle(size: 28))
+          .help("在浏览器中打开原文")
+          .accessibilityLabel("打开原文")
+          .accessibilityIdentifier("history-source-url-open")
+        sourceActionsSeparator
+        Button { CopyFeedbackController.shared.copy(sourceURL) } label: { Image(systemName: "link") }
+          .buttonStyle(AppIconButtonStyle(size: 28))
+          .help("复制原文链接")
+          .accessibilityLabel("复制链接")
+          .accessibilityIdentifier("history-source-url-copy")
+        sourceActionsSeparator
+      }
+      if let mediaFile {
+        Button {
+          NSWorkspace.shared.activateFileViewerSelecting([mediaFile])
+        } label: { Image(systemName: "folder") }
+          .buttonStyle(AppIconButtonStyle(size: 28))
+          .help(
+            ["在访达中显示文件", HistoryVideoPlayerCard.bylineText(for: detail.media)]
+              .compactMap { $0 }.joined(separator: " · ")
+          )
+          .accessibilityLabel("在访达中显示文件")
+          .accessibilityIdentifier("history-reveal-media-file")
+        sourceActionsSeparator
+      }
+      moreActionsMenu
+    }
+    .foregroundStyle(theme.secondaryText)
+    .padding(2)
+    .background(Capsule(style: .continuous).fill(theme.primaryText.opacity(0.05)))
+    .overlay(Capsule(style: .continuous).strokeBorder(theme.primaryText.opacity(0.08), lineWidth: 0.5))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("history-detail-actions")
+  }
+
+  /// 胶囊最右的「…」：阅读、导出、删除等。菜单内容和以前一模一样。
+  private var moreActionsMenu: some View {
+    // 溢出菜单：分享、重新生成、删除三组低频操作收进这里。
+    //
+    // 原本它们和「设置」「新建笔记」「上一条」并排成一长条，12 个图标
+    // 平铺，用户分不出哪些作用于当前这条、哪些是全局动作。更糟的是
+    // **删除就裸露在最右端**，紧挨着刷新——误点的代价是一条内容没了。
+    //
+    // 导出那一组直接平铺进来，不做二级菜单：它们本来就属于「对这条做点
+    // 什么」，多一层嵌套只是多一次点击。
+    Menu {
+      // 收藏（顶栏星标、⌘D）、上一条 / 下一条（⌘↑ / ⌘↓，菜单栏「显示」里也有）
+      // 各有固定入口，不再在这里重复（2026-10-04 详情页精简）。
+      // 阅读相关六项收进一个子菜单，菜单从 21 项减到 10 项上下。
+      Menu {
+        Button(action: toggleFocusReading) {
+          Label(
+            isFocusReading ? "退出专注" : "专注阅读",
+            systemImage: isFocusReading ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
+          )
+        }
+        .accessibilityIdentifier("history-focus-reading-toggle")
+        if hasReadableBody {
           Button {
-            NSWorkspace.shared.activateFileViewerSelecting([mediaFile])
-          } label: { Image(systemName: "folder") }
-            .buttonStyle(AppIconButtonStyle(size: 28))
-            .help(
-              ["在访达中显示文件", HistoryVideoPlayerCard.bylineText(for: detail.media)]
-                .compactMap { $0 }.joined(separator: " · ")
-            )
-            .accessibilityLabel("在访达中显示文件")
-            .accessibilityIdentifier("history-reveal-media-file")
+            adjustReadingFontSize(by: ReadingFontSize.step)
+          } label: {
+            Label("放大字号", systemImage: "textformat.size.larger")
+          }
+          .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
+          .accessibilityIdentifier("reading-font-larger")
+          Button {
+            adjustReadingFontSize(by: -ReadingFontSize.step)
+          } label: {
+            Label("缩小字号", systemImage: "textformat.size.smaller")
+          }
+          .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
+          .accessibilityIdentifier("reading-font-smaller")
+          Button {
+            readingFontSizeRaw = Double(ReadingFontSize.default)
+          } label: {
+            Label("实际大小（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
+          }
+          .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
+          .accessibilityIdentifier("reading-font-reset")
+        }
+        Toggle(isOn: $readingUsesWideLayout) { Label("加宽正文（⌥⌘\\）", systemImage: "arrow.left.and.right") }
+          .accessibilityIdentifier("reading-wide-layout-toggle")
+        // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
+        Toggle(isOn: $showsPlainText) { Label("纯文本", systemImage: "text.alignleft") }
+          .help("去掉排版和图片，只看字")
+          .accessibilityIdentifier("history-content-plain-text-toggle")
+      } label: {
+        Label("阅读设置", systemImage: "textformat")
+      }
+      .accessibilityIdentifier("history-reading-settings-menu")
+      // 合集：「加入合集 ▸」和（正在看某个合集时）「从此合集移出」，和列表右键同一份。
+      if model.canEditCollections, model.selectedScope != .trash {
+        Section {
+          CollectionMenuItems(model: model, taskIDs: [detail.task.id])
         }
       }
-      .foregroundStyle(theme.secondaryText)
-      .padding(2)
-      .background(Capsule(style: .continuous).fill(theme.primaryText.opacity(0.05)))
-      .overlay(Capsule(style: .continuous).strokeBorder(theme.primaryText.opacity(0.08), lineWidth: 0.5))
-      .accessibilityElement(children: .contain)
-      .accessibilityIdentifier("history-source-actions")
+      // 改为自有 / 外部：原来是标题下常驻的「外部」标签，2026-10-09 挪回这里——归属按规则
+      // 自动判定，判错才改；列表右键里也有同一个按钮。
+      if model.canEditTags {
+        Section {
+          OwnershipToggleButton(
+            model: model, taskID: detail.task.id, canonicalURL: detail.task.canonicalURL,
+            host: HistoryPlatformRegistry.canonicalHost(
+              for: URLComponents(string: detail.task.canonicalURL)?.host ?? ""
+            ),
+            tagNames: detail.tags.map(\.name)
+          )
+        }
+      }
+      Section("复制") {
+        Button { copyFullArticle() } label: { Label("复制全文", systemImage: MenuIcon.copy) }
+          .accessibilityIdentifier("history-copy-full-text")
+      }
+      Section("导出") {
+        Button { exportCleanText(.markdown) } label: { Label("Markdown", systemImage: MenuIcon.export) }
+          .help("给 Obsidian 等笔记软件用")
+        Button { exportCleanText(.plainText) } label: { Label("纯文本", systemImage: MenuIcon.export) }
+        Button { exportStyledDocument(.pdf) } label: { Label("PDF", systemImage: MenuIcon.export) }
+          .accessibilityIdentifier("history-export-pdf")
+        Button { exportStyledDocument(.docx) } label: { Label("Word", systemImage: MenuIcon.export) }
+          .accessibilityIdentifier("history-export-docx")
+        Button { model.requestExport(.json) } label: { Label("全部数据", systemImage: MenuIcon.export) }
+          .help("含总结、转写，留档用")
+      }
+      // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
+      // 一起收在正文表头的「处理」菜单里，不再和导出、删除混在窗口工具栏。
+      // 只有能重抓时才出这一组：原来无条件画分组标题，本地文件上只剩一行灰字标题（2026-09-25）。
+      if canRecaptureSource {
+        Section("原文") {
+          Button { openRecapture(sourceURL) } label: { Label("刷新原文…", systemImage: MenuIcon.recapture) }
+            .help("从原网页重新取一次")
+            .accessibilityIdentifier("history-recapture-source")
+        }
+      }
+      Section {
+        Button(role: .destructive) {
+          model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
+        } label: {
+          Label(model.deletionConfirmationActionTitle, systemImage: MenuIcon.trash)
+        }
+        .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
+        .foregroundStyle(theme.danger)
+        .accessibilityIdentifier("delete-history")
+      }
+    } label: {
+      Image(systemName: "ellipsis")
     }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .frame(width: 28, height: 28)
+    .help("阅读、导出、删除等")
+    .accessibilityLabel("更多")
+    .accessibilityIdentifier("export-history")
+
   }
 
   private var sourceActionsSeparator: some View {
@@ -11942,13 +11933,32 @@ private struct WindowOriginXReader: NSViewRepresentable {
   }
 }
 
-/// 详情还没内容时（载入中、出错）工具栏里留灰着的「收藏」「更多」，布局和有内容时一致。
+/// 详情还没内容时（载入中、出错、没选中）工具栏右上角留一个灰着的胶囊（收藏、更多），
+/// 布局和有内容时一致；否则这一瞬间列表列头的「搜索」「＋」会被挤到窗口最右边。
 private struct PlaceholderDetailToolbar: ViewModifier {
+  @Environment(\.appTheme) private var theme
+
   func body(content: Content) -> some View {
     content.toolbar {
+      if #available(macOS 26.0, *) {
+        ToolbarSpacer(.flexible)
+      }
       ToolbarItemGroup(placement: .primaryAction) {
-        Button {} label: { Label("收藏", systemImage: "star") }.disabled(true)
-        Button {} label: { Label("更多", systemImage: "ellipsis") }.disabled(true)
+        HStack(spacing: 0) {
+          Button {} label: { Image(systemName: "star") }
+            .buttonStyle(AppIconButtonStyle(size: 28))
+            .disabled(true)
+            .accessibilityLabel("收藏")
+          Rectangle().fill(theme.primaryText.opacity(0.1)).frame(width: 0.5, height: 14)
+          Button {} label: { Image(systemName: "ellipsis") }
+            .buttonStyle(AppIconButtonStyle(size: 28))
+            .disabled(true)
+            .accessibilityLabel("更多")
+        }
+        .foregroundStyle(theme.secondaryText)
+        .padding(2)
+        .background(Capsule(style: .continuous).fill(theme.primaryText.opacity(0.05)))
+        .overlay(Capsule(style: .continuous).strokeBorder(theme.primaryText.opacity(0.08), lineWidth: 0.5))
       }
     }
   }

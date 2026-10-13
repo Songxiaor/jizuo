@@ -56,6 +56,33 @@ final class HistoryDomainTests: XCTestCase {
     XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("这是 **加粗** 和 __强调__"), "这是 加粗 和 强调")
   }
 
+  /// 列表预览是正文开头的前 240 字：加粗的一段在 240 字之后才收尾时，只剩开头半边的 `**`
+  /// （2026-10-13「回复格式」笔记，列表露出「**多给具体事实和过程，…」）。
+  func testPreviewDropsHalfEmphasisLeftByTruncation() {
+    // 开头的 ** 后面是中文、收尾被截掉：去掉。
+    XCTAssertEqual(
+      HistoryRowProjection.strippingInlineMarkup("**多给具体事实和过程，少给空概括：要一眼找到重点，也要能把回复直接拿去当写作"),
+      "多给具体事实和过程，少给空概括：要一眼找到重点，也要能把回复直接拿去当写作"
+    )
+    // 句中的、前面是标点或空格的半边记号也去掉；__ 同理。
+    XCTAssertEqual(
+      HistoryRowProjection.strippingInlineMarkup("先说结论：**要他做的那件事放在第一句并加"),
+      "先说结论：要他做的那件事放在第一句并加"
+    )
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("__重点是这一句话"), "重点是这一句话")
+    // 收尾记号被截成一半：末尾剩 1～2 个星号。
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("**加粗的一句话**"), "加粗的一句话")
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("前面是 **加粗的一句话*"), "前面是 加粗的一句话")
+    // 代码里的 ** / __ 仍然留下：紧跟英文字母的不是格式符号。
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("def f(**kwargs): 后面还有"), "def f(**kwargs): 后面还有")
+    XCTAssertEqual(HistoryRowProjection.strippingInlineMarkup("用 __init__ 初始化"), "用 __init__ 初始化")
+    // 列表预览整体：完整一对 + 后面又被截断的一半，都不留星号。
+    XCTAssertEqual(
+      HistoryRowProjection.sanitizedDirectoryPreview("**第一段加粗** 正文 **第二段加粗被截", isSummary: false),
+      "第一段加粗 正文 第二段加粗被截"
+    )
+  }
+
   func testTagNormalizationAndAutomaticFirstLineLimit() {
     XCTAssertNil(HistoryTag(rawValue: "   "))
     XCTAssertNil(HistoryTag(rawValue: String(repeating: "长", count: 21)))

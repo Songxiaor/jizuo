@@ -1083,7 +1083,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(utilities.contains("history-navigation-unsummarized"))
     XCTAssertTrue(utilities.contains("title: \"未总结\""), "侧栏文案应是未总结")
     // 2026-10-12（Syc 定）：顶部一组 全部 → 最近 7 天 → 收藏 → 自有（来源）→ 外部（来源），
-    // 下面 合集 → 博主 → 标签 → 实用工具。「视图」「形式」「来源」三组撤掉。
+    // 下面 合集 → 标签 → 实用工具。「博主」是顶部组里「外部」下面的一行（2026-10-13 Syc 定），
+    // 不再是带标题的分组。「视图」「形式」「来源」三组撤掉。
     let order = [
       "accessibilityIdentifier(\"history-navigation-all\")",
       "accessibilityIdentifier(\"history-navigation-recent\")",
@@ -1092,13 +1093,16 @@ final class HistoryContentViewTests: XCTestCase {
       "ownershipSourceRows(.own",
       "identifier: \"history-navigation-external\"",
       "ownershipSourceRows(.external",
+      "accessibilityIdentifier(\"history-navigation-creators-all\")",
       "      collectionsNavigationSection",
-      "navigationSectionHeader(\"博主\"",
       "navigationSectionHeader(\"标签\", expanded",
       "      utilitiesNavigationSection",
     ].compactMap { source.range(of: $0)?.lowerBound }
     XCTAssertEqual(order.count, 11)
-    XCTAssertEqual(order, order.sorted(), "侧栏顺序应为 全部 → 最近 7 天 → 收藏 → 自有 → 外部 → 合集 → 博主 → 标签 → 实用工具")
+    XCTAssertEqual(order, order.sorted(), "侧栏顺序应为 全部 → 最近 7 天 → 收藏 → 自有 → 外部 → 博主 → 合集 → 标签 → 实用工具")
+    XCTAssertFalse(source.contains("navigationSectionHeader(\"博主\""), "「博主」分组标题和折叠开关已撤掉")
+    XCTAssertFalse(source.contains("navigationCreatorsExpanded"), "博主不再有折叠状态")
+    XCTAssertFalse(source.contains("creators-expanded"))
     for removed in ["navigationSectionHeader(\"视图\"", "navigationSectionHeader(\"形式\"", "navigationSectionHeader(\"来源\""] {
       XCTAssertFalse(source.contains(removed), "\(removed) 应已撤掉")
     }
@@ -1106,7 +1110,6 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-today-note"))
     XCTAssertTrue(source.contains("history-navigation-creators-all"))
     XCTAssertTrue(source.contains("history-navigation-creator-add"))
-    XCTAssertTrue(source.contains("navigationSectionHeader(\"博主\", expanded: $navigationCreatorsExpanded"))
     // 第一组不带标题：它是打开 App 的默认落点，下面第一行就是「全部」，
     // 标题不提供任何新信息，反而把「笔记」「来源平台」衬成了非内容。
     XCTAssertFalse(
@@ -1157,7 +1160,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(source.contains("NavigationSplitView {"), "每个分栏容器都必须绑定共享的可见性状态")
     XCTAssertTrue(source.contains("showsPlatformGallerySurface || model.isCreatorDirectoryActive"))
     XCTAssertFalse(source.contains("history-gallery-navigation"), "不能再用 .id 强制重建侧栏")
-    XCTAssertTrue(source.contains("history-gallery-sidebar-toggle"))
+    XCTAssertTrue(source.contains("history-sidebar-toggle"))
+    XCTAssertTrue(source.contains(".toolbar(removing: .sidebarToggle)"), "系统自带的收起按钮会随页面换位置，只留自己放的一个")
     XCTAssertTrue(source.contains("withMenuCommands(themedBody)\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
     XCTAssertTrue(source.contains("model.loadNextPageIfNeeded(after: last)"), "分页不能依赖被展开批次替换的末条卡片")
@@ -1339,8 +1343,17 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(header.contains(".help(sourceDateHelp)"), "完整的发布 / 保存时间放悬停")
     let bylineView = section(in: header, from: "private var sourceByline: some View {", to: "private var sourceDateHelp")
     XCTAssertFalse(bylineView.contains("Button"), "按钮不再挂在来源行末尾")
-    let group = section(in: header, from: "@ViewBuilder private var sourceActionsGroup", to: "private enum VideoFetchNoticeKind")
-    XCTAssertTrue(group.contains(".background(Capsule("), "三个按钮要有同一块底片")
+    let group = section(in: header, from: "@ViewBuilder private var detailActionsCapsule", to: "private var sourceActionsSeparator")
+    XCTAssertTrue(group.contains(".background(Capsule("), "按钮要有同一块底片")
+    // 2026-10-13（Syc 定）：收藏和「更多」也在右上角这个胶囊里，收藏在最左、更多在最右。
+    XCTAssertTrue(group.contains("reading-toggle-favorite"))
+    XCTAssertTrue(group.contains("model.canToggleFavorite"), "收藏的显示条件不变")
+    XCTAssertTrue(group.contains("moreActionsMenu"))
+    let favoritePosition = group.range(of: "reading-toggle-favorite")?.lowerBound
+    let morePosition = group.range(of: "      moreActionsMenu")?.lowerBound
+    let openPosition = group.range(of: "history-source-url-open")?.lowerBound
+    XCTAssertTrue(favoritePosition != nil && openPosition != nil && morePosition != nil
+      && favoritePosition! < openPosition! && openPosition! < morePosition!, "顺序：收藏 → 来源按钮 → 更多")
     XCTAssertTrue(group.contains("history-source-url-open"))
     XCTAssertTrue(group.contains("history-source-url-copy"))
     XCTAssertTrue(group.contains("activateFileViewerSelecting"))
@@ -1350,9 +1363,12 @@ final class HistoryContentViewTests: XCTestCase {
     }
 
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    let toolbar = section(in: detail, from: ".toolbar {\n      ToolbarItemGroup(placement: .primaryAction) {\n        // 上一条", to: ".accessibilityIdentifier(\"history-detail\")")
-    XCTAssertTrue(toolbar.contains("sourceActionsGroup"))
-    XCTAssertTrue(toolbar.contains("OwnershipToggleButton("), "改为自有 / 外部挪进「更多」")
+    let toolbar = section(in: detail, from: ".toolbar {\n      // 收藏、来源按钮、更多都在右上角同一个胶囊里", to: ".accessibilityIdentifier(\"history-detail\")")
+    XCTAssertTrue(toolbar.contains("detailActionsCapsule"))
+    XCTAssertFalse(toolbar.contains("ControlGroup"), "左上角不再单独放收藏和更多")
+    let more = section(in: detail, from: "private var moreActionsMenu: some View", to: "private var sourceActionsSeparator")
+    XCTAssertTrue(more.contains("OwnershipToggleButton("), "改为自有 / 外部挪进「更多」")
+    XCTAssertTrue(more.contains("export-history"), "菜单内容和标识不变")
 
     let bar = section(in: source, from: "private var classificationBar: some View", to: "/// 页尾的笔记")
     XCTAssertFalse(bar.contains("Ownership"), "归属不再常驻标题下")
@@ -3552,6 +3568,18 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertEqual(DailyNoteTitleFormat.previewAfterTitle("另一句\n正文", title: "我起的标题"), "另一句 正文")
     XCTAssertNil(DailyNoteTitleFormat.previewAfterTitle("# 指南", title: "指南"))
+    // 笔记行的预览也只显示字（2026-10-13「回复格式」笔记露出「**多给具体事实…」）：
+    // 成对的加粗去掉，被截断后只剩半边的 ** 也去掉；笔记原文不动。
+    XCTAssertEqual(
+      DailyNoteTitleFormat.previewAfterTitle("## 回复格式\n\n**多给具体事实和过程。** 动笔前先想清对象", title: "回复格式"),
+      "多给具体事实和过程。 动笔前先想清对象"
+    )
+    XCTAssertEqual(
+      DailyNoteTitleFormat.previewAfterTitle("## 回复格式\n\n**多给具体事实和过程，少给空概括，被截断后没有收尾", title: "回复格式"),
+      "多给具体事实和过程，少给空概括，被截断后没有收尾"
+    )
+    XCTAssertEqual(DailyNoteTitleFormat.firstLinePreview("**重点：先写结论**\n第二行"), "重点：先写结论")
+    XCTAssertEqual(DailyNoteTitleFormat.previewAfterTitle("def f(**kwargs)", title: "代码"), "def f(**kwargs)")
     // 阅读笔记时藏掉和标题框同一句的首行标题，别的标题不动。
     XCTAssertEqual(DailyNoteTitleFormat.strippingLeadingHeading("\n# 指南\n\n正文", matching: "指南"), "正文")
     XCTAssertEqual(DailyNoteTitleFormat.strippingLeadingHeading("## 指南\n正文", matching: "指南"), "正文")
