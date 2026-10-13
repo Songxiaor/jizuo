@@ -49,10 +49,51 @@ final class SubtleScroller: NSScroller {
 /// 时机是这里最容易错的地方：`makeNSView` 返回时探针还没挂进视图树，
 /// `enclosingScrollView` 恒为 nil，当场设等于什么都没做，而且不会报任何错。
 private struct SubtleScrollerProbe: NSViewRepresentable {
+  /// 内容比窗口高（有滚动条）时为 true。给调用方补右边距用：自动隐藏的滚动条占 11pt，
+  /// 内容放得下时它不在，页面比长页面宽 11pt，正文右缘在页面之间跳（2026-10-13 走查 #23）。
+  var onOverflowChange: ((Bool, CGFloat) -> Void)?
+
   final class ProbeView: NSView {
+    var onOverflowChange: ((Bool, CGFloat) -> Void)?
+    private var lastOverflow: Bool?
+    private var lastTrackWidth: CGFloat = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    private var observers: [NSObjectProtocol] = []
+    private weak var observedScrollView: NSScrollView?
+
+
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       apply()
+    }
+
+    private func observeOverflow(of scrollView: NSScrollView) {
+      guard observedScrollView !== scrollView else { return }
+      observers.forEach { NotificationCenter.default.removeObserver($0) }
+      observers = []
+      observedScrollView = scrollView
+      guard let document = scrollView.documentView else { return }
+      document.postsFrameChangedNotifications = true
+      scrollView.contentView.postsFrameChangedNotifications = true
+      for source in [document, scrollView.contentView] {
+        observers.append(NotificationCenter.default.addObserver(
+          forName: NSView.frameDidChangeNotification, object: source, queue: .main
+        ) { [weak self] _ in self?.reportOverflow() })
+      }
+      reportOverflow()
+    }
+
+    private func reportOverflow() {
+      guard let scrollView = observedScrollView, let document = scrollView.documentView else { return }
+      let overflows = document.frame.height > scrollView.contentView.bounds.height + 0.5
+      // 有滚动条时量一次它真正占的宽度（系统实际占 15pt，不是 `trackWidth` 的 11pt）。
+      if overflows {
+        let measured = scrollView.bounds.width - scrollView.contentView.frame.width
+        if measured > 1 { lastTrackWidth = measured }
+      }
+      guard overflows != lastOverflow else { return }
+      lastOverflow = overflows
+      let width = lastTrackWidth
+      DispatchQueue.main.async { [weak self] in self?.onOverflowChange?(overflows, width) }
     }
 
     func apply() {
@@ -68,26 +109,32 @@ private struct SubtleScrollerProbe: NSViewRepresentable {
       // 内容不足一屏时仍然隐藏，不然短文档旁边会挂一条没有意义的条。
       scrollView.autohidesScrollers = true
       scrollView.scrollerInsets = .init(top: 0, left: 0, bottom: 0, right: 0)
+      if onOverflowChange != nil { observeOverflow(of: scrollView) }
     }
   }
 
   func makeNSView(context: Context) -> ProbeView {
     let view = ProbeView(frame: .zero)
+    view.onOverflowChange = onOverflowChange
     // viewDidMoveToWindow 覆盖大多数情况；这一轮兜住「已在窗口里但层级尚未稳定」。
     DispatchQueue.main.async { view.apply() }
     return view
   }
 
   func updateNSView(_ nsView: ProbeView, context: Context) {
+    nsView.onOverflowChange = onOverflowChange
     nsView.apply()
   }
 }
 
 extension View {
   /// 让所在滚动容器使用细浅灰滚动条。放在 `ScrollView` 的内容里。
-  func subtleScrollers() -> some View {
+  ///
+  /// `onOverflowChange`：内容是否比窗口高（有没有滚动条）变了时回调，同时给出滚动条实际占的宽度；
+  /// 需要让「有、无滚动条」两种页面的内容同宽的调用方，在没有滚动条时自己补这么宽的右边距。
+  func subtleScrollers(onOverflowChange: ((Bool, CGFloat) -> Void)? = nil) -> some View {
     overlay(alignment: .topLeading) {
-      SubtleScrollerProbe()
+      SubtleScrollerProbe(onOverflowChange: onOverflowChange)
         .frame(width: 0, height: 0)
         .allowsHitTesting(false)
     }
