@@ -17,7 +17,7 @@ struct PlatformGridView: View {
   let onSelect: (String) -> Void
 
   private var orderedItems: [Item] {
-    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "小红书", "待分类"]
+    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "论坛", "Reddit", "Substack", "小红书", "待分类"]
     return items.sorted {
       let left = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $0.host)) ?? order.count
       let right = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $1.host)) ?? order.count

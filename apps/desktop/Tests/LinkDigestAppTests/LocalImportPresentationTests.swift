@@ -9,7 +9,7 @@ final class LocalImportPresentationTests: XCTestCase {
     let voice = try CanonicalURL.localImport(source: "voicememos", identifier: "abc").value
     let file = try CanonicalURL.localImport(source: "localfiles", identifier: String(repeating: "c", count: 64)).value
     XCTAssertEqual(HistorySourceLinkPresentation.host(voice), "语音备忘录")
-    XCTAssertEqual(HistorySourceLinkPresentation.host(file), "本地文件")
+    XCTAssertEqual(HistorySourceLinkPresentation.host(file), "文件")
     XCTAssertEqual(HistorySourceLinkPresentation.host("https://www.bilibili.com/video/BV1"), "bilibili.com")
   }
 

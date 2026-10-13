@@ -256,12 +256,12 @@ public enum HistoryPlatformRegistry {
     .init(canonicalHost: "v2ex.com", displayName: "V2EX", exactHosts: ["v2ex.com"]),
     .init(canonicalHost: "stackoverflow.com", displayName: "Stack Overflow", exactHosts: ["stackoverflow.com"]),
     .init(canonicalHost: "dev.to", displayName: "dev.to", exactHosts: ["dev.to"]),
-    .init(canonicalHost: "discourse", displayName: "Discourse", exactHosts: ["linux.do", "uscardforum.com"]),
+    .init(canonicalHost: "discourse", displayName: "论坛", exactHosts: ["linux.do", "uscardforum.com"]),
     .init(canonicalHost: "lemmy.world", displayName: "Lemmy", exactHosts: ["lemmy.world"]),
     .init(canonicalHost: "mastodon.social", displayName: "Mastodon", exactHosts: ["mastodon.social"]),
     // 本机来源。host 来自 `linkdigest-local://<source>/…`，不是真实域名。
     .init(canonicalHost: LocalImportSource.voiceMemos.rawValue, displayName: "语音备忘录", exactHosts: [LocalImportSource.voiceMemos.rawValue]),
-    .init(canonicalHost: LocalImportSource.files.rawValue, displayName: "本地文件", exactHosts: [LocalImportSource.files.rawValue]),
+    .init(canonicalHost: LocalImportSource.files.rawValue, displayName: "文件", exactHosts: [LocalImportSource.files.rawValue]),
     .init(canonicalHost: LocalImportSource.appleNotes.rawValue, displayName: "备忘录", exactHosts: [LocalImportSource.appleNotes.rawValue]),
   ]
 

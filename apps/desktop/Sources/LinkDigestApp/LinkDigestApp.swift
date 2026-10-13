@@ -2218,10 +2218,12 @@ private struct LinkDigestCommands: Commands {
       Button("今日笔记") { todayNote?.run() }
         .keyboardShortcut("t", modifiers: [.command, .shift])
         .disabled(todayNote == nil)
-      // 快捷键是全局注册的（在别的 App 里也能按），这里只在标题里写出来，
-      // 不再挂菜单快捷键，免得同一个组合键被触发两次。
-      Button("随手记（\(QuickCaptureController.shortcutDescription)）") { quickCapture.show() }
-        .help("在任何 App 里都能呼出")
+      // ⌃⌥N 同时是全局热键（Carbon RegisterEventHotKey，在别的 App 里也能按）。
+      // 菜单里也挂上同一组合，右侧显示快捷键、和别的菜单项一致。热键会先于菜单收到按键，
+      // 即使两边都触发，`show()` 也只是把同一个小窗再带到最前（幂等），不会弹两个。
+      Button("随手记") { quickCapture.show() }
+        .keyboardShortcut("n", modifiers: [.control, .option])
+        .help("在任何 App 里都能呼出（\(QuickCaptureController.shortcutDescription)）")
       Divider()
       // 不跟 canImport 绑 disabled（2026-09-23）：菜单栏的启用状态在 SwiftUI Commands 里
       // 不一定跟着刷新，实测启动后会一直灰着。改为常亮，未就绪时由控制器说明原因。
@@ -2229,8 +2231,8 @@ private struct LinkDigestCommands: Commands {
         .keyboardShortcut("i", modifiers: [.command, .shift])
       Button("新建合集…") { newCollection?.run() }
         .disabled(newCollection == nil)
-      Button("同步语音备忘录") { localImport.syncVoiceMemos() }
-      Button("同步备忘录") { localImport.syncAppleNotes() }
+      Button("从语音备忘录同步") { localImport.syncVoiceMemos() }
+      Button("从备忘录同步") { localImport.syncAppleNotes() }
     }
     CommandGroup(after: .textEditing) {
       Button("搜索内容") { focusHistorySearch?.run() }

@@ -82,7 +82,7 @@ enum PlatformHistoryGalleryPresentation {
       if selectedHosts == [files] { return "外部文件" }
       return isLocal ? "外部 · \(name)" : name
     default:
-      return selectedHosts == [files] ? "本地文件" : name
+      return selectedHosts == [files] ? "文件" : name
     }
   }
 

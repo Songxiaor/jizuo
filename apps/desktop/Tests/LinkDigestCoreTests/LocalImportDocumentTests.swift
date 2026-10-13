@@ -79,7 +79,7 @@ final class LocalImportDocumentTests: XCTestCase {
 
   func testLocalSourcesHaveReadablePlatformNames() {
     XCTAssertEqual(HistoryPlatformDisplay.name(forHost: "voicememos"), "语音备忘录")
-    XCTAssertEqual(HistoryPlatformDisplay.name(forHost: "localfiles"), "本地文件")
+    XCTAssertEqual(HistoryPlatformDisplay.name(forHost: "localfiles"), "文件", "列表行小字和侧栏同一个词（2026-10-13 Syc 定）")
   }
 
   func testImageBodyKeepsRecognizedLinesApartAndDropsDotNoise() {

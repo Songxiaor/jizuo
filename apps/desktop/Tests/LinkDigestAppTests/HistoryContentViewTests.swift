@@ -1424,8 +1424,11 @@ final class HistoryContentViewTests: XCTestCase {
     let title = section(in: source, from: "private func readingTabTitle", to: "private func selectReadingTab")
     XCTAssertTrue(title.contains("singleSourceIsCaption ? SourceLayer.caption.tabTitle"))
     let rule = section(in: source, from: "private var singleSourceIsCaption", to: "private var hasPresentableCaption")
-    XCTAssertTrue(rule.contains("detail.hadMediaDescriptor"))
-    XCTAssertTrue(rule.contains("!isDouyinImagePostCapture"), "抖音图文帖没有视频，仍叫原文")
+    // 2026-10-13：按内容类型判断（视频帖、图片帖叫配文；文章、纯文字帖叫原文），
+    // 不再因为走了 V2 合同（hadMediaDescriptor）就把纯文字推文叫成配文。
+    XCTAssertTrue(rule.contains("SourceTabNaming.isCaption("))
+    XCTAssertFalse(rule.contains("hadMediaDescriptor"))
+    XCTAssertTrue(rule.contains("isDouyinCapture"))
   }
 
   func testWeChatPropertiesShowSourceFieldsWithoutInventingEngagementStats() {
@@ -2060,7 +2063,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(titles.contains("tabTitle"))
     let layers = section(in: source, from: "var tabTitle: String", to: "init?(heading: String)")
     XCTAssertTrue(layers.contains("\"配文\""))
-    XCTAssertTrue(layers.contains("\"转写\""))
+    XCTAssertTrue(layers.contains("\"转写稿\""), "转写层页签叫「转写稿」（2026-10-13 Syc 定）")
 
     // 译文内部仍按层切换（翻译是整份文档一次翻完的），控件保持轻量。
     let layerPicker = section(
@@ -3106,8 +3109,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(addMenu.contains("syncVoiceMemos"))
     XCTAssertFalse(addMenu.contains("syncAppleNotes"))
     let app = appSource("LinkDigestApp.swift")
-    XCTAssertTrue(app.contains("Button(\"同步语音备忘录\") { localImport.syncVoiceMemos() }"))
-    XCTAssertTrue(app.contains("Button(\"同步备忘录\") { localImport.syncAppleNotes() }"))
+    XCTAssertTrue(app.contains("Button(\"从语音备忘录同步\") { localImport.syncVoiceMemos() }"))
+    XCTAssertTrue(app.contains("Button(\"从备忘录同步\") { localImport.syncAppleNotes() }"))
     // 26：悬停动作叠在行尾日期那一格上，不再浮在整行右侧盖标题。
     let row = appSource("UIReadingHistoryRow.swift")
     XCTAssertTrue(row.contains(".opacity(showsHoverActions ? 0 : 1)\n            .overlay(alignment: .trailing) { hoverActions }"))

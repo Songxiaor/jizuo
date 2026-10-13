@@ -14,7 +14,7 @@ enum TranscriptManuscript {
       switch self {
       case .revised: "校对稿"
       case .marked: "朱批"
-      case .original: "原稿"
+      case .original: "转写稿"
       }
     }
   }

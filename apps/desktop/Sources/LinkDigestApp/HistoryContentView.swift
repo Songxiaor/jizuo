@@ -4732,7 +4732,7 @@ private struct HistoryDetailView: View, Equatable {
       switch self {
       case .caption: "配文"
       case .subtitles: "字幕"
-      case .transcript: "转写"
+      case .transcript: "转写稿"
       }
     }
 
@@ -4944,11 +4944,14 @@ private struct HistoryDetailView: View, Equatable {
   private var singleSourceIsCaption: Bool {
     // `latestSourceSnapshot` 已经只取抓取来源那一层（见 captionSnapshot），不会是转写。
     guard !isOwnWriting, hasPresentableCaption, let snapshot = latestSourceSnapshot else { return false }
-    if localMediaFileURL != nil || detail.media != nil || detail.hadMediaDescriptor || isUnsavedXVideo {
-      return true
-    }
-    if isDouyinCapture { return !isDouyinImagePostCapture }
-    return snapshot.platform == "bilibili"
+    // 按内容类型判断（2026-10-13 Syc 定）：视频帖、图片帖下面的文字叫「配文」，文章和纯文字帖子叫「原文」。
+    // 原来「抓取走的是 V2 合同」就算视频帖，X 的纯文字推文也被叫成「配文」。
+    return SourceTabNaming.isCaption(
+      hasVideoOrAudioFile: localMediaFileURL != nil || detail.media != nil,
+      isUnsavedVideo: isUnsavedXVideo,
+      isVideoPlatform: isDouyinCapture || snapshot.platform == "bilibili",
+      bodyText: LayeredSourceDocument.body(of: snapshot)
+    )
   }
 
   private var hasPresentableCaption: Bool {
@@ -7314,7 +7317,7 @@ private struct HistoryDetailView: View, Equatable {
       HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
         ProgressView().controlSize(.small)
         VStack(alignment: .leading, spacing: 2) {
-          Text("下面是机器原稿，模型正在补标点、改错字")
+          Text("下面是转写稿，模型正在补标点、改错字")
             .themedFont(.subheadline)
             .foregroundStyle(.primary)
           Text(tidyRunningDetail)

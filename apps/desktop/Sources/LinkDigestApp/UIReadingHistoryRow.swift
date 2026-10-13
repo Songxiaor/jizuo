@@ -146,7 +146,23 @@ struct UIReadingHistoryRow: View {
   private var rowSourceText: String {
     let author = row.author?.trimmedNonEmpty.map(HistoryAuthorDisplay.text) ?? ""
     if !author.isEmpty { return author }
+    // 备忘录：行里原来写「备忘录」，侧栏已经是「备忘录」了，说不出是哪一条。导入时备忘录的文件夹名
+    // 存在作者那一栏（默认文件夹不存），有就已经显示在上面；拿不到文件夹名的写日期（2026-10-13 Syc 定）。
+    if HistoryPlatformRegistry.canonicalHost(for: row.host) == LocalImportSource.appleNotes.rawValue {
+      return Self.noteDateText(published: row.published, savedAtMilliseconds: savedAtMilliseconds)
+    }
     return HistoryPlatformDisplay.name(forHost: row.host)
+  }
+
+  /// 备忘录行的小字：笔记自己的创建日期，没有就用存入日期。
+  static func noteDateText(published: String?, savedAtMilliseconds: Int64) -> String {
+    if let published = published?.trimmedNonEmpty,
+       let day = HistoryPublishedTimestampFormatter.calendarDayLabel(published) {
+      return day
+    }
+    return HistoryPublishedTimestampFormatter.calendarDay(
+      Date(timeIntervalSince1970: Double(savedAtMilliseconds) / 1_000)
+    )
   }
 
   /// 同名标题用来分辨的日期：有发布日用发布日，否则用存入日。

@@ -141,8 +141,8 @@ final class LocalImportController: ObservableObject {
   // MARK: 语音备忘录
 
   func syncVoiceMemos() {
-    guard !explainNotReady("同步语音备忘录") else { return }
-    let title = "同步语音备忘录"
+    guard !explainNotReady("从语音备忘录同步") else { return }
+    let title = "从语音备忘录同步"
     phase = .running(title: title, done: 0, total: 0, step: "正在读取语音备忘录的录音列表…")
     task = Task { [weak self] in
       guard let self else { return }
@@ -216,8 +216,8 @@ final class LocalImportController: ObservableObject {
   // MARK: 备忘录
 
   func syncAppleNotes() {
-    guard !explainNotReady("同步备忘录") else { return }
-    let title = "同步备忘录"
+    guard !explainNotReady("从备忘录同步") else { return }
+    let title = "从备忘录同步"
     phase = .running(title: title, done: 0, total: 0, step: "正在读取「备忘录」… 第一次使用时，请在系统弹窗里允许汲作访问备忘录。")
     task = Task { [weak self] in
       guard let self else { return }
