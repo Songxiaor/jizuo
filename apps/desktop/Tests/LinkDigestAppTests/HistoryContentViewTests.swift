@@ -1195,6 +1195,45 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(sidebar.contains("history-tag-filters"), "The old horizontal tag rail must not coexist with navigation")
   }
 
+  /// 2026-10-13 走查 #29–#31：只调位置和分组，动作一个没少。
+  func testUtilityGroupMoreMenuAndProcessPanelGrouping() {
+    let source = historyContentViewSource()
+
+    // #29：回收站和「待…」三行之间留间隔（前面没有待办行时不留）。
+    let utilities = section(in: source, from: "private var utilitiesNavigationSection: some View", to: "private var collectionsNavigationSection")
+    XCTAssertTrue(utilities.contains("row.scope == .trash && rows.first?.scope != .trash"))
+
+    // #30：「…」菜单里「标签 → 合集 → 归属」排在最前，和列表右键同序；阅读设置挪到导出之后。
+    let more = section(in: source, from: "private var moreActionsMenu: some View", to: "private func requestTagEditor()")
+    let tag = more.range(of: "history-more-edit-tags")
+    let collection = more.range(of: "CollectionMenuItems(model: model, taskIDs: [detail.task.id])")
+    let ownership = more.range(of: "OwnershipToggleButton(")
+    let export = more.range(of: "Section(\"导出\")")
+    let reading = more.range(of: "history-reading-settings-menu")
+    let delete = more.range(of: "delete-history")
+    XCTAssertNotNil(tag); XCTAssertNotNil(collection); XCTAssertNotNil(ownership)
+    XCTAssertNotNil(export); XCTAssertNotNil(reading); XCTAssertNotNil(delete)
+    if let tag, let collection, let ownership, let export, let reading, let delete {
+      XCTAssertTrue(tag.lowerBound < collection.lowerBound)
+      XCTAssertTrue(collection.lowerBound < ownership.lowerBound)
+      XCTAssertTrue(ownership.lowerBound < export.lowerBound)
+      XCTAssertTrue(export.lowerBound < reading.lowerBound)
+      XCTAssertTrue(reading.lowerBound < delete.lowerBound)
+    }
+    XCTAssertTrue(source.contains("private func requestTagEditor()"))
+
+    // #31：处理面板分三层——工序 / 再产出内容的动作 / 模型与记录；每个动作仍在。
+    let extras = section(in: source, from: "@ViewBuilder private var processPanelExtras: some View", to: "private func processExtraButton(")
+    XCTAssertTrue(extras.contains("let hasContentExtras"))
+    XCTAssertTrue(extras.contains("if hasContentExtras {"))
+    for identifier in [
+      "history-more-online-transcribe", "history-diarize-local", "history-diarize-online",
+      "history-reformat-button", "regenerate-history", "history-open-model-settings", "history-run-panel-toggle",
+    ] {
+      XCTAssertTrue(extras.contains(identifier), "处理面板里的「\(identifier)」不能丢")
+    }
+  }
+
   func testNavigationTagsAndDetailEditorBindToViewModelWithoutRemoteImages() {
     let source = historyContentViewSource()
     let sidebar = section(in: source, from: "private var sidebar: some View", to: "@ViewBuilder private var detail")
@@ -1214,7 +1253,10 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
     // 2026-10-09：素材类型并进标签入口，在弹窗最上面一排，不再单独一个下拉。
-    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: true, composerInPopover: true)"))
+    // 2026-10-13 走查 #30：「…」菜单里多了一条「标签与素材类型…」，靠 openRequest 唤起这个入口。
+    XCTAssertTrue(detail.contains("HistoryTagEditor("))
+    XCTAssertTrue(detail.contains("tags: detail.tags, model: model, showsMaterialTypes: true, composerInPopover: true,"))
+    XCTAssertTrue(detail.contains("openRequest: tagEditorRequest"))
     // Chips-first: composer is collapsed behind a toggle; no always-on heavy form.
     XCTAssertTrue(source.contains("history-tag-add-toggle"))
     XCTAssertTrue(source.contains("history-tag-add"))

@@ -1664,6 +1664,9 @@ struct HistoryContentView: View {
           navigationButton(row.title, systemImage: row.symbol, count: row.count, selected: model.selectedScope == row.scope) {
             model.selectScope(row.scope)
           }
+          // 「待转写 / 待校对 / 未总结」是一类（待办），回收站是另一类（工具）：中间留一道间隔，
+          // 像邮件把「废纸篓」和各个邮箱分开（2026-10-13 走查 #29）。前面没有待办行时不留。
+          .padding(.top, row.scope == .trash && rows.first?.scope != .trash ? DesignTokens.Space.sm : 0)
           .help(row.help)
           .accessibilityIdentifier(row.identifier)
         }
@@ -4548,6 +4551,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var stampingStep: ProcessStep?
   /// 点页尾的「图」要滚到脑图模块。
   @State private var moduleScrollTarget: ReadingAnchor?
+  /// 「…」菜单里点了「标签与素材类型…」：每点一次加一，标题下的标签入口据此弹出小窗。
+  @State private var tagEditorRequest = 0
   @State private var temporaryModel = ""
   /// Brief completion feedback after summarize/translate finishes.
   @State private var completionBanner: String?
@@ -7632,7 +7637,14 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// 分隔线下面：不算工序的动作，沿用线性图标。
+  ///
+  /// 分三层（2026-10-13 走查 #31：原来本机转写、整理排版、换模型重跑、生成记录挤在分隔线下一团）：
+  /// 工序（上面带印的行）→ 再产出一份内容的动作（在线转写、区分说话人、整理排版）→
+  /// 模型和记录（换个模型重跑、设置模型、生成记录）。只加分隔线，动作和文字都没动。
   @ViewBuilder private var processPanelExtras: some View {
+    let offersReformat = !isOwnWriting && model.reformatRecord == nil
+      && (latestSnapshot.map { reformatEligibility($0).canReformat } ?? false)
+    let hasContentExtras = (transcribeAction?.canStartOnline ?? false) || canOfferSpeakerDiarization || offersReformat
     Divider().padding(.horizontal, 8).padding(.vertical, 4)
     VStack(alignment: .leading, spacing: 0) {
       // 只列点得动的：没配在线转写、不适合整理排版时原来各留一行灰字（2026-10-04 详情页精简）。
@@ -7664,6 +7676,9 @@ private struct HistoryDetailView: View, Equatable {
             model.requestArticleReformat(taskID: detail.task.id, bodyText: snapshot.bodyText, model: providerSettings.effectiveTidyModelName)
           }
         }
+      }
+      if hasContentExtras {
+        Divider().padding(.horizontal, 8).padding(.vertical, 4)
       }
       processExtraButton("换个模型重跑…", systemImage: MenuIcon.rerun, identifier: "regenerate-history",
                          enabled: !(summarizeUnavailableReason != nil && translateUnavailableReason != nil),
@@ -8442,52 +8457,21 @@ private struct HistoryDetailView: View, Equatable {
     Menu {
       // 收藏（顶栏星标、⌘D）、上一条 / 下一条（⌘↑ / ⌘↓，菜单栏「显示」里也有）
       // 各有固定入口，不再在这里重复（2026-10-04 详情页精简）。
-      // 阅读相关六项收进一个子菜单，菜单从 21 项减到 10 项上下。
-      Menu {
-        Button(action: toggleFocusReading) {
-          Label(
-            isFocusReading ? "退出专注" : "专注阅读",
-            systemImage: isFocusReading ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
-          )
-        }
-        .accessibilityIdentifier("history-focus-reading-toggle")
-        if hasReadableBody {
-          Button {
-            adjustReadingFontSize(by: ReadingFontSize.step)
-          } label: {
-            Label("放大字号", systemImage: "textformat.size.larger")
-          }
-          .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
-          .accessibilityIdentifier("reading-font-larger")
-          Button {
-            adjustReadingFontSize(by: -ReadingFontSize.step)
-          } label: {
-            Label("缩小字号", systemImage: "textformat.size.smaller")
-          }
-          .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
-          .accessibilityIdentifier("reading-font-smaller")
-          Button {
-            readingFontSizeRaw = Double(ReadingFontSize.default)
-          } label: {
-            Label("实际大小（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
-          }
-          .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
-          .accessibilityIdentifier("reading-font-reset")
-        }
-        Toggle(isOn: $readingUsesWideLayout) { Label("加宽正文（⌥⌘\\）", systemImage: "arrow.left.and.right") }
-          .accessibilityIdentifier("reading-wide-layout-toggle")
-        // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
-        Toggle(isOn: $showsPlainText) { Label("纯文本", systemImage: "text.alignleft") }
-          .help("去掉排版和图片，只看字")
-          .accessibilityIdentifier("history-content-plain-text-toggle")
-      } label: {
-        Label("阅读设置", systemImage: "textformat")
-      }
-      .accessibilityIdentifier("history-reading-settings-menu")
-      // 合集：「加入合集 ▸」和（正在看某个合集时）「从此合集移出」，和列表右键同一份。
-      if model.canEditCollections, model.selectedScope != .trash {
+      // 对这一条「归类」的动作排在最前，顺序和列表右键一致：收藏（顶栏星标）→ 标签 → 合集 → 归属
+      // （2026-10-13 走查 #30：常用动作原来散在星标、标签行、右键、「…」里，标签在「…」里找不到）。
+      // 标签的小窗仍是标题下那一个入口，这里只是多一条路。
+      let canAddToCollection = model.canEditCollections && model.selectedScope != .trash
+      if model.canEditTags || canAddToCollection {
         Section {
-          CollectionMenuItems(model: model, taskIDs: [detail.task.id])
+          if model.canEditTags {
+            Button { requestTagEditor() } label: { Label("标签与素材类型…", systemImage: "tag") }
+              .help("添加标签，或标记这条是哪类素材：观点、案例、数据……")
+              .accessibilityIdentifier("history-more-edit-tags")
+          }
+          if canAddToCollection {
+            // 「加入合集 ▸」和（正在看某个合集时）「从此合集移出」，和列表右键同一份。
+            CollectionMenuItems(model: model, taskIDs: [detail.task.id])
+          }
         }
       }
       // 改为自有 / 外部：原来是标题下常驻的「外部」标签，2026-10-09 挪回这里——归属按规则
@@ -8517,6 +8501,51 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-export-docx")
         Button { model.requestExport(.json) } label: { Label("全部数据", systemImage: MenuIcon.export) }
           .help("含总结、转写，留档用")
+      }
+      // 阅读设置是「怎么看」，不是「对这条做什么」：放在复制、导出之后（原来排第一）。
+      Section {
+        // 阅读相关六项收进一个子菜单，菜单从 21 项减到 10 项上下。
+        Menu {
+          Button(action: toggleFocusReading) {
+            Label(
+              isFocusReading ? "退出专注" : "专注阅读",
+              systemImage: isFocusReading ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
+            )
+          }
+          .accessibilityIdentifier("history-focus-reading-toggle")
+          if hasReadableBody {
+            Button {
+              adjustReadingFontSize(by: ReadingFontSize.step)
+            } label: {
+              Label("放大字号", systemImage: "textformat.size.larger")
+            }
+            .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
+            .accessibilityIdentifier("reading-font-larger")
+            Button {
+              adjustReadingFontSize(by: -ReadingFontSize.step)
+            } label: {
+              Label("缩小字号", systemImage: "textformat.size.smaller")
+            }
+            .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
+            .accessibilityIdentifier("reading-font-smaller")
+            Button {
+              readingFontSizeRaw = Double(ReadingFontSize.default)
+            } label: {
+              Label("实际大小（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
+            }
+            .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
+            .accessibilityIdentifier("reading-font-reset")
+          }
+          Toggle(isOn: $readingUsesWideLayout) { Label("加宽正文（⌥⌘\\）", systemImage: "arrow.left.and.right") }
+            .accessibilityIdentifier("reading-wide-layout-toggle")
+          // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
+          Toggle(isOn: $showsPlainText) { Label("纯文本", systemImage: "text.alignleft") }
+            .help("去掉排版和图片，只看字")
+            .accessibilityIdentifier("history-content-plain-text-toggle")
+        } label: {
+          Label("阅读设置", systemImage: "textformat")
+        }
+        .accessibilityIdentifier("history-reading-settings-menu")
       }
       // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
       // 一起收在正文表头的「处理」菜单里，不再和导出、删除混在窗口工具栏。
@@ -8548,6 +8577,15 @@ private struct HistoryDetailView: View, Equatable {
     .accessibilityLabel("更多")
     .accessibilityIdentifier("export-history")
 
+  }
+
+  /// 「…」菜单里的「标签与素材类型…」：先把标题下的标签行滚进视野，再弹出和那个入口一样的小窗。
+  private func requestTagEditor() {
+    moduleScrollTarget = ReadingAnchor.module("tags")
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      tagEditorRequest += 1
+    }
   }
 
   private var sourceActionsSeparator: some View {
@@ -8823,7 +8861,10 @@ private struct HistoryDetailView: View, Equatable {
   /// 归属是规则自动判定的，很少要改，挪进「更多」和列表右键；素材类型本来就是普通标签
   /// （侧栏里早已并进标签云），合进标签弹窗，弹窗上面选类型、下面加标签。
   private var classificationBar: some View {
-    HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: true, composerInPopover: true)
+    HistoryTagEditor(
+      tags: detail.tags, model: model, showsMaterialTypes: true, composerInPopover: true,
+      openRequest: tagEditorRequest
+    )
       .id(ReadingAnchor.module("tags"))
       .themedFont(.callout)
       .foregroundStyle(theme.secondaryText)
@@ -10646,6 +10687,8 @@ private struct HistoryTagEditor: View {
   var showsMaterialTypes = true
   /// 详情页头里用弹出小窗装输入框：原来在原地展开，整页正文往下跳一截（2026-09-25 走查）。
   var composerInPopover = false
+  /// 每加一次就弹一次标签小窗：「…」菜单里的「标签与素材类型…」靠它唤起标题下这个入口（走查 #30）。
+  var openRequest = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var input = ""
   @State private var isComposerExpanded = false
@@ -10720,6 +10763,9 @@ private struct HistoryTagEditor: View {
     .accessibilityIdentifier("history-tag-editor")
     .onAppear {
       if autoExpandComposer && canOpenComposer { isComposerExpanded = true }
+    }
+    .onChange(of: openRequest) { _, _ in
+      if canOpenComposer { isComposerExpanded = true }
     }
   }
 
