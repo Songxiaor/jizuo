@@ -1160,8 +1160,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(source.contains("NavigationSplitView {"), "每个分栏容器都必须绑定共享的可见性状态")
     XCTAssertTrue(source.contains("showsPlatformGallerySurface || model.isCreatorDirectoryActive"))
     XCTAssertFalse(source.contains("history-gallery-navigation"), "不能再用 .id 强制重建侧栏")
+    // 专注阅读（整窗只剩详情）时系统自带的侧栏按钮没了，自己补一个回完整三栏的。
     XCTAssertTrue(source.contains("history-sidebar-toggle"))
-    XCTAssertTrue(source.contains(".toolbar(removing: .sidebarToggle)"), "系统自带的收起按钮会随页面换位置，只留自己放的一个")
+    // 2026-10-13：系统自带的收起按钮在博主页、卡片墙会从窗口左上掉到侧栏右缘。
+    // 原因是窗口工具栏里为这两类页面加的弹性空白，去掉后所有页面同一位置。
+    XCTAssertFalse(
+      source.contains("if showsPlatformGallerySurface || model.isCreatorDirectoryActive {\n        if #available(macOS 26.0, *) {\n          ToolbarSpacer(.flexible)"),
+      "卡片墙、博主页不要再在窗口工具栏加弹性空白：它会把收起侧栏按钮推到侧栏右缘"
+    )
     XCTAssertTrue(source.contains("withMenuCommands(themedBody)\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
     XCTAssertTrue(source.contains("model.loadNextPageIfNeeded(after: last)"), "分页不能依赖被展开批次替换的末条卡片")

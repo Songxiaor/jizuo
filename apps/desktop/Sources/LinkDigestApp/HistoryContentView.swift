@@ -438,9 +438,6 @@ struct HistoryContentView: View {
                 max: DesignTokens.Layout.sidebarMax
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
-              // 系统自带的收起按钮跟着「中间列有没有工具栏项」跑：普通页在左上，进博主页
-              // 就掉到侧栏右缘（2026-10-13 Syc 点出来）。换成下面自己放的一个，所有页面同一处。
-              .toolbar(removing: .sidebarToggle)
             } content: {
               // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
               // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
@@ -669,17 +666,18 @@ struct HistoryContentView: View {
       }
     }
     .toolbar {
-      // 收起 / 展开侧栏：所有页面同一个按钮、同一个位置（窗口左上角红绿灯右边）。
-      // 侧栏显示时点它只收侧栏（中间列表和阅读区留着）；已收起或在专注阅读里点它回到完整三栏。
+      // 专注阅读时整窗只剩详情、没有系统自带的侧栏按钮，这里补一个回到完整三栏的。
       ToolbarItem(placement: .navigation) {
-        Button {
-          columnVisibility = columnVisibility == .all ? .doubleColumn : .all
-        } label: {
-          Image(systemName: "sidebar.left")
+        if columnVisibility == .detailOnly {
+          Button {
+            columnVisibility = .all
+          } label: {
+            Image(systemName: "sidebar.left")
+          }
+          .help("显示边栏")
+          .accessibilityLabel("显示边栏")
+          .accessibilityIdentifier("history-sidebar-toggle")
         }
-        .help(columnVisibility == .all ? "隐藏边栏" : "显示边栏")
-        .accessibilityLabel(columnVisibility == .all ? "隐藏边栏" : "显示边栏")
-        .accessibilityIdentifier("history-sidebar-toggle")
       }
       // 卡片墙的出口放在工具栏左上，和系统「返回」同一个位置；原来是页面里的一行字。
       // 一层一层退：在读卡片墙里的一条 → 回卡片墙；在卡片墙 → 回三栏列表。
@@ -712,11 +710,6 @@ struct HistoryContentView: View {
       }
       // 卡片墙和博主页不是三栏布局，没有详情列把「收藏 / 标签 / ⋯」顶到右边，
       // 它们会挤在左上角、压着侧栏分界线（2026-09-25 Syc 截图）。用弹性空白推回右侧。
-      if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
-        if #available(macOS 26.0, *) {
-          ToolbarSpacer(.flexible)
-        }
-      }
       ToolbarItemGroup(placement: .primaryAction) {
         // 专注阅读、设置、添加 2026-09-23 移走：专注阅读进阅读区「更多」，设置去侧栏底部，
         // 添加去列表列头。顶栏只留「当前这一条」的操作。
