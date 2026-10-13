@@ -47,7 +47,7 @@ struct MediaStorageSettingsView: View {
       // 原来三段说明层层递进：一句 summary、一段灰字、再一行带箭头的依赖提示，
       // 一个下拉配了三段字。
       SettingsCard(
-        title: "B 站清晰度",
+        title: "哔哩哔哩清晰度",
         summary: "越高越清楚，起播越慢",
         details: model.bilibiliStreamQuality.settingsExplanation
           + "\n不登录一般只到 720p，4K 和大会员档要你的账号有权限。实际清晰度看播放器上方的标注。",
@@ -55,7 +55,7 @@ struct MediaStorageSettingsView: View {
         control: {
           // 跨页依赖必须给出去处：只说「依赖本机会话」，读者还得自己找那一页。
           SettingsCrossReference(
-            message: "高清需先在「网站登录 → B 站」登录；没登录时按公开清晰度播放。"
+            message: "高清需先在「网站登录 → 哔哩哔哩」登录；没登录时按公开清晰度播放。"
           )
           .accessibilityIdentifier("media-storage-bilibili-login-hint")
         },
@@ -65,7 +65,7 @@ struct MediaStorageSettingsView: View {
             selection: $model.bilibiliStreamQuality,
             identifier: "media-storage-bilibili-quality"
           )
-          .accessibilityLabel("B 站清晰度")
+          .accessibilityLabel("哔哩哔哩清晰度")
         }
       )
 

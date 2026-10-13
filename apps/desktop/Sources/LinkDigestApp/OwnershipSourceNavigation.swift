@@ -116,7 +116,7 @@ enum SidebarUtilityNavigation {
     var rows: [SidebarUtilityRow] = []
     if counts.untranscribed > 0 || selectedScope == .untranscribed {
       rows.append(.init(scope: .untranscribed, title: "待转写", symbol: "waveform", count: counts.untranscribed,
-                        help: "带音视频、还没转成文字的内容", identifier: "history-navigation-untranscribed"))
+                        help: "带音视频、待转写的内容", identifier: "history-navigation-untranscribed"))
     }
     if counts.untidied > 0 || selectedScope == .untidied {
       rows.append(.init(scope: .untidied, title: "待校对", symbol: "checkmark.seal", count: counts.untidied,

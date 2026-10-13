@@ -51,7 +51,7 @@ public enum LocalImportDocument {
           preview.hasPrefix("这是一条语音备忘录，还没有转写") || preview.hasPrefix("从本机导入的音频")
             || preview.hasPrefix("从本机导入的视频")
     else { return nil }
-    var parts = [hasTranscript ? "已转写" : "还没转写"]
+    var parts = [hasTranscript ? "已转写" : "待转写"]
     if let range = preview.range(of: #"时长：\s*([0-9:]+)"#, options: .regularExpression) {
       parts.append(String(preview[range]).replacingOccurrences(of: "时长：", with: "").trimmingCharacters(in: .whitespaces))
     }

@@ -757,7 +757,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
   var validationMessage: String? {
     let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, ProfileImportPlatform.parse(input) == nil else { return nil }
-    return "请输入一个抖音、小红书、X 或 B 站主页链接或分享文案。支持常见手机主页地址和短链；短链若打开后是单条作品，请改用单条保存。"
+    return "请输入一个抖音、小红书、X 或 哔哩哔哩主页链接或分享文案。支持常见手机主页地址和短链；短链若打开后是单条作品，请改用单条保存。"
   }
 
   var canStart: Bool { ProfileImportPlatform.parse(input) != nil && phase != .loading }
@@ -772,7 +772,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
 
   func start() {
     guard let route = ProfileImportPlatform.parse(input) else {
-      phase = .failed("无法识别博主主页。请使用抖音、小红书、X 或 B 站主页链接、分享文案或短链。")
+      phase = .failed("无法识别博主主页。请使用抖音、小红书、X 或 哔哩哔哩主页链接、分享文案或短链。")
       return
     }
     candidates = []

@@ -81,7 +81,7 @@ struct YouTubeEmbedPlayerCard: View {
           .themedFont(.caption)
           .foregroundStyle(.secondary)
         Spacer()
-        Button("在浏览器中打开") {
+        Button("打开原页面") {
           if let url = URL(string: "https://www.youtube.com/watch?v=\(videoID)") {
             NSWorkspace.shared.open(url)
           }
@@ -179,7 +179,7 @@ struct YouTubeEmbedPlayerCard: View {
       if !hasCaptions {
         HStack(spacing: 8) {
           Image(systemName: "captions.bubble").foregroundStyle(.secondary)
-          Text("此视频无字幕，暂无法提取文字。可在浏览器中打开观看。")
+          Text("此视频无字幕，暂无法提取文字。可点「打开原页面」观看。")
             .themedFont(.caption)
             .foregroundStyle(.secondary)
           Spacer()

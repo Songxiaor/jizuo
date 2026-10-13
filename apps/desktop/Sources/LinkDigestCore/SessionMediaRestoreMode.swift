@@ -28,7 +28,7 @@ public enum SessionMediaRestoreMode: String, Codable, Sendable, Equatable, CaseI
   public var settingsExplanation: String {
     switch self {
     case .automatic:
-      return "打开一条视频记录就自动去取地址，取到直接能播。代价是每打开一条就发一次请求：B 站、X 很轻，抖音要在后台渲染整页、最慢 20 秒。"
+      return "打开一条视频记录就自动去取地址，取到直接能播。代价是每打开一条就发一次请求：哔哩哔哩、X 很轻，抖音要在后台渲染整页、最慢 20 秒。"
     case .manual:
       return "打开时只标明这条有视频，想看再点一下「重新获取播放」。只对你真要看的那条发请求，路过的不发。"
     }

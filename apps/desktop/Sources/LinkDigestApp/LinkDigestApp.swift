@@ -542,7 +542,7 @@ final class AppViewModel {
     ) ? nil : "原文已经是输出语言，不用翻译。"
   }
 
-  static let untranscribedRunReason = "还没转写：先点「转写」，有了文字稿再总结或翻译"
+  static let untranscribedRunReason = "待转写：先点「转写」，有了文字稿再总结或翻译"
 
   /// `canStartRun` 的人话版。顺序按用户最可能先撞上的拦下来。
   func runStartUnavailableReason(

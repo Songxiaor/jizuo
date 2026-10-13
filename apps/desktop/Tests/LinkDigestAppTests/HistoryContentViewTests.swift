@@ -1328,7 +1328,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(group.contains("history-source-url-copy"))
     XCTAssertTrue(group.contains("activateFileViewerSelecting"))
     XCTAssertTrue(group.contains("history-reveal-media-file"))
-    for item in ["在浏览器中打开原文", "复制原文链接", "在访达中显示文件"] {
+    for item in ["打开原页面", "复制原文链接", "在访达中显示文件"] {
       XCTAssertTrue(group.contains(item), "每个按钮都要有悬停名称：\(item)")
     }
 
@@ -1899,7 +1899,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在保存当时有效"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("加载失败"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("地址已失效"))
-    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "在浏览器中打开")
+    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "打开原页面")
     XCTAssertEqual(HistorySessionMediaPresentation.refreshActionTitle, "重新获取播放")
   }
 

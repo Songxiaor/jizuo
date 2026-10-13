@@ -42,7 +42,7 @@ extension SiteSessionProfile {
 /// 只读取 `isLogin` 与会员等级，不把 Cookie 写进返回值或日志。
 private func verifyBilibiliSession(cookieHeader: String) async -> SiteSessionVerification {
   // 界面只说人话和下一步；HTTP 状态码、业务码、系统错误写进日志（2026-10-01）。
-  let retryHint = "B 站这次没回应，请稍后再点「检查登录」。"
+  let retryHint = "哔哩哔哩这次没回应，请稍后再点「检查登录」。"
   guard let endpoint = URL(string: "https://api.bilibili.com/x/web-interface/nav") else {
     return .init(message: retryHint, isValid: false)
   }
@@ -75,14 +75,14 @@ private func verifyBilibiliSession(cookieHeader: String) async -> SiteSessionVer
       // secret-hygiene:reviewed code 是 B 站 API 的业务错误码整数（如 -101 未登录），
       // 由上一行从 JSON 的 "code" 字段取出并 ?? -1 兜底，不含任何凭据文本。
       AppLog.notice(.capture, "bilibili_verify_rejected", ["code": "\(code)"])  // secret-hygiene:reviewed
-      return .init(message: "B 站没认这次登录，高清档不会解锁。请点「清除登录」后重新登录。", isValid: false)
+      return .init(message: "哔哩哔哩没认这次登录，高清档不会解锁。请点「清除登录」后重新登录。", isValid: false)
     }
     let vipStatus = (data?["vipStatus"] as? Int) ?? 0
     let vipType = ((data?["vip"] as? [String: Any])?["type"] as? Int) ?? 0
     let vip = vipStatus == 1 ? (vipType >= 2 ? "年度大会员" : "大会员") : "非大会员"
-    return .init(message: "B 站已确认登录 · \(vip)", isValid: true)
+    return .init(message: "哔哩哔哩已确认登录 · \(vip)", isValid: true)
   } catch {
     AppLog.error(.capture, "bilibili_verify_failed", code: "BILIBILI_VERIFY_FAILED", ["error": String(describing: error)])
-    return .init(message: "没连上 B 站，请检查网络后再点「检查登录」。", isValid: false)
+    return .init(message: "没连上哔哩哔哩，请检查网络后再点「检查登录」。", isValid: false)
   }
 }

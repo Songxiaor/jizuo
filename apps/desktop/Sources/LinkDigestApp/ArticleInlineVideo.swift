@@ -23,7 +23,7 @@ struct ArticleEmbeddedVideo: Equatable {
   var platformLabel: String {
     switch kind {
     case .youtube: "YouTube"
-    case .bilibili: "B 站"
+    case .bilibili: "哔哩哔哩"
     case .vimeo: "Vimeo"
     case .mux: "视频"
     case .direct: "视频"
@@ -93,7 +93,7 @@ struct ArticleInlineVideoCard: View {
       }
       Spacer(minLength: 0)
       if let destination = video.openURL ?? pageURL {
-        Button("在浏览器中打开") { onOpenURL(destination) }
+        Button("打开原页面") { onOpenURL(destination) }
           .buttonStyle(.link)
           .themedFont(.caption)
           .accessibilityIdentifier("history-article-inline-video-open")
@@ -174,9 +174,9 @@ struct ArticleInlineVideoCard: View {
 
   private var placeholderDetail: String {
     switch video.kind {
-    case .bilibili: "B 站视频，点右上角「在浏览器中打开」观看"
-    case .vimeo: "Vimeo 视频，点右上角「在浏览器中打开」观看"
-    case .mux, .direct, .unknown: "没有存到本机，点「在浏览器中打开」去原网页观看"
+    case .bilibili: "哔哩哔哩视频，点右上角「打开原页面」观看"
+    case .vimeo: "Vimeo 视频，点右上角「打开原页面」观看"
+    case .mux, .direct, .unknown: "没有存到本机，点「打开原页面」去原网页观看"
     case .youtube: "YouTube"
     }
   }

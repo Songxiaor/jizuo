@@ -1159,7 +1159,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "waveform",
             title: "都转写过了",
-            message: "新导入、新同步的音视频还没转成文字时，会出现在这里。",
+            message: "新导入、新同步的音视频待转写时，会出现在这里。",
             actionTitle: "查看全部",
             action: { model.selectScope(.all) },
             seal: (.record, theme.seal.opacity(0.75))
@@ -2345,7 +2345,7 @@ struct HistoryContentView: View {
         } label: {
           Label("添加博主", systemImage: "person.crop.circle.badge.plus")
         }
-        .help("粘贴抖音、小红书、X 或 B 站博主主页。")
+        .help("粘贴抖音、小红书、X 或哔哩哔哩博主主页。")
         .accessibilityIdentifier("history-navigation-creator-add")
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -2381,7 +2381,7 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "person.2",
           title: "还没有添加博主",
-          message: "粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
+          message: "粘贴抖音、小红书、X 或哔哩哔哩主页，选择要保存的作品。",
           actionTitle: "添加博主",
           action: { presentDouyinProfileImport() }
         )
@@ -2830,7 +2830,7 @@ struct HistoryContentView: View {
     // 笔记、本机导入没有网页可开（2026-09-24 走查：原来点了没反应）。
     if HistoryDetailView.isWebURL(row.canonicalURL) {
       Button { openHistoryURL(row.canonicalURL) } label: {
-        Label("打开原文", systemImage: "safari")
+        Label("打开原页面", systemImage: "safari")
       }
       Button { copyHistoryURL(row.canonicalURL) } label: {
         Label("复制链接", systemImage: "doc.on.doc")
@@ -2959,12 +2959,12 @@ struct HistoryContentView: View {
   private func untranscribedBannerDetail(isRunning: Bool, failed: Int) -> String {
     let base = isRunning ? "正在排队转写，进度在窗口右下角，转好的会从这里消失。" : "本机听写，免费、不上传；一条一条转，随时可以停。"
     guard failed > 0 else { return base }
-    return base + "另有 \(failed) 条上次没转成（多半没有中文人声），会跳过。"
+    return base + "另有 \(failed) 条上次转写失败（多半没有中文人声），会跳过。"
   }
 
   private func untranscribedSummaryText(count: Int) -> String {
     let duration = Self.roughDuration(model.navigationCounts.untranscribedSeconds)
-    return duration.map { "可转 \(count) 条 · 约 \($0)" } ?? "可转 \(count) 条"
+    return duration.map { "待转写 \(count) 条 · 约 \($0)" } ?? "待转写 \(count) 条"
   }
 
   private var untranscribedConfirmationMessage: String {
@@ -3522,7 +3522,7 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "person.2",
           title: "还没有添加博主",
-          message: "粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
+          message: "粘贴抖音、小红书、X 或哔哩哔哩主页，选择要保存的作品。",
           actionTitle: "添加博主",
           action: { presentDouyinProfileImport() }
         )
@@ -7544,7 +7544,7 @@ private struct HistoryDetailView: View, Equatable {
         title: done ? "重新存评论…" : "存评论…",
         state: done ? .done(doneText(.comments)) : .pending,
         isEnabled: true,
-        help: "打开原文读取前几条评论，勾选后写进正文末尾",
+        help: "打开原页面读取前几条评论，勾选后写进正文末尾",
         identifier: "history-fetch-comments",
         action: { closeProcessPanel { isCommentPickerPresented = true } }
       ))
@@ -8394,8 +8394,8 @@ private struct HistoryDetailView: View, Equatable {
       Button { openSourceURL() } label: { Image(systemName: "safari") }
         .buttonStyle(AppIconButtonStyle(size: 28))
         .disabled(!isWeb)
-        .help(isWeb ? "在浏览器中打开原文" : "这条没有原网页")
-        .accessibilityLabel("打开原文")
+        .help(isWeb ? "打开原页面" : "这条没有原网页")
+        .accessibilityLabel("打开原页面")
         .accessibilityIdentifier("history-source-url-open")
       sourceActionsSeparator
       Button { CopyFeedbackController.shared.copy(sourceURL) } label: { Image(systemName: "link") }
@@ -10820,14 +10820,14 @@ private struct HistoryTagEditor: View {
             .frame(width: 22, height: ClassificationRowMetrics.singleLine)
             .contentShape(Rectangle())
         } else {
-          Label(showsMaterialTypes ? "标签与素材类型" : "添加标签", systemImage: "tag")
+          Label("添加标签", systemImage: "tag")
             .themedFont(.callout)
             .labelStyle(.titleAndIcon)
         }
       }
       .buttonStyle(.borderless)
       .help(showsMaterialTypes ? "添加标签，或标记这条是哪类素材：观点、案例、数据……" : "添加标签")
-      .accessibilityLabel(showsMaterialTypes ? "标签与素材类型" : "添加标签")
+      .accessibilityLabel("添加标签")
       .accessibilityIdentifier("history-tag-add-toggle")
       .popover(isPresented: $isComposerExpanded, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
