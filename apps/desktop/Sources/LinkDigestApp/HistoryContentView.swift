@@ -4538,8 +4538,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var isRunPanelExpanded = false
   @State private var isReadingHeaderPinned = false
   @State private var showsPlainText = false
-  /// 逐字稿看哪一份：校对稿（默认）、朱批（校对稿 + 改动）、原稿（机器听写）。
-  @State private var manuscriptMode: TranscriptManuscript.Mode = .revised
+  /// 逐字稿看哪一份：朱批（校对稿，默认）、原稿（机器听写）。批注显示与否单独一个开关管。
+  @State private var manuscriptMode: TranscriptManuscript.Mode = .marked
   /// 这次重新转写开跑时库里那份稿。写完、新稿还没落库之前靠它认出「还是旧的」。
   @State private var transcriptSnapshotWhenRunBegan: String?
   /// 刚校对完的那一条：「校对稿已保存」只亮几秒。
@@ -4652,6 +4652,9 @@ private struct HistoryDetailView: View, Equatable {
   @State private var transcriptParagraphs: [TranscriptParagraph] = []
   /// 转写稿显示段首时间码。关掉时去掉时间码、把短句合成段落，当文章读；全局记住。
   @AppStorage("reading-shows-transcript-timecodes") private var showsTranscriptTimecodes = true
+  /// 朱批的下划线和右边页边的改动是不是显示。默认显示；换条目、重开 App 都沿用同一个选择
+  /// （2026-10-14 Syc 定：这是「要不要看批注」的个人习惯，不是某一条内容自己的状态）。
+  @AppStorage("reading-shows-manuscript-annotations") private var showsManuscriptAnnotations = true
   /// 分段属于哪一份 snapshot。切换条目时新分段还没读回来，旧分段会在这一帧
   /// 配上新正文——记住来源，对不上就不画锚点。
   @State private var transcriptParagraphsSnapshotID: ContentSnapshotID?
@@ -6074,8 +6077,8 @@ private struct HistoryDetailView: View, Equatable {
       editingNote = nil
       isRunPanelExpanded = false
       showsPlainText = false
-      // 换一条就回到校对稿：朱批是偶尔核对用的，不该带到下一条。
-      manuscriptMode = .revised
+      // 换一条就回到朱批（默认档）：原稿是偶尔核对用的，不该带到下一条。
+      manuscriptMode = .marked
       // 换条目：记下这一条已有的工序当底数，之后新做完的才盖章。
       stampBaseline = (detail.task.id, completedStepStamps)
       stampingStep = nil
@@ -7015,9 +7018,11 @@ private struct HistoryDetailView: View, Equatable {
     return snapshot
   }
 
-  /// 表头右边的三选一：校对稿（默认）/ 朱批 / 机器原稿。
-  /// 朱批是同一篇校对稿加上批改记号；机器原稿是 Apple 本机听写原样。
-  /// 「朱批 · 改字 N 处」的数字在选中朱批时写在开关左边，平时放在悬停提示里。
+  /// 表头右边的两选一：朱批（默认，就是校对稿本体）/ 机器原稿。
+  /// 校对稿和朱批原来是三选一里的两档，内容其实是同一份定稿，这里合成一档（2026-10-14 Syc 定）；
+  /// 「要不要显示批注」（下划线 + 右边页边的改动）单独用 `manuscriptAnnotationsToggle` 管，
+  /// 不再靠切换到另一档才看得到/看不到。
+  /// 「朱批 · 改字 N 处」的数字跟着「朱批」这一档走，不随批注显示与否隐藏。
   @ViewBuilder private var manuscriptSwitch: some View {
     if let snapshot = manuscriptSwitchSnapshot, let machine = machineTranscriptSnapshot {
       let summary = manuscriptSummary(manuscriptRevision(snapshot: snapshot, machine: machine))
@@ -7028,6 +7033,7 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(theme.seal)
             .lineLimit(1)
             .accessibilityIdentifier("transcript-manuscript-summary")
+          manuscriptAnnotationsToggle
         }
         Picker("转写稿版本", selection: $manuscriptMode) {
           ForEach(TranscriptManuscript.Mode.allCases) { mode in
@@ -7038,10 +7044,26 @@ private struct HistoryDetailView: View, Equatable {
         .controlSize(.small)
         .labelsHidden()
         .fixedSize()
-        .help("校对稿：模型校对后的定稿。朱批：在校对稿上标出改了哪些字（\(summary)）。机器原稿：本机听写原样。")
+        .help("朱批：校对后的定稿，标出改了哪些字（\(summary)）。机器原稿：本机听写原样。")
         .accessibilityIdentifier("transcript-manuscript-modes")
       }
     }
+  }
+
+  /// 「朱批」档右边一个小眼睛：显示或隐藏批注（下划线 + 右边页边的改动）。
+  /// 显示时和原来的朱批一样；隐藏时正文恢复整栏宽度，看上去就是干净的校对稿。
+  private var manuscriptAnnotationsToggle: some View {
+    Button {
+      showsManuscriptAnnotations.toggle()
+    } label: {
+      Image(systemName: showsManuscriptAnnotations ? "eye" : "eye.slash")
+        .themedFont(.caption)
+        .foregroundStyle(theme.secondaryText)
+    }
+    .buttonStyle(.plain)
+    .help(showsManuscriptAnnotations ? "隐藏批注" : "显示批注")
+    .accessibilityLabel(showsManuscriptAnnotations ? "隐藏批注" : "显示批注")
+    .accessibilityIdentifier("transcript-manuscript-annotations-toggle")
   }
 
   private func manuscriptRevision(snapshot: ContentSnapshot, machine: ContentSnapshot) -> TranscriptRevision.Result? {
@@ -9619,7 +9641,9 @@ private struct HistoryDetailView: View, Equatable {
     let split = TranscriptManuscript.splittingComments(fullBody)
     let body = split.transcript
     let machine = snapshot.captureMethod == Self.tidyCaptureMethod ? machineTranscriptSnapshot : nil
-    let mode = machine == nil ? TranscriptManuscript.Mode.revised : manuscriptMode
+    // 没有机器原稿可比（没校对过，或校对过但原稿已经不在了）：没有「原稿」这一档可切，
+    // 按朱批档走——反正没有 revision 可标，和原来叫「校对稿」时是同一份正文、同一种画法。
+    let mode = machine == nil ? TranscriptManuscript.Mode.marked : manuscriptMode
     let machineBody = machine.map { TranscriptManuscript.splittingComments(displayedSourceMarkdown($0, bodyOverride: nil)).transcript }
     // 朱批开关上要写改了几处，所以只要有机器原稿就算一遍（按快照缓存，只算一次）。
     let revision: TranscriptRevision.Result? = {
@@ -9635,14 +9659,16 @@ private struct HistoryDetailView: View, Equatable {
         paragraphs: TranscriptManuscript.paragraphs(of: shown, revision: mode == .marked ? revision : nil)
           .filter { previewLimit == nil || $0.offset < previewLimit! },
         showsTimecodes: showsTranscriptTimecodes,
-        showsNotes: mode == .marked,
+        // 批注（下划线 + 右边页边）只在朱批档、且这个人没手动隐藏时才画。
+        showsNotes: mode == .marked && showsManuscriptAnnotations,
         readingFont: sourcePaneReadingFont(snapshot),
         primaryTextColor: mode == .original ? theme.primaryText.opacity(0.8) : theme.primaryText,
         secondaryTextColor: theme.secondaryText,
         sealColor: theme.seal,
         onSeek: hasSeekableMedia ? { seconds in model.requestMediaSeek(toSeconds: seconds) } : nil,
-        // 只有看的就是这份正文时才进编辑：朱批和原稿里点一下不该改到校对稿。
-        onTapText: mode == .revised && canEditSource(snapshot) && !model.isReadOnly
+        // 改的是朱批档这份校对稿，批注显示不显示都一样可以点着改（2026-10-14）：
+        // 原稿是本机听写原样，不该点一下就改掉。
+        onTapText: mode == .marked && canEditSource(snapshot) && !model.isReadOnly
           ? { beginSourceEditing(snapshot, displayedSnippet: nil) }
           : nil
       )

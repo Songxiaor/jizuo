@@ -80,7 +80,8 @@ final class NamingSecondPassTests: XCTestCase {
   }
 
   func testReadingTabsUseTheThirdPassNames() throws {
-    XCTAssertEqual(TranscriptManuscript.Mode.revised.title, "校对稿")
+    // 2026-10-14：校对稿并进朱批，只剩两档，「校对稿」这个名字不再是独立一档。
+    XCTAssertEqual(TranscriptManuscript.Mode.allCases.count, 2)
     XCTAssertEqual(TranscriptManuscript.Mode.marked.title, "朱批")
     XCTAssertEqual(TranscriptManuscript.Mode.original.title, "机器原稿")
     let content = try appSource("HistoryContentView.swift")

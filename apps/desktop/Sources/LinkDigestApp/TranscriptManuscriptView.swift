@@ -4,15 +4,15 @@ import SwiftUI
 /// 逐字稿按书来排（2026-09-28 自有风格）：时间码挂左侧页边，正文居中，
 /// 朱批时改动挂右侧页边、正文里只留一道淡朱下划线。原稿、校对稿、朱批三种看法共用这一套。
 enum TranscriptManuscript {
+  /// 2026-10-14 Syc 定：校对稿和朱批是同一份定稿，合成一档，只留「朱批」；
+  /// 批注（下划线 + 右边页边的改动）单独一个开关管，不再是切换到另一档才看得到。
   enum Mode: String, CaseIterable, Identifiable {
-    case revised
     case marked
     case original
 
     var id: String { rawValue }
     var title: String {
       switch self {
-      case .revised: "校对稿"
       case .marked: "朱批"
       case .original: "机器原稿"
       }
