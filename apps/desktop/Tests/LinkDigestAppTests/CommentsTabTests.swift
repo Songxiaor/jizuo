@@ -204,4 +204,31 @@ final class CommentsTabTests: XCTestCase {
     for _ in 0..<3 { url.deleteLastPathComponent() }
     return try String(contentsOf: url.appendingPathComponent("Sources/LinkDigestApp/\(name)"), encoding: .utf8)
   }
+
+  // MARK: 评论页签不走文章嵌模块引擎（2026-10-14）
+
+  /// 切评论页签时系统会给「还没接上真实内容」的嵌模块画一张默认占位图——评论这一块本身又大，
+  /// 占位图被撑得和正文一样大，每次切页签都能撞见（资料库「文件水印」里有复现截图）。
+  /// 查过 0.3.5：这是引擎本来就有的系统行为，不是这周引入的新毛病；但既然评论已经是自己的
+  /// 独立页签，不再夹在文案/转写稿中间，就没必要继续走这一整套「文章里嵌模块」的 TextKit 2 引擎——
+  /// 换成普通 SwiftUI 视图直接排 `CommentSection`，从根上绕开这张图。
+  /// 文案、正文、总结、译文和文章正文里真正嵌在文字中间的图片/表格/视频，都还是原来的引擎，不碰。
+  func testCommentsSectionParsesToStructuredDataForThePlainRenderer() {
+    let section = CommentsTabSplit.section(inComments: CommentsTabSplit.split(captionWithComments).comments)
+    XCTAssertEqual(section?.items.count, 2)
+    XCTAssertEqual(section?.progressLabel, "已保存 2 条 · 平台共约 173 条")
+    XCTAssertNil(CommentsTabSplit.section(inComments: ""))
+    XCTAssertNil(CommentsTabSplit.section(inComments: "文案\n\n## 评论\n\n这不是评论格式"))
+  }
+
+  func testCommentsPageRendersTheCommentComponentDirectlyNotTheArticleEngine() throws {
+    let content = try appSource("HistoryContentView.swift")
+    let start = try XCTUnwrap(content.range(of: "private var commentsPage: some View {"))
+    let end = try XCTUnwrap(content.range(of: "@ViewBuilder", range: start.upperBound..<content.endIndex))
+    let page = String(content[start.lowerBound..<end.lowerBound])
+    XCTAssertTrue(page.contains("CommentThreadSectionView("), "评论页签应当直接排评论组件")
+    XCTAssertFalse(page.contains("MarkdownContentView("), "评论页签不再交给文章那一套嵌模块引擎排版")
+    XCTAssertTrue(page.contains(".environment(\\.commentsInOwnTab, true)"))
+    XCTAssertTrue(page.contains("history-reading-comments"))
+  }
 }

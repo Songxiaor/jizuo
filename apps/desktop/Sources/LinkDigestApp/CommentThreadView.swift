@@ -624,12 +624,24 @@ enum CommentsTabSplit {
     return (article, body[range].trimmingCharacters(in: .whitespacesAndNewlines))
   }
 
+  /// 解析出评论页签要用的结构化数据。认不出就是 nil（和 `count`/页签是否出现保持同一个判据）。
+  ///
+  /// 2026-10-14：评论页签改走这一条路直接拿 `CommentSection` 自己排版，不再把 `commentsMarkdown`
+  /// 交给 `MarkdownContentView` 那一整套「文章里嵌模块」的 TextKit 2 引擎——评论量大、整块重建，
+  /// 切页签时系统会在真实内容接上之前先画一帧默认占位图（见 `HostedBlockAttachment` 里的说明），
+  /// 页面一大就从「小纸片」变成这一整块那么大，一换页签就看得见。文案、正文、总结、译文和文章里
+  /// 真正嵌在文字中间的图片/表格/视频，都还是原来的引擎，这里不碰。
+  static func section(inComments markdown: String) -> MarkdownPresentation.CommentSection? {
+    guard !markdown.isEmpty else { return nil }
+    for block in MarkdownPresentation.blocks(from: markdown) {
+      if case let .comments(section) = block { return section }
+    }
+    return nil
+  }
+
   /// 评论页签上写的条数：标题里的「已保存 N 条」，没有就数评论本身。
   static func count(inComments markdown: String) -> Int {
-    guard !markdown.isEmpty else { return 0 }
-    for block in MarkdownPresentation.blocks(from: markdown) {
-      if case let .comments(section) = block { return section.loadedCount ?? section.items.count }
-    }
-    return 0
+    guard let section = section(inComments: markdown) else { return 0 }
+    return section.loadedCount ?? section.items.count
   }
 }

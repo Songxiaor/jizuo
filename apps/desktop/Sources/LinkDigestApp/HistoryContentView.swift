@@ -9481,23 +9481,35 @@ private struct HistoryDetailView: View, Equatable {
     return TranscriptGutter.textInset
   }
 
-  /// 「评论」页签的内容：抓到的评论，用评论组件排。
+  /// 评论解析出来的结构化数据，按正文长度记住（和 `commentsCount` 用同一个判据：解析不出就是 nil）。
+  private var commentsSection: MarkdownPresentation.CommentSection? {
+    let markdown = commentsMarkdown
+    guard !markdown.isEmpty else { return nil }
+    return derivedMemo.value("commentsSection|\(markdown.count)", snapshot: latestSourceSnapshot) {
+      CommentsTabSplit.section(inComments: markdown)
+    }
+  }
+
+  /// 「评论」页签的内容：评论组件自己排版，不走文章正文那一套「嵌模块」引擎（2026-10-14，见
+  /// `CommentsTabSplit.section(inComments:)` 的说明）。评论里的链接（打开原评论、图里的链接）
+  /// 仍按正文同一条规则解析，不越过这一步直接调用系统打开。
   @ViewBuilder private var commentsPage: some View {
-    MarkdownContentView(
-      source: commentsMarkdown,
-      sourceURL: URL(string: sourceURL),
-      localImageURLs: localImageURLs,
-      localMediaFileURL: nil,
-      readingFont: sourcePaneReadingFont(latestSourceSnapshot ?? detail.snapshots.last!),
-      primaryTextColor: theme.primaryText,
-      secondaryTextColor: theme.secondaryText,
-      accentColor: theme.accent,
-      showsPlainText: .constant(false),
-      showsInlinePlainTextToggle: false,
-      anchorScope: anchorScope(for: .source) + ".comments"
-    )
-    .environment(\.commentsInOwnTab, true)
-    .accessibilityIdentifier("history-reading-comments")
+    if let section = commentsSection {
+      CommentThreadSectionView(
+        section: section,
+        localImageURLs: localImageURLs,
+        readingFont: sourcePaneReadingFont(latestSourceSnapshot ?? detail.snapshots.last!),
+        primaryTextColor: theme.primaryText,
+        secondaryTextColor: theme.secondaryText,
+        accentColor: theme.accent,
+        onOpenURL: { url in
+          guard let resolved = try? MarkdownLinkResolver.resolve(url, sourceURL: URL(string: sourceURL)) else { return }
+          NSWorkspace.shared.open(resolved)
+        }
+      )
+      .environment(\.commentsInOwnTab, true)
+      .accessibilityIdentifier("history-reading-comments")
+    }
   }
 
   @ViewBuilder
