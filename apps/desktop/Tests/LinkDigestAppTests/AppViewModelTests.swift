@@ -560,6 +560,62 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(targetLanguage, "简体中文")
   }
 
+  /// 2026-10-14：这条帖子刚抓的时候，当前抓取（currentCapture）里只有中文配文。之后才转写、校对出英文稿，
+  /// 它们在详情的各层快照里。处理面板的「翻译」按当前抓取判断，就会判成「已经是中文，不用翻译」，
+  /// 整行消失——Syc 的 0.3.5 截图。有详情的各层时，任一层要翻译就要翻译。
+  func testCurrentCaptureTranslationGateSeesLaterTranscriptAndProofreadLayers() async throws {
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let english = String(repeating: "This is English prose about building websites with AI. ", count: 4)
+    let original = historyDetail(body: chinese)
+    let caption = try XCTUnwrap(original.snapshots.first)
+    func layer(_ sequence: Int, method: String, body: String, hash: String) -> ContentSnapshot {
+      ContentSnapshot(
+        id: ContentSnapshotID(), taskID: original.task.id, sequence: sequence,
+        envelopeCreatedAtMilliseconds: caption.envelopeCreatedAtMilliseconds + Int64(sequence),
+        capturedAtMilliseconds: caption.capturedAtMilliseconds + Int64(sequence),
+        sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+        sourceURL: caption.sourceURL, title: caption.title, platform: caption.platform,
+        captureMethod: method, completeness: caption.completeness, bodyText: body,
+        characterCount: body.unicodeScalars.count, bodySHA256: String(repeating: hash, count: 64),
+        sourceLabel: "本机视频转写", usedCookie: false
+      )
+    }
+    let machine = layer(2, method: "speech_analyzer_local", body: english, hash: "b")
+    let proofread = layer(
+      3, method: "openai_compatible_chat_tidy",
+      body: "## 什么行业还有跑道\n\n" + english + "\n\n## 创业该学什么\n\n" + english, hash: "c"
+    )
+    let layered = HistoryDetailProjection(task: original.task, snapshots: [caption, machine, proofread], runs: [])
+    let model = try makeModel(provider: AppTestModelProvider(results: []))
+    model.receive(
+      CurrentCapture(envelope: capture(text: chinese), taskID: original.task.id, snapshotID: caption.id)
+    )
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    // 修之前：返回「不用翻译」，处理面板把「翻译」整行藏掉。
+    XCTAssertNil(
+      model.translateUnavailableReason(
+        usingCurrentCapture: true, detail: layered, preferences: preferences, preferencesReady: true
+      ),
+      "中文配文 + 英文转写 + 校对稿：要翻译"
+    )
+    // 没有详情时仍只能按抓取那一刻的正文判断（这个入口原来的行为不变）。
+    XCTAssertEqual(
+      model.translateUnavailableReason(
+        usingCurrentCapture: true, detail: nil, preferences: preferences, preferencesReady: true
+      ),
+      "原文已经是输出语言，不用翻译。"
+    )
+    // 各层真的都是中文：仍然不用翻译。
+    let allChinese = HistoryDetailProjection(task: original.task, snapshots: [caption], runs: [])
+    XCTAssertEqual(
+      model.translateUnavailableReason(
+        usingCurrentCapture: true, detail: allChinese, preferences: preferences, preferencesReady: true
+      ),
+      "原文已经是输出语言，不用翻译。"
+    )
+  }
+
   func testHistoryTranslationReturnsFalseWithoutCallingProviderWhenLayersAlreadyMatchOutputLanguage() async throws {
     let chinese = String(repeating: "这是中文正文。", count: 4)
     let detail = historyDetail(body: chinese)

@@ -5319,8 +5319,10 @@ private struct HistoryDetailView: View, Equatable {
       // 「要不要翻译」要对全文跑几遍正则数字母；这个属性一次重绘被读四五遍，长转写稿
       // 每次重绘都卡（2026-10-01 体检）。按这份正文 + 输出语言只算一次。
       let language = providerSettings.runPreferences.outputLanguage
+      // 键里带上每一层的 id 和字数：只看条数 + 最新一份，某一层变了（重转写、重校对）就可能读到旧答案。
+      let layersKey = detail.snapshots.map { "\($0.id.rawValue)#\($0.bodyText.utf8.count)" }.joined(separator: ",")
       let needed = derivedMemo.value(
-        "needsTranslation|\(detail.snapshots.count)|\(language)", snapshot: latestSnapshot
+        "needsTranslation|\(layersKey)|\(language)", snapshot: latestSnapshot
       ) {
         LayeredSourceDocument.needsTranslation(from: detail.snapshots, outputLanguage: language)
       }
@@ -5353,6 +5355,20 @@ private struct HistoryDetailView: View, Equatable {
     let reason = translateUnavailableReason
     let languageMatch = reason?.contains("不用翻译") == true || reason?.contains("无需翻译") == true
     return languageMatch && unfinishedNotice(for: .translate) == nil
+  }
+
+  /// 翻译只被「看起来已经是输出语言」拦着：这只是一句提示，不是真的不能翻。
+  /// 用户明确点翻译，就照样翻（等于 ignoreLanguageMatch）；别的原因（没配模型、待转写…）仍然拦着。
+  private var translateBlockedOnlyByLanguage: Bool {
+    translateUnavailableReason?.contains("不用翻译") == true
+  }
+  private var translateIsClickable: Bool {
+    translateUnavailableReason == nil || translateBlockedOnlyByLanguage
+  }
+  /// 「看起来已经是中文」里的语言名：输出语言写「简体中文」「繁體中文」时都说「中文」。
+  private var outputLanguageShortName: String {
+    let language = providerSettings.runPreferences.outputLanguage
+    return language.contains("中文") ? "中文" : language
   }
 
   private func unfinishedNotice(for kind: RunKind) -> UnfinishedRunNotice.Notice? {
@@ -5613,7 +5629,7 @@ private struct HistoryDetailView: View, Equatable {
     // 阅读区外面套一层隔离：量尺寸时不往里量（见 `ReadingSizeIsolation`）。
     ReadingSizeIsolation { scrollBody }
       .focusedSceneValue(\.summarizeCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
-      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate) })
+      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) })
   }
 
   /// `startRun` 读的是这一份 `detail`：换了条目、多了一版正文或生成记录变了，菜单里的闭包都要跟着换。
@@ -6624,7 +6640,8 @@ private struct HistoryDetailView: View, Equatable {
         Task {
           let started = await appModel.translate(
             historyDetail: detail,
-            preferences: providerSettings.runPreferences
+            preferences: providerSettings.runPreferences,
+            ignoreLanguageMatch: true
           )
           engageReadingPane(.translation, started: started)
         }
@@ -6635,12 +6652,11 @@ private struct HistoryDetailView: View, Equatable {
           systemImage: "character.book.closed"
         )
       }
-      .disabled(translateUnavailableReason != nil)
+      .disabled(!translateIsClickable)
       .help(
-        appModel.translationUnavailableReason(
-          snapshots: detail.snapshots,
-          outputLanguage: providerSettings.runPreferences.outputLanguage
-        ) ?? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+        translateBlockedOnlyByLanguage
+          ? "看起来已经是\(outputLanguageShortName)，点一下仍会翻译"
+          : "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
       )
       .accessibilityIdentifier(showsCurrentCapture ? "translate-current-capture" : "translate-history-detail")
 
@@ -7640,7 +7656,8 @@ private struct HistoryDetailView: View, Equatable {
 
     for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
       let unfinished = unfinishedNotice(for: kind)
-      if kind == .translate, translationNotNeeded, translationArtifact == nil, unfinished == nil { continue }
+      // 翻译这一行一直显示（2026-10-14）：判成「已经是输出语言」只改小字，不再把整行藏掉。
+      // 判断可能看走眼（中文配文 + 英文转写），用户要翻就得有入口。
       let done = (kind == .translate ? translationArtifact : summaryArtifact) != nil
       let languageMatchBlock = kind == .translate && translateUnavailableReason?.contains("不用翻译") == true
       let blocked = kind == .translate ? translateUnavailableReason : summarizeUnavailableReason
@@ -7658,15 +7675,15 @@ private struct HistoryDetailView: View, Equatable {
         step: step,
         title: done ? "重新\(step.title)" : step.title,
         state: state,
-        isEnabled: (blocked == nil || (canRetryUnfinished && languageMatchBlock)) && !isRunning(kind),
+        isEnabled: (blocked == nil || languageMatchBlock) && !isRunning(kind),
         help: canRetryUnfinished
           ? (unfinished?.detail ?? "上次\(step.title)没有完成，再试一次")
-          : (blocked ?? (done ? "用本机已保存的正文再\(step.title)一次" : (kind == .translate
+          : (languageMatchBlock ? "看起来已经是\(outputLanguageShortName)，点一下仍会翻译" : blocked ?? (done ? "用本机已保存的正文再\(step.title)一次" : (kind == .translate
             ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
             : "让模型读完正文，写一份总结"))),
         subtitle: canRetryUnfinished
           ? unfinished?.message
-          : (blocked ?? processModelSubtitle(
+          : (languageMatchBlock ? (done ? processModelSubtitle(providerSettings.effectiveTranslationModelName) : "看起来已经是\(outputLanguageShortName)") : blocked ?? processModelSubtitle(
             kind == .translate ? providerSettings.effectiveTranslationModelName : providerSettings.activeSummaryModelName
           )),
         identifier: kind == .translate
@@ -7674,7 +7691,8 @@ private struct HistoryDetailView: View, Equatable {
           : (done ? "history-more-resummarize" : "history-process-summarize"),
         action: {
           isProcessPanelPresented = false
-          startRun(kind, ignoreLanguageMatch: canRetryUnfinished && kind == .translate)
+          // 用户明确点了翻译：语言判断只是提示，照样翻译。
+          startRun(kind, ignoreLanguageMatch: kind == .translate)
         }
       ))
     }
@@ -7764,7 +7782,7 @@ private struct HistoryDetailView: View, Equatable {
         Divider().padding(.horizontal, 8).padding(.vertical, 4)
       }
       processExtraButton("换个模型重跑…", systemImage: MenuIcon.rerun, identifier: "regenerate-history",
-                         enabled: !(summarizeUnavailableReason != nil && translateUnavailableReason != nil),
+                         enabled: !(summarizeUnavailableReason != nil && !translateIsClickable),
                          help: "用本机已保存的正文，临时换一个模型重新总结或翻译") {
         closeProcessPanel { isRegeneratePopoverPresented = true }
       }
@@ -8049,6 +8067,11 @@ private struct HistoryDetailView: View, Equatable {
     )
   }
 
+  /// 层的显示名，和阅读页页签同一套：配文层叫「文案」或「正文」（按帖子结构），转写层叫「转写稿」。
+  private func layerDisplayName(_ layer: SourceLayer) -> String {
+    layer == .caption ? captionTabTitle : layer.tabTitle
+  }
+
   private func layerPicker(
     title: String,
     layers: [SourceLayer],
@@ -8080,7 +8103,7 @@ private struct HistoryDetailView: View, Equatable {
         Button {
           MainActor.assumeIsolated { select(layer) }
         } label: {
-          Text(layer.tabTitle)
+          Text(layerDisplayName(layer))
             .themedFont(.caption, weight: isActive ? .semibold : .regular)
             .foregroundStyle(isActive ? theme.selectionText : theme.secondaryText)
             .padding(.horizontal, 8).padding(.vertical, 2)
@@ -8091,9 +8114,9 @@ private struct HistoryDetailView: View, Equatable {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(isActive ? "正在看\(layer.heading)的译文" : "看\(layer.heading)的译文")
+        .help(isActive ? "正在看\(layerDisplayName(layer))的译文" : "看\(layerDisplayName(layer))的译文")
         // 每颗胶囊读自己的名字；原来整组的「译文对应」盖到了每颗上，读屏听到两个一样的按钮。
-        .accessibilityLabel(layer.tabTitle)
+        .accessibilityLabel(layerDisplayName(layer))
         .accessibilityAddTraits(isActive ? .isSelected : [])
       }
       Spacer(minLength: 0)
@@ -10353,13 +10376,14 @@ private struct HistoryDetailView: View, Equatable {
             await appModel.translate(
               historyDetail: detail,
               preferences: providerSettings.runPreferences,
-              modelOverride: override
+              modelOverride: override,
+              ignoreLanguageMatch: true
             )
           }
         }
-        .disabled(translateUnavailableReason != nil)
+        .disabled(!translateIsClickable)
       }
-      if let reason = summarizeUnavailableReason ?? translateUnavailableReason {
+      if let reason = summarizeUnavailableReason ?? (translateBlockedOnlyByLanguage ? nil : translateUnavailableReason) {
         Text(reason)
           .themedFont(.caption)
           .foregroundStyle(.secondary)

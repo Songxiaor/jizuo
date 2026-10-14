@@ -530,10 +530,19 @@ final class AppViewModel {
       return reason
     }
     if usingCurrentCapture {
-      return translationUnavailableReason(
+      let captureReason = translationUnavailableReason(
         text: currentCapture?.document.text,
         outputLanguage: preferences.outputLanguage
       )
+      guard captureReason != nil else { return nil }
+      // 当前抓取只带着抓取那一刻的正文（比如中文配文）。抓完之后才转写、校对出来的英文稿
+      // 在详情的各层快照里，不看它们就会把「中文配文 + 英文转写」判成「已经是中文」，
+      // 翻译整行消失（2026-10-14 Syc 的 0.3.5 截图）。详情有各层时，任一层要翻译就要翻译。
+      if let detail, !detail.snapshots.isEmpty,
+         LayeredSourceDocument.needsTranslation(from: detail.snapshots, outputLanguage: preferences.outputLanguage) {
+        return nil
+      }
+      return captureReason
     }
     guard let detail else { return "还没有可发送的内容" }
     return LayeredSourceDocument.needsTranslation(

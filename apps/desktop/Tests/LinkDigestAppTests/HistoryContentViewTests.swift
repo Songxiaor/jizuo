@@ -45,7 +45,7 @@ final class HistoryContentViewTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(source.contains("RunCurrentAction(key: runActionKey) { startRun(.summarize) }"))
-    XCTAssertTrue(source.contains("RunCurrentAction(key: runActionKey) { startRun(.translate) }"))
+    XCTAssertTrue(source.contains("RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) }"))
   }
 
   func testFirstCaptureOnboardingKeepsBrowserSupportOptional() throws {
@@ -996,7 +996,7 @@ final class HistoryContentViewTests: XCTestCase {
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     // 禁用与理由必须同源：不能再各写一套 `canStartRun` / `arePreferencesReady`。
     XCTAssertTrue(detail.contains(".disabled(summarizeUnavailableReason != nil)"))
-    XCTAssertTrue(detail.contains(".disabled(translateUnavailableReason != nil)"))
+    XCTAssertTrue(detail.contains(".disabled(!translateIsClickable)"))
     XCTAssertTrue(detail.contains(".disabled(mindMapUnavailableReason != nil)"))
     XCTAssertTrue(detail.contains("history-run-blocked-reason"))
     XCTAssertTrue(detail.contains("regenerate-blocked-reason"))
@@ -2148,11 +2148,9 @@ final class HistoryContentViewTests: XCTestCase {
     // 2026-10-04：面板列全部工序（顺序同设置里的工序总览），表头的主按钮只是捷径。
     XCTAssertTrue(more.contains("if let action = transcribeAction {"), "转写永远在面板里")
     XCTAssertFalse(more.contains("primary == .summarize { continue }"), "总结永远在面板里")
-    XCTAssertTrue(
-      more.contains("if kind == .translate, translationNotNeeded, translationArtifact == nil, unfinished == nil { continue }"),
-      "不需要翻译时翻译不出现，失败过的翻译除外"
-    )
-    XCTAssertTrue(more.contains("ignoreLanguageMatch: canRetryUnfinished && kind == .translate"), "失败翻译再试时不能被语言匹配挡住")
+    // 2026-10-14：翻译这一行一直显示，「看起来已经是输出语言」只改小字；点了照样翻译（含失败后重试）。
+    XCTAssertFalse(more.contains("translationNotNeeded, translationArtifact == nil"), "翻译这一行不能再被藏掉")
+    XCTAssertTrue(more.contains("ignoreLanguageMatch: kind == .translate"), "点翻译时语言判断只是提示，不能挡住")
     XCTAssertTrue(more.contains("startRun(kind, ignoreLanguageMatch:"), "工序行重试要走带忽略语言匹配的入口")
     XCTAssertTrue(more.contains("if let unfinished { return .failed(unfinished.message) }"), "已有译文时再次失败仍要画成失败")
     XCTAssertFalse(more.contains("if !done, let unfinished"), "不能因为旧译文还在就把失败画成完成")
@@ -2530,7 +2528,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains("history-reading-progress"))
     XCTAssertTrue(detail.contains("history-open-model-settings") || detail.contains("openSettings()"))
     XCTAssertTrue(detail.contains("capture-truncated-notice"))
-    XCTAssertTrue(detail.contains(".disabled(translateUnavailableReason != nil)"))
+    XCTAssertTrue(detail.contains(".disabled(!translateIsClickable)"))
   }
 
   func testListIconsUseBuiltInPlatformMapThenLocalFaviconFallbackWithoutRemoteLoading() {

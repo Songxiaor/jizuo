@@ -53,6 +53,39 @@ final class LayeredSourceDocumentTests: XCTestCase {
     )
   }
 
+  /// 2026-10-14 Syc 的 0.3.5 截图：X 视频帖，中文配文 + 英文转写 + 校对稿（英文正文里夹中文小标题）。
+  /// 任一层不是中文就该提供翻译；校对稿里几行中文标题不能把整层带成「已经是中文」。
+  func testChineseCaptionWithEnglishTranscriptAndProofreadStillNeedsTranslation() {
+    let taskID = TaskID()
+    let caption = snapshot(
+      taskID: taskID, sequence: 1,
+      sourceKind: CapturedDocument.Origin.browserCapture.rawValue,
+      body: "---\nauthor: \"小樱\"\n---\n\nAnthropic CEO 回答了大家最关心的问题：现在还能学编程吗？编程会最先被淘汰，下面是他的原话整理。"
+    )
+    let english = String(
+      repeating: "A bunch of people at Anthropic write code. And so, you know, we may have special insight into how to best use the AI model. ",
+      count: 6
+    )
+    let machine = snapshot(
+      taskID: taskID, sequence: 2,
+      sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+      body: "00:00 " + english, captureMethod: "speech_analyzer_local"
+    )
+    let proofread = snapshot(
+      taskID: taskID, sequence: 3,
+      sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+      body: "## 编程会怎样\n\n00:00 " + english + "\n\n## 什么行业还有跑道\n\n01:10 " + english + "\n\n## 创业今天该学什么\n\n02:20 " + english,
+      captureMethod: "openai_compatible_chat_tidy"
+    )
+    // 只有中文配文：已经是中文，不用翻译。
+    XCTAssertFalse(LayeredSourceDocument.needsTranslation(from: [caption], outputLanguage: "简体中文"))
+    // 加上英文转写、再加校对稿：要翻译。
+    XCTAssertTrue(LayeredSourceDocument.needsTranslation(from: [caption, machine], outputLanguage: "简体中文"))
+    XCTAssertTrue(LayeredSourceDocument.needsTranslation(from: [caption, machine, proofread], outputLanguage: "简体中文"))
+    // 阅读页和翻译读的转写层是校对稿（最新的一份），不是机器稿。
+    XCTAssertEqual(LayeredSourceDocument.transcriptSnapshot(in: [caption, machine, proofread])?.id, proofread.id)
+  }
+
   private func snapshot(
     taskID: TaskID,
     sequence: Int,
