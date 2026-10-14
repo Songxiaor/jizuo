@@ -9481,13 +9481,17 @@ private struct HistoryDetailView: View, Equatable {
     return TranscriptGutter.textInset
   }
 
-  /// 评论解析出来的结构化数据，按正文长度记住（和 `commentsCount` 用同一个判据：解析不出就是 nil）。
+  /// 评论解析出来的结构化数据（和 `commentsCount` 用同一个判据：解析不出就是 nil）。
+  ///
+  /// 不走 `derivedMemo`：它的缓存是「按泛型类型转型回来」，这里的 `T` 本身就是 Optional
+  /// （`CommentSection?`），缓存没命中时转型会直接把 `nil` 当成「缓存着的答案」返回，
+  /// `compute()` 根本不会被调用——评论页签变成永远空白（2026-10-14 测试版上撞见过）。
+  /// 这里按内容本身解析一次就够：`MarkdownPresentation.blocks(from:)` 只扫一遍评论段的文字，
+  /// 不是按整篇文章的量级，不需要再记一遍。
   private var commentsSection: MarkdownPresentation.CommentSection? {
     let markdown = commentsMarkdown
     guard !markdown.isEmpty else { return nil }
-    return derivedMemo.value("commentsSection|\(markdown.count)", snapshot: latestSourceSnapshot) {
-      CommentsTabSplit.section(inComments: markdown)
-    }
+    return CommentsTabSplit.section(inComments: markdown)
   }
 
   /// 「评论」页签的内容：评论组件自己排版，不走文章正文那一套「嵌模块」引擎（2026-10-14，见

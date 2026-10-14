@@ -231,4 +231,16 @@ final class CommentsTabTests: XCTestCase {
     XCTAssertTrue(page.contains(".environment(\\.commentsInOwnTab, true)"))
     XCTAssertTrue(page.contains("history-reading-comments"))
   }
+
+  /// `DetailDerivedMemo.value<T>` 按「转型回 T」判断缓存命不命中；T 本身是 Optional 时，
+  /// 没命中也会转型成功（变成 `.some(nil)`），`compute()` 根本不会被调用——评论页签实测
+  /// 永远空白（2026-10-14 测试版上撞见过，详见 `commentsSection` 的注释）。
+  /// 这条守住「别再把 commentsSection 这类 Optional 结果塞回 derivedMemo」。
+  func testCommentsSectionDoesNotRouteThroughTheOptionalCachePitfall() throws {
+    let content = try appSource("HistoryContentView.swift")
+    let start = try XCTUnwrap(content.range(of: "private var commentsSection: MarkdownPresentation.CommentSection? {"))
+    let end = try XCTUnwrap(content.range(of: "@ViewBuilder", range: start.upperBound..<content.endIndex))
+    let property = String(content[start.lowerBound..<end.lowerBound])
+    XCTAssertFalse(property.contains("derivedMemo.value"))
+  }
 }
