@@ -245,7 +245,7 @@ enum AppApplicationSupportRoot {
     environment: [String: String] = ProcessInfo.processInfo.environment,
     liveRoot: () throws -> URL = liveApplicationSupportRoot
   ) throws -> URL {
-    #if DEBUG
+    #if DEBUG || LINKDIGEST_PERF
     if let rawOverride = environment[smokeOverrideEnvironmentKey] {
       let root = URL(fileURLWithPath: rawOverride, isDirectory: true)
         .standardizedFileURL

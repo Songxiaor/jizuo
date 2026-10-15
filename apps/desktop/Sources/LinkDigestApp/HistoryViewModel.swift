@@ -2315,6 +2315,7 @@ final class HistoryViewModel {
     listRequestID = requestID; pageTask?.cancel(); isLoadingNextPage = false
     listState = .loading; listErrorCode = nil; nextCursor = nil
     if refreshesAggregates { aggregatesRefreshPending = true }
+    PerfProbe.mark("list.request")
     pageTask = Task { [weak self] in
       let result = await Task.detached(priority: .userInitiated) {
         Self.pageResult(history, cursor: nil, filter: filter)
@@ -7059,6 +7060,7 @@ final class HistoryViewModel {
         listRebuildToken += 1
       }
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
+      PerfProbe.mark("list.applied rows=\(page.rows.count)")
       searchResultCount = searchText.isEmpty ? nil : page.totalCount
       if searchText != lastReceivedSearchText {
         lastReceivedSearchText = searchText
@@ -7129,6 +7131,7 @@ final class HistoryViewModel {
     case let .success(page):
       let existing = Set(rows.map(\.taskID)); let additions = page.rows.filter { !existing.contains($0.taskID) }
       rows.append(contentsOf: additions); nextCursor = page.nextCursor
+      PerfProbe.mark("list.nextPage.applied rows=\(rows.count)")
       loadFavicons(for: additions, generation: generation)
     case let .failure(code): listErrorCode = code
     }
@@ -7167,6 +7170,7 @@ final class HistoryViewModel {
     // 状态也一起留到 `receiveDetail`，避免中途卡片消失又出现，白白多一次重排。
     let generation = configurationGeneration, requestID = UUID()
     detailRequestID = requestID; detailTask?.cancel(); detailErrorCode = nil; setDetailState(.loading)
+    PerfProbe.mark("detail.request \(taskID.rawValue)")
     let imageCache = self.imageCache
     detailTask = Task { [weak self] in
       let payload = await Task.detached(priority: .userInitiated) {
@@ -8788,6 +8792,7 @@ final class HistoryViewModel {
         if let carriedOver { persistNoteDetached(carriedOver) }
       }
       setDetailState(.loaded)
+      PerfProbe.mark("detail.applied \(taskID.rawValue)")
     case let .failure(code):
       preloadedTranscriptParagraphs = []
       preloadedTranscriptParagraphSnapshotID = nil
@@ -9458,6 +9463,10 @@ final class HistoryViewModel {
   }
 
   nonisolated private static func pageResult(_ history: HistoryApplicationService, cursor: HistoryPageCursor?, filter: HistoryListFilter) -> PageResult {
+    #if LINKDIGEST_PERF
+    let perfStart = PerfProbe.nowMilliseconds()
+    defer { PerfProbe.write("read", String(format: "page %.3f", PerfProbe.nowMilliseconds() - perfStart)) }
+    #endif
     do {
       return .success(try history.historyPage(limit: 50, after: cursor, filter: filter))
     }
@@ -9516,6 +9525,10 @@ final class HistoryViewModel {
     taskID: TaskID,
     imageCache: GitHubREADMEImageCache?
   ) -> (DetailResult, DetailSideload) {
+    #if LINKDIGEST_PERF
+    let perfStart = PerfProbe.nowMilliseconds()
+    defer { PerfProbe.write("read", String(format: "detail %.3f", PerfProbe.nowMilliseconds() - perfStart)) }
+    #endif
     let result = detailResult(history, taskID: taskID)
     guard case let .success(value) = result else { return (result, DetailSideload()) }
     let side = detailSideload(

@@ -1301,6 +1301,7 @@ struct MainWindowLaunchGuard: ViewModifier {
   private let terminationSignalSource: DispatchSourceSignal
 
   init() {
+    PerfProbe.install()
     // 记下进程启动时刻：`MainWindowLaunchGuard` 只在启动后那一小段时间里补开主窗口。
     _ = MainWindowLaunchGuard.processStart
     // 每次模型调用的成败都记到「模型可用状态」里，设置页据此提示已下架等问题。
@@ -1770,6 +1771,7 @@ struct MainWindowLaunchGuard: ViewModifier {
     )
     _knowledgeVaultSettings = StateObject(wrappedValue: knowledgeVaultSettingsModel)
     _sessionMediaPlayback = StateObject(wrappedValue: sessionMediaPlaybackController)
+    PerfProbe.mark("app.init.end")
   }
 
   var body: some Scene {
@@ -1791,6 +1793,7 @@ struct MainWindowLaunchGuard: ViewModifier {
           historyModel.reload()
         }
         .task {
+          PerfProbe.mark("window.task")
           manualLink.handleScenePhase(scenePhase)
           guard !didBootstrap else { return }
           didBootstrap = true
@@ -1805,6 +1808,7 @@ struct MainWindowLaunchGuard: ViewModifier {
             try? await Task.sleep(for: .seconds(10))
           }
           let result = await composition.bootstrap()
+          PerfProbe.mark("bootstrap.done")
           historyModel.configure(
             history: result.history,
             isReadOnly: result.historyIsReadOnly,
@@ -1925,6 +1929,9 @@ struct MainWindowLaunchGuard: ViewModifier {
             model.setConnection("接收服务启动失败")
           }
           model.setBrowserReceiverAvailable(result.serverStarted)
+          #if LINKDIGEST_PERF
+          PerfScenario.startIfRequested(historyModel: historyModel)
+          #endif
         }
         .onChange(of: scenePhase) { _, phase in
           manualLink.handleScenePhase(phase)
