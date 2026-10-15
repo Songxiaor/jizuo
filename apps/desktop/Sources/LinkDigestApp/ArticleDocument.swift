@@ -118,6 +118,29 @@ final class HostedBlockAttachment: NSTextAttachment {
     return provider
   }
 
+  /// 附件自己没有图，文字引擎排版时会照「无图附件」画一个系统默认文件图标，按附件框放大，
+  /// 垫在卡片视图底下；卡片比附件框窄，右边、下边就露出一张带卷角的大纸（2026-10-15 文案卡片背后的虚影）。
+  /// 这里只把「画出来的那张图」换成透明的；附件本身仍是无图，引擎照旧放视图。
+  /// 不能改成设 `image` 属性——那样引擎只画图、不再放视图（见 `makeProvider` 的注释）。
+  nonisolated override func image(
+    for bounds: CGRect,
+    attributes: [NSAttributedString.Key: Any],
+    location: NSTextLocation,
+    textContainer: NSTextContainer?
+  ) -> NSImage? {
+    Self.blankImage
+  }
+
+  nonisolated override func image(
+    forBounds imageBounds: CGRect,
+    textContainer: NSTextContainer?,
+    characterIndex charIndex: Int
+  ) -> NSImage? {
+    Self.blankImage
+  }
+
+  nonisolated(unsafe) private static let blankImage = NSImage(size: NSSize(width: 1, height: 1))
+
   private func makeProvider(
     parentView: NSView?, location: NSTextLocation, textContainer: NSTextContainer?
   ) -> NSTextAttachmentViewProvider {
