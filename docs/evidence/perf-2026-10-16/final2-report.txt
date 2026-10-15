@@ -1,0 +1,346 @@
+runs: {'base3': 3, 'fix7': 3}
+
+## launch
+key                       base3           fix7    change
+firstListReady             1031            696      -32%
+firstDetailReady           2311           1052      -54%
+settled                    3345           2084      -38%
+busyTotal                  2543           1318      -48%
+longestStall               1281            616      -52%
+bootstrapDone               937            595      -37%
+appInitEnd                   67             68       +2%
+windowTask                  928            616      -34%
+
+## open.recent.1
+key                       base3           fix7    change
+ready                       243            200      -18%
+settled                     431            668      +55%
+busyTotal                   246            207      -16%
+longestStall                163            145      -11%
+stallsOver50                2.0            2.0       +0%
+
+## open.recent.2
+key                       base3           fix7    change
+ready                       241            211      -13%
+settled                     655            591      -10%
+busyTotal                   327            249      -24%
+longestStall                165            145      -12%
+stallsOver50                2.0            2.0       +0%
+
+## open.recent.3
+key                       base3           fix7    change
+ready                       293            251      -14%
+settled                     346            257      -26%
+busyTotal                   324            254      -21%
+longestStall                220            183      -17%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.x_old
+key                       base3           fix7    change
+ready                       194            161      -17%
+settled                     227            197      -13%
+busyTotal                   196            182       -7%
+longestStall                125             97      -22%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.weixin_old
+key                       base3           fix7    change
+ready                       231            182      -21%
+settled                     240            188      -22%
+busyTotal                   234            185      -21%
+longestStall                164            123      -25%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.douyin_old
+key                       base3           fix7    change
+ready                       232            190      -18%
+settled                     319            246      -23%
+busyTotal                   317            244      -23%
+longestStall                163            136      -16%
+stallsOver50                3.0            3.0       +0%
+
+## open.old.github_old
+key                       base3           fix7    change
+ready                       182            123      -33%
+settled                     211            181      -14%
+busyTotal                   209            179      -14%
+longestStall                116             65      -44%
+stallsOver50                2.0            3.0      +50%
+
+## open.old.memo_old
+key                       base3           fix7    change
+ready                       164            136      -18%
+settled                     165            152       -8%
+busyTotal                   163            149       -9%
+longestStall                 98             72      -27%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.note_long
+key                       base3           fix7    change
+ready                       236            189      -20%
+settled                     258            189      -27%
+busyTotal                   256            187      -27%
+longestStall                176            127      -28%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.x_long
+key                       base3           fix7    change
+ready                       200            179      -10%
+settled                     200            190       -5%
+busyTotal                   198            190       -4%
+longestStall                139            120      -14%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.wiki
+key                       base3           fix7    change
+ready                       597            403      -33%
+settled                     773            500      -35%
+busyTotal                   722            469      -35%
+longestStall                529            346      -35%
+stallsOver50                3.0            3.0       +0%
+
+## open.old.youtube
+key                       base3           fix7    change
+ready                       699            435      -38%
+settled                    1172            640      -45%
+busyTotal                   717            441      -39%
+longestStall                617            370      -40%
+stallsOver50                2.0            2.0       +0%
+
+## open.old.local_video
+key                       base3           fix7    change
+ready                       386            333      -14%
+settled                     386            333      -14%
+busyTotal                   386            330      -14%
+longestStall                297            249      -16%
+stallsOver50                2.0            2.0       +0%
+
+## reopen.old.x_old
+key                       base3           fix7    change
+ready                       294            244      -17%
+settled                     326            247      -24%
+busyTotal                   313            246      -21%
+longestStall                194            148      -24%
+stallsOver50                2.0            2.0       +0%
+
+## reopen.old.weixin_old
+key                       base3           fix7    change
+ready                       197            152      -23%
+settled                     220            160      -27%
+busyTotal                   220            157      -29%
+longestStall                135             91      -32%
+stallsOver50                2.0            2.0       +0%
+
+## reopen.old.douyin_old
+key                       base3           fix7    change
+ready                       202            173      -14%
+settled                     211            187      -11%
+busyTotal                   210            186      -11%
+longestStall                144            116      -19%
+stallsOver50                2.0            2.0       +0%
+
+## screen.scope.favorite
+key                       base3           fix7    change
+ready                       160            149       -7%
+settled                     397            512      +29%
+busyTotal                   394            317      -19%
+longestStall                146            137       -6%
+stallsOver50                3.0            3.0       +0%
+
+## screen.scope.unsummarized
+key                       base3           fix7    change
+ready                       225            228       +2%
+settled                     962            915       -5%
+busyTotal                   558            505       -9%
+longestStall                271            247       -9%
+stallsOver50                3.0            3.0       +0%
+
+## screen.scope.untranscribed
+key                       base3           fix7    change
+ready                       246            275      +12%
+settled                     969            903       -7%
+busyTotal                   620            566       -9%
+longestStall                253            256       +1%
+stallsOver50                4.0            2.0      -50%
+
+## screen.scope.notes
+key                       base3           fix7    change
+ready                       216            228       +6%
+settled                     414            381       -8%
+busyTotal                   411            373       -9%
+longestStall                202            188       -7%
+stallsOver50                4.0            3.0      -25%
+
+## screen.scope.external
+key                       base3           fix7    change
+ready                       175            144      -18%
+settled                     852            730      -14%
+busyTotal                   462            360      -22%
+longestStall                183            141      -23%
+stallsOver50                3.0            3.0       +0%
+
+## screen.scope.own
+key                       base3           fix7    change
+ready                       196            310      +59%
+settled                     554            453      -18%
+busyTotal                   526            452      -14%
+longestStall                206            223       +8%
+stallsOver50                3.0            3.0       +0%
+
+## screen.scope.trash
+key                       base3           fix7    change
+ready                       185            164      -12%
+settled                     461            369      -20%
+busyTotal                   456            362      -21%
+longestStall                164            192      +17%
+stallsOver50                4.0            2.0      -50%
+
+## screen.scope.all
+key                       base3           fix7    change
+ready                       204            174      -14%
+settled                     901            804      -11%
+busyTotal                   485            386      -20%
+longestStall                146            141       -4%
+stallsOver50                3.0            3.0       +0%
+
+## screen.platform.x.com
+key                       base3           fix7    change
+ready                       193            341      +77%
+settled                     825            766       -7%
+busyTotal                   454            428       -6%
+longestStall                140            203      +45%
+stallsOver50                4.0            2.0      -50%
+
+## screen.platform.douyin.com
+key                       base3           fix7    change
+ready                       192            195       +2%
+settled                     504            883      +75%
+busyTotal                   495            400      -19%
+longestStall                230            169      -27%
+stallsOver50                3.0            2.0      -33%
+
+## screen.platform.mp.weixin.qq.com
+key                       base3           fix7    change
+ready                       178            157      -12%
+settled                     498            403      -19%
+busyTotal                   484            397      -18%
+longestStall                174            137      -21%
+stallsOver50                4.0            3.0      -25%
+
+## screen.platform.bilibili.com
+key                       base3           fix7    change
+ready                       153            169      +11%
+settled                     414            368      -11%
+busyTotal                   410            368      -10%
+longestStall                137            195      +42%
+stallsOver50                4.0            2.0      -50%
+
+## screen.tag
+key                       base3           fix7    change
+ready                       134            154      +15%
+settled                     434            295      -32%
+busyTotal                   432            292      -33%
+longestStall                299            140      -53%
+stallsOver50                3.0            3.0       +0%
+
+## screen.collection
+key                       base3           fix7    change
+ready                       135            119      -12%
+settled                     372            257      -31%
+busyTotal                   345            233      -32%
+longestStall                129             99      -23%
+stallsOver50                3.0            3.0       +0%
+
+## screen.creators
+key                       base3           fix7    change
+settled                     252            260       +3%
+busyTotal                   237            234       -1%
+longestStall                173            186       +7%
+stallsOver50                1.0            1.0       +0%
+
+## screen.workbench
+key                       base3           fix7    change
+settled                     226            240       +6%
+busyTotal                   226            240       +6%
+longestStall                214            240      +13%
+stallsOver50                1.0            1.0       +0%
+
+## screen.back-to-all
+key                       base3           fix7    change
+ready                       171            176       +3%
+settled                     871            895       +3%
+busyTotal                   467            466       -0%
+longestStall                195            158      -19%
+stallsOver50                3.0            3.0       +0%
+
+## screen.settings
+key                       base3           fix7    change
+settled                     549            369      -33%
+busyTotal                   321            276      -14%
+longestStall                309            260      -16%
+stallsOver50                1.0            1.0       +0%
+
+## open.list-top
+key                       base3           fix7    change
+settled                   12948          13044       +1%
+busyTotal                    37             46      +23%
+longestStall                 12             13      +13%
+stallsOver50                0.0            0.0
+
+## scroll.list
+key                       base3           fix7    change
+droppedFrames               4.0            4.0       +0%
+frames                      357            357       +0%
+busyP50                     8.0            8.3       +4%
+busyP95                      15             15       +1%
+busyMax                      40             28      -30%
+over8ms                      92             93       +1%
+over16ms                    6.0            7.0      +17%
+over50ms                    0.0            0.0
+busyTotal                  1704           1672       -2%
+afterBusyTotal               31             31       +1%
+distance                  16432          16432       +0%
+
+## open.reading.wiki
+key                       base3           fix7    change
+ready                       518            404      -22%
+settled                     716            416      -42%
+busyTotal                   665            415      -38%
+longestStall                434            324      -25%
+stallsOver50                3.0            2.0      -33%
+
+## scroll.reading.wiki
+key                       base3           fix7    change
+droppedFrames               113            8.0      -93%
+frames                      191            293      +53%
+busyP50                     3.8            3.5       -8%
+busyP95                      46             11      -77%
+busyMax                     199            102      -49%
+over8ms                      59             22      -63%
+over16ms                     59            3.0      -95%
+over50ms                    4.0            1.0      -75%
+busyTotal                  2960           1294      -56%
+afterBusyTotal              0.0            0.0
+distance                   9999           9999       +0%
+
+## open.reading.local_video
+key                       base3           fix7    change
+ready                       409            333      -19%
+settled                     912            828       -9%
+busyTotal                   422            338      -20%
+longestStall                293            243      -17%
+stallsOver50                2.0            2.0       +0%
+
+## scroll.reading.local_video
+key                       base3           fix7    change
+droppedFrames               3.0            3.0       +0%
+frames                      298            298       +0%
+busyP50                     2.2            2.2       -0%
+busyP95                     2.9            3.5      +21%
+busyMax                      67             68       +2%
+over8ms                     1.0            1.0       +0%
+over16ms                    1.0            1.0       +0%
+over50ms                    1.0            1.0       +0%
+busyTotal                   259            207      -20%
+afterBusyTotal               46             18      -60%
+distance                    652            652       +0%
