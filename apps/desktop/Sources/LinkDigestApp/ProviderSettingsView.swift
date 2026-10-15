@@ -507,27 +507,29 @@ struct ProviderSettingsView: View {
       // 那个按钮属于侧栏列的工具栏，外层拿不到它。
       .toolbar(removing: .sidebarToggle)
     } detail: {
+      // 每一页各包一层（见 `typeErased()`）：原来十几页拼成一个类型，打开设置时要把所有页的
+      // 类型一次解完，哪怕只看一页；现在只解正在看的那一页。
       Group {
         switch selectedTab.destination.page {
-        case .mcp: MCPSettingsView(model: MCPController.shared)
-        case .service: serviceTab
-        case .generation: overviewTab
-        case .capture: captureTab
-        case .record: recordTab
-        case .processing: processingTab
-        case .appearance: appearanceTab
-        case .labs: labsTab
-        case .dataBackup: dataTab
-        case .knowledgeVault: knowledgeVaultTab
+        case .mcp: MCPSettingsView(model: MCPController.shared).typeErased()
+        case .service: serviceTab.typeErased()
+        case .generation: overviewTab.typeErased()
+        case .capture: captureTab.typeErased()
+        case .record: recordTab.typeErased()
+        case .processing: processingTab.typeErased()
+        case .appearance: appearanceTab.typeErased()
+        case .labs: labsTab.typeErased()
+        case .dataBackup: dataTab.typeErased()
+        case .knowledgeVault: knowledgeVaultTab.typeErased()
         case .companionSync:
-          CompanionNoteSyncSettingsView(model: companionSync)
+          CompanionNoteSyncSettingsView(model: companionSync).typeErased()
         case .updates:
-          AppUpdateSettingsView(updater: updater)
+          AppUpdateSettingsView(updater: updater).typeErased()
         // 下面这些已并进别的页（`destination` 不会返回它们），留着只为 switch 完整。
-        case .browserSupport, .siteLogin, .comments: captureTab
-        case .mediaStorage: recordTab
-        case .proof, .summary, .translation, .mindMap: processingTab
-        case .semanticSearch: processingTab
+        case .browserSupport, .siteLogin, .comments: captureTab.typeErased()
+        case .mediaStorage: recordTab.typeErased()
+        case .proof, .summary, .translation, .mindMap: processingTab.typeErased()
+        case .semanticSearch: processingTab.typeErased()
         }
       }
       .environment(\.settingsScrollAnchor, settingsAnchor)
