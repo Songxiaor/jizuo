@@ -169,9 +169,11 @@ enum PerfScenario {
   private static func visualTour(model: HistoryViewModel, environment: [String: String]) async {
     guard let directory = environment["LINKDIGEST_PERF_SNAPSHOT_DIR"] else { return }
     try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-    func shoot(_ name: String) async {
-      _ = await monitor.waitForQuiet(quiet: 800, timeout: 10_000, after: PerfProbe.nowMilliseconds())
-      try? await Task.sleep(for: .milliseconds(400))
+    func shoot(_ name: String, settle: Bool = true) async {
+      if settle {
+        _ = await monitor.waitForQuiet(quiet: 800, timeout: 10_000, after: PerfProbe.nowMilliseconds())
+        try? await Task.sleep(for: .milliseconds(400))
+      }
       for (index, window) in NSApp.windows.enumerated() where window.isVisible && window.frame.width > 300 {
         guard let view = window.contentView?.superview ?? window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
@@ -189,6 +191,9 @@ enum PerfScenario {
     let scopes: [(String, HistoryListScope)] = [("notes", .notes), ("favorite", .favorite), ("all", .all)]
     for (label, scope) in scopes {
       model.selectScope(scope)
+      // 新列表还没到的那一下（配合 PERF_EXPERIMENT_SLOW_PAGE_MS 拖慢读页）。
+      try? await Task.sleep(for: .milliseconds(250))
+      await shoot("03-scope-\(label)-gap", settle: false)
       await shoot("03-scope-\(label)")
     }
     if let platform = model.navigationCounts.externalPlatforms.first {

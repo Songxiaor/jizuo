@@ -3647,8 +3647,16 @@ struct HistoryContentView: View {
         protectedTaskIDs: protectedTaskIDs,
         theme: theme
       )
-    } else if let detail = model.detail {
+    } else if let detail = model.detail ?? model.navigationStandInDetail {
+      // 切侧栏范围的空档里 `model.detail` 已清空，上一条当替身留在原处：不显示、不能点、读屏跳过，
+      // 右上角那排按钮跟着灰掉，样子和占位一样（见 `HistoryViewModel.navigationStandInDetail`）。
+      // 必须和正常详情同一个分支：换分支等于拆掉重建，就省不下这一下了。
+      let isStandIn = model.detail == nil
       articleDetail(detail: detail)
+        .environment(\.isNavigationStandIn, isStandIn)
+        .opacity(isStandIn ? 0 : 1)
+        .allowsHitTesting(!isStandIn)
+        .accessibilityHidden(isStandIn)
     } else {
       switch model.detailState {
     case .loading:
@@ -4517,6 +4525,9 @@ struct PlatformNavigationIcon: View {
 
 private struct HistoryDetailView: View, Equatable {
   @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
+  /// 切侧栏范围那一小段空档里的替身（见 `HistoryViewModel.navigationStandInDetail`）：
+  /// 不响应菜单命令，按钮全灰，视频卡片不挂（和拆掉时一样停下）。
+  @Environment(\.isNavigationStandIn) private var isNavigationStandIn
   /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
   /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
   /// 这里只比较真正决定画面的值输入，闭包按「行为不随实例变化」处理，不参与比较。
@@ -5469,7 +5480,7 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
   private var suppressesEmbeddedMedia: Bool {
-    latestSnapshot?.platform == "wechat" || hasInlineArticleVideos
+    isNavigationStandIn || latestSnapshot?.platform == "wechat" || hasInlineArticleVideos
   }
   private var hasResultBody: Bool {
     guard let artifact = latestArtifact else { return false }
@@ -5653,8 +5664,8 @@ private struct HistoryDetailView: View, Equatable {
     // 菜单栏「内容」里的生成总结 / 翻译：原来这两个核心动作只能用鼠标点（2026-10-02 键盘走查）。
     // 阅读区外面套一层隔离：量尺寸时不往里量（见 `ReadingSizeIsolation`）。
     return ReadingSizeIsolation { scrollBody }
-      .focusedSceneValue(\.summarizeCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
-      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) })
+      .focusedSceneValue(\.summarizeCurrent, isOwnWriting || isNavigationStandIn ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
+      .focusedSceneValue(\.translateCurrent, isOwnWriting || isNavigationStandIn ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) })
   }
 
   /// `startRun` 读的是这一份 `detail`：换了条目、多了一版正文或生成记录变了，菜单里的闭包都要跟着换。
@@ -6092,6 +6103,13 @@ private struct HistoryDetailView: View, Equatable {
     .onChange(of: readingPane) { _, pane in
       if pane != .source { finishSourceEditing() }
     }
+    // 变成替身（切侧栏范围的空档）：输入焦点交出去、正在改的原文收尾，和原来整页拆掉时一样。
+    .onChange(of: isNavigationStandIn) { _, standIn in
+      guard standIn else { return }
+      isInlineNoteFocused = false
+      focusedField = nil
+      finishSourceEditing()
+    }
     .typeErased()
     .onChange(of: detail.task.id, initial: true) { _, _ in
       // 先把上一条笔记的草稿落库，再重置状态——顺序反了就等于丢掉它。
@@ -6218,6 +6236,7 @@ private struct HistoryDetailView: View, Equatable {
       }
       ToolbarItemGroup(placement: .primaryAction) {
         detailActionsCapsule
+          .disabled(isNavigationStandIn)
       }
     }
     .accessibilityIdentifier("history-detail")
@@ -11815,6 +11834,11 @@ final class DetailDerivedMemo {
     entries[key] = value
     return value
   }
+}
+
+extension EnvironmentValues {
+  /// 这一页详情是不是切侧栏范围空档里的替身（见 `HistoryViewModel.navigationStandInDetail`）。
+  @Entry var isNavigationStandIn = false
 }
 
 /// 阅读区各页签的实测高度（见 `HistoryDetailView.paneHeights`）。
