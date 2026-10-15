@@ -146,3 +146,27 @@ final class TranslationFinishSteadinessSourceTests: XCTestCase {
     XCTAssertTrue(live.contains("hidesOutlineEntry: true"))
   }
 }
+
+/// 嵌入块背后的卷角文件图标：只能在画字时挖掉，不能在附件上覆写 image(for:)。
+/// 2026-10-16 0.3.7 验收：覆写后正文里的图、视频、卡片整块变空白。
+final class HostedBlockGhostIconSourceTests: XCTestCase {
+  private func source(_ file: String) throws -> String {
+    try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/\(file)"),
+      encoding: .utf8
+    )
+  }
+
+  func testAttachmentDoesNotOverrideImageDrawing() throws {
+    let article = try source("ArticleDocument.swift")
+    XCTAssertFalse(article.contains("override func image("), "覆写 image(for:) 会让文字引擎不再放块视图")
+  }
+
+  func testParagraphsWithHostedBlocksClipTheDefaultIcon() throws {
+    let text = try source("SelectableReadingText.swift")
+    XCTAssertTrue(text.contains("HostedBlockClippingLayoutFragment(textElement:"))
+    XCTAssertTrue(text.contains("class InlineCodeChipLayoutFragment: HostedBlockClippingLayoutFragment"))
+  }
+}

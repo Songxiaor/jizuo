@@ -4695,7 +4695,12 @@ final class HistoryViewModel {
     mindMapGenerationTask = Task { [weak self] in
       guard let self else { return }
       do {
-        let outcome = try await mindMapExtractor.extractOutline(text: text, model: nil)
+        let existingTagNames = await Task.detached(priority: .userInitiated) {
+          HistoryTagVocabulary.topNames(from: (try? history.navigationCounts().tags) ?? [])
+        }.value
+        let outcome = try await mindMapExtractor.extractOutline(
+          text: text, model: nil, existingTags: existingTagNames
+        )
         try Task.checkCancellation()
         // 这里**不能**用 `selectedTaskID == taskID` 提前 return。
         //
@@ -4735,8 +4740,11 @@ final class HistoryViewModel {
           totalTokens: outcome.totalTokens
         )
         // 只写模型给出的跨文章主题标签；分支标题是章节结构，永不进标签系统。
-        let topicTags = outcome.outline.tags ?? []
+        // 和总结的自动标签同一条规矩：已有的照库里的写法用，新标签最多一个。
+        let proposedTags = outcome.outline.tags ?? []
         let tagged = await Task.detached(priority: .utility) { () -> Bool in
+          guard !proposedTags.isEmpty else { return false }
+          let topicTags = HistoryTagVocabulary.limitingNewTagNames(proposedTags, existing: existingTagNames)
           guard !topicTags.isEmpty else { return false }
           return (try? history.addTags(topicTags, to: taskID)) != nil
         }.value

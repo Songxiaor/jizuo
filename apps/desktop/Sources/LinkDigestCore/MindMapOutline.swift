@@ -122,12 +122,26 @@ public enum MindMapPrompt {
     tags 是跨文章可复用的主题词（领域名或实体名，如“Agent 工程”“折叠屏”“Claude Code”），\
     严禁使用分支标题、章节名或“概述/建议/要点”这类结构词。
     """
+
+  /// 带上库里已有的标签，让 tags 优先照原样复用（和总结的自动标签同一条规矩）。
+  public static func system(existingTags: [String]) -> String {
+    guard !existingTags.isEmpty else { return system }
+    return system + "\ntags 优先从这些已有标签里选，照原样写：\(existingTags.joined(separator: "、"))。只有都不合适时才新建，且最多新建 \(HistoryTagVocabulary.maximumNewTagsPerItem) 个。"
+  }
 }
 
 /// Provider-agnostic seam so tests can stub extraction without network.
 public protocol MindMapExtracting: Sendable {
   /// `model` overrides the profile's chat model when non-empty.
   func extractOutline(text: String, model: String?) async throws -> MindMapExtractionOutcome
+  /// 带上已有标签表，让脑图给的 tags 优先复用。
+  func extractOutline(text: String, model: String?, existingTags: [String]) async throws -> MindMapExtractionOutcome
+}
+
+public extension MindMapExtracting {
+  func extractOutline(text: String, model: String?, existingTags _: [String]) async throws -> MindMapExtractionOutcome {
+    try await extractOutline(text: text, model: model)
+  }
 }
 
 public struct MindMapExtractionOutcome: Sendable, Equatable {

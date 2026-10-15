@@ -46,6 +46,11 @@ public enum HistoryTagVocabulary {
     }
   }
 
+  /// 脑图顺带给的主题标签走同一条约束（2026-10-16 验收：一张脑图一次新建了 5 个英文标签）。
+  public static func limitingNewTagNames(_ rawNames: [String], existing: [String]) -> [String] {
+    limitingNewTags(rawNames.compactMap(HistoryTag.init(rawValue:)), existing: existing).map(\.name)
+  }
+
   /// 拼进提示词的那一句。没有已有标签时返回空串，提示词保持原样。
   public static func reuseInstruction(existing: [String]) -> String {
     guard !existing.isEmpty else { return "" }

@@ -30,6 +30,16 @@ final class HistoryTagVocabularyTests: XCTestCase {
     XCTAssertEqual(result.map(\.name), ["AI 工具", "新主题一", "折叠屏"])
   }
 
+  func testMindMapTagNamesFollowTheSameLimit() {
+    XCTAssertEqual(
+      HistoryTagVocabulary.limitingNewTagNames(
+        ["Adobe", "ImageFlow", "Relight", "ai 工具"],
+        existing: ["AI 工具", "折叠屏"]
+      ),
+      ["Adobe", "AI 工具"]
+    )
+  }
+
   func testEmptyLibraryKeepsAllTags() {
     let tags = ["甲", "乙", "丙"].compactMap(HistoryTag.init(rawValue:))
     XCTAssertEqual(HistoryTagVocabulary.limitingNewTags(tags, existing: []), tags)

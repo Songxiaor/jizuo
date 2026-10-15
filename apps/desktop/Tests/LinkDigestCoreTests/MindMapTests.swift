@@ -58,6 +58,13 @@ final class MindMapTests: XCTestCase {
     XCTAssertTrue(prompt.contains("严禁使用分支标题"))
   }
 
+  func testMindMapPromptListsExistingTagsOnlyWhenPresent() {
+    XCTAssertEqual(MindMapPrompt.system(existingTags: []), MindMapPrompt.system)
+    let prompt = MindMapPrompt.system(existingTags: ["一人企业", "AI 工具"])
+    XCTAssertTrue(prompt.contains("一人企业、AI 工具"))
+    XCTAssertTrue(prompt.contains("最多新建 1 个"))
+  }
+
   func testOverlongLeafTruncatesWithEllipsis() throws {
     let long = String(repeating: "长", count: 80)
     let outline = try MindMapOutline.fromModelOutput(

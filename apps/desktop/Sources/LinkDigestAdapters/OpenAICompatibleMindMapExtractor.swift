@@ -17,6 +17,10 @@ public final class OpenAICompatibleMindMapExtractor: MindMapExtracting, @uncheck
   }
 
   public func extractOutline(text: String, model: String?) async throws -> MindMapExtractionOutcome {
+    try await extractOutline(text: text, model: model, existingTags: [])
+  }
+
+  public func extractOutline(text: String, model: String?, existingTags: [String]) async throws -> MindMapExtractionOutcome {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw MindMapOutlineError.emptyInput }
 
@@ -34,7 +38,8 @@ public final class OpenAICompatibleMindMapExtractor: MindMapExtracting, @uncheck
         profile: credentials.profile,
         apiKey: credentials.apiKey,
         model: effectiveModel,
-        text: trimmed
+        text: trimmed,
+        existingTags: existingTags
       )
     } catch is CancellationError {
       throw TranscriptTidyError.cancelled

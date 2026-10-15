@@ -1236,17 +1236,62 @@ final class ReadingTextHostView: NSView, NSTextLayoutManagerDelegate {
     in textElement: NSTextElement
   ) -> NSTextLayoutFragment {
     if let paragraph = textElement as? NSTextParagraph,
-       paragraph.attributedString.length > 0,
-       paragraph.attributedString.containsAttribute(.readingInlineCodeChip) {
-      return InlineCodeChipLayoutFragment(textElement: textElement, range: textElement.elementRange)
+       paragraph.attributedString.length > 0 {
+      if paragraph.attributedString.containsAttribute(.readingInlineCodeChip) {
+        return InlineCodeChipLayoutFragment(textElement: textElement, range: textElement.elementRange)
+      }
+      if paragraph.attributedString.containsHostedBlock {
+        return HostedBlockClippingLayoutFragment(textElement: textElement, range: textElement.elementRange)
+      }
     }
     return NSTextLayoutFragment(textElement: textElement, range: textElement.elementRange)
   }
 }
 
+/// 嵌入块（图片、视频、表格、文案卡片、折叠小三角）所在的段落：画字时把块占的框挖掉。
+///
+/// 块的附件本身没有图，文字引擎排这一段时会照「无图附件」在附件框里画一个系统默认文件图标，
+/// 垫在块视图底下；块视图比附件框窄或带圆角时，就露出一张带卷角的大纸（2026-10-15 文案卡片背后的虚影）。
+/// 不能在附件上覆写 `image(for:…)` 返回空图或 nil——只要覆写了，引擎就只画图、不再放视图，
+/// 正文里的图、视频、卡片全没了（2026-10-16 0.3.7 验收实测）。所以只在画字这一步把框挖掉，视图照放。
+class HostedBlockClippingLayoutFragment: NSTextLayoutFragment {
+  override func draw(at point: CGPoint, in context: CGContext) {
+    let holes = hostedBlockFrames().map { $0.offsetBy(dx: point.x, dy: point.y) }
+    guard !holes.isEmpty else {
+      super.draw(at: point, in: context)
+      return
+    }
+    context.saveGState()
+    let path = CGMutablePath()
+    path.addRect(context.boundingBoxOfClipPath)
+    for hole in holes { path.addRect(hole) }
+    context.addPath(path)
+    context.clip(using: .evenOdd)
+    super.draw(at: point, in: context)
+    context.restoreGState()
+  }
+
+  private func hostedBlockFrames() -> [CGRect] {
+    guard let paragraph = textElement as? NSTextParagraph,
+          let manager = textLayoutManager,
+          let start = textElement?.elementRange?.location
+    else { return [] }
+    let string = paragraph.attributedString
+    var frames: [CGRect] = []
+    string.enumerateAttribute(.attachment, in: NSRange(location: 0, length: string.length)) { value, range, _ in
+      guard value is HostedBlockAttachment,
+            let location = manager.location(start, offsetBy: range.location)
+      else { return }
+      let frame = frameForTextAttachment(at: location)
+      if !frame.isEmpty { frames.append(frame) }
+    }
+    return frames
+  }
+}
+
 /// TextKit 2 版的行内代码底色：每段落在自己那一行画一个圆角浅灰底，再画字。
 /// 等价于原来 `ReadingLayoutManager.drawBackground` 的效果（TextKit 1 专用）。
-final class InlineCodeChipLayoutFragment: NSTextLayoutFragment {
+final class InlineCodeChipLayoutFragment: HostedBlockClippingLayoutFragment {
   override var renderingSurfaceBounds: CGRect {
     super.renderingSurfaceBounds.insetBy(dx: -4, dy: -3)
   }
@@ -1283,6 +1328,14 @@ final class InlineCodeChipLayoutFragment: NSTextLayoutFragment {
 }
 
 private extension NSAttributedString {
+  var containsHostedBlock: Bool {
+    var found = false
+    enumerateAttribute(.attachment, in: NSRange(location: 0, length: length)) { value, _, stop in
+      if value is HostedBlockAttachment { found = true; stop.pointee = true }
+    }
+    return found
+  }
+
   func containsAttribute(_ key: NSAttributedString.Key) -> Bool {
     var found = false
     enumerateAttribute(key, in: NSRange(location: 0, length: length)) { value, _, stop in
