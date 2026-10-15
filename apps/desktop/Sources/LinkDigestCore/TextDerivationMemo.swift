@@ -10,18 +10,18 @@ import Foundation
 /// 只记长文本（短文本重算比查表还快），只留最近几份。按原文本身比对：同一份正文在内存里
 /// 是同一块存储，比对是常数时间；内容相同、存储不同时退回逐字比较，仍远比重新解析便宜。
 /// 任何线程都能用。
-final class TextDerivationMemo<Value>: @unchecked Sendable {
+public final class TextDerivationMemo<Value>: @unchecked Sendable {
   private let lock = NSLock()
   private var entries: [(source: String, value: Value)] = []
   private let capacity: Int
   private let minimumUTF8Length: Int
 
-  init(capacity: Int = 16, minimumUTF8Length: Int = 2_048) {
+  public init(capacity: Int = 16, minimumUTF8Length: Int = 2_048) {
     self.capacity = capacity
     self.minimumUTF8Length = minimumUTF8Length
   }
 
-  func value(for source: String, compute: (String) -> Value) -> Value {
+  public func value(for source: String, compute: (String) -> Value) -> Value {
     let length = source.utf8.count
     guard length >= minimumUTF8Length else { return compute(source) }
     lock.lock()
