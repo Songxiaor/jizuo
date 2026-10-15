@@ -682,7 +682,15 @@ enum MarkdownPresentation {
     let normalized = normalizingCJKEmphasis(withWiki)
     let parsed = (try? AttributedString(markdown: normalized, options: options))
       ?? AttributedString(normalized)
-    return applyingScripts(applyingHighlights(trimmingCJKSwallowedAutolinks(parsed)))
+    var result = trimmingCJKSwallowedAutolinks(parsed)
+    // 高亮和上下标都要在富文本里逐字找记号，整段找一遍不便宜；绝大多数文字两样都没有。
+    // 先在纯文字里看一眼有没有记号，没有就不进去找（结果和进去找一遍完全一样）。
+    let plain = String(result.characters)
+    if plain.contains("==") { result = applyingHighlights(result) }
+    if plain.unicodeScalars.contains(where: { (0xF8F0...0xF8F3).contains($0.value) }) {
+      result = applyingScripts(result)
+    }
+    return result
   }
 
   /// 裸链接后面紧跟中文时，GFM 自动链接一直延伸到下一个空白，
@@ -2406,8 +2414,11 @@ enum MarkdownPresentation {
   }
 
   private static func strippingLightboxFileInfoLine(_ line: String) -> String {
+    // 灯箱信息行一定以 KB/MB/GB 结尾、带「×」。先用这两个便宜的判断筛掉绝大多数行，
+    // 不再每一行都跑一遍正则（长文几千行，打开时这一步占主线程一成）。
+    guard line.contains("×") else { return line }
     let trimmed = line.trimmingCharacters(in: .whitespaces)
-    guard !trimmed.isEmpty,
+    guard !trimmed.isEmpty, trimmed.hasSuffix("B"),
           let metaRange = trimmed.range(
             of: #"(\S+)\s+(\d{2,5})×(\d{2,5})\s+(\d+(?:\.\d+)?)\s*(KB|MB|GB)$"#,
             options: .regularExpression
@@ -2493,23 +2504,11 @@ extension AttributedString {
     mutable.enumerateAttribute(.font, in: full) { value, range, _ in
       let traits = (value as? NSFont)?.fontDescriptor.symbolicTraits ?? []
       if value != nil { sawFont = true }
-      var descriptor = readingFont.nsFontDescriptor(size: size)
-      if traits.contains(.bold) {
-        descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .bold])
-      }
-      if traits.contains(.italic) {
-        descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .italic])
-      }
-      let font = NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size)
+      let font = readingFont.nsFont(size: size, bold: traits.contains(.bold), italic: traits.contains(.italic))
       mutable.addAttribute(.font, value: font, range: range)
     }
     if !sawFont {
-      let descriptor = readingFont.nsFontDescriptor(size: size)
-      mutable.addAttribute(
-        .font,
-        value: NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size),
-        range: full
-      )
+      mutable.addAttribute(.font, value: readingFont.nsFont(size: size, bold: false, italic: false), range: full)
     }
     return AttributedString(mutable)
   }

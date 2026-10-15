@@ -140,11 +140,20 @@ extension MarkdownOutlineTests {
   /// 目录解析结果要缓存，不能每次 body 求值现算。
   ///
   /// 解析成本随正文长度线性增长，库里最长一条 73432 字，跟着重绘重算会肉眼可见地卡。
+  /// 2026-10-16 起：后台解析的结果连同它属于哪一份正文一起存进 state，并记进
+  /// `ReadingRenderCache`（换条目时不借上一条的目录，再开同一条不重算）；纯文字正文直接取
+  /// 排版那一份解析结果，也走同一个缓存。
   func testOutlineEntriesAreCachedPerSource() throws {
     let source = try presentationSource()
     XCTAssertTrue(
-      source.contains("@State private var outlineEntries"),
-      "目录结果要存进 state")
+      source.contains("@State private var loadedOutline: (source: String, entries: [MarkdownOutline.Entry])?"),
+      "目录结果连同所属正文存进 state")
+    XCTAssertTrue(
+      source.contains("if let loadedOutline, loadedOutline.source == source { return loadedOutline.entries }"),
+      "只用属于当前正文的目录")
+    XCTAssertTrue(
+      source.contains("if let known = ReadingRenderCache.outline(for: source) { return known }"),
+      "解析过的正文从缓存取")
     XCTAssertTrue(
       source.contains(".task(id: source) {"),
       "按 source 重算一次，同一条正文内的重绘不再解析")

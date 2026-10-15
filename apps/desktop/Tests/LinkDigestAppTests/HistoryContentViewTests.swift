@@ -1132,7 +1132,8 @@ final class HistoryContentViewTests: XCTestCase {
       source.contains("if showsPlatformGallerySurface || model.isCreatorDirectoryActive {\n        if #available(macOS 26.0, *) {\n          ToolbarSpacer(.flexible)"),
       "卡片墙、博主页不要再在窗口工具栏加弹性空白：它会把收起侧栏按钮推到侧栏右缘"
     )
-    XCTAssertTrue(source.contains("withMenuCommands(themedBody)\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
+    // 菜单命令挂在整个窗口内容最外层；中间那层 `typeErased()` 只为断开超长的视图类型（启动提速）。
+    XCTAssertTrue(source.contains("return withMenuCommands(themedBody.typeErased())\n      .typeErased()\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
     XCTAssertTrue(source.contains("model.loadNextPageIfNeeded(after: last)"), "分页不能依赖被展开批次替换的末条卡片")
     XCTAssertTrue(source.contains("model.toggleGallerySelection(row.taskID)"))
