@@ -2976,7 +2976,9 @@ final class HistoryContentViewTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestCore/LayeredSourceDocument.swift"),
       encoding: .utf8
     )
-    XCTAssertTrue(layered.contains("MarkdownNoteFrontmatter.parse(snapshot.bodyText).body"))
+    // 2026-10-16 起按原文备忘（见 `TextDerivationMemo`），解析的仍是这一层自己的正文。
+    XCTAssertTrue(layered.contains("bodyMemo.value(for: snapshot.bodyText)"))
+    XCTAssertTrue(layered.contains("MarkdownNoteFrontmatter.parse(bodyText).body"))
     let detail = section(in: historyContentViewSource(), from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertFalse(detail.contains("source: sourceFrontmatter.body"))
   }
@@ -3564,13 +3566,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-note-tag-bar"))
     // 2026-09-24：笔记输入框仍收在整页最后（摘录之后）；分类（归属 · 素材类型 · 标签）移到标题下。
     let annotations = source.range(of: "ReadingAnchor.module(\"annotations\")")
-    let noteBarUse = source.range(of: "noteBar\n            .padding(.top, DesignTokens.Space.xl)")
+    // `.typeErased()` 只为断开超长的视图类型（2026-10-16 启动提速），不改位置和样式。
+    let noteBarUse = source.range(of: "noteBar.typeErased()\n            .padding(.top, DesignTokens.Space.xl)")
     XCTAssertNotNil(noteBarUse)
     if let annotations, let noteBarUse {
       XCTAssertLessThan(annotations.lowerBound, noteBarUse.lowerBound)
     }
-    let classification = source.range(of: "        classificationBar\n")
-    let titleUse = source.range(of: "        titleView\n")
+    let classification = source.range(of: "        classificationBar.typeErased()\n")
+    let titleUse = source.range(of: "        titleView.typeErased()\n")
     XCTAssertNotNil(classification)
     if let classification, let titleUse, let annotations {
       XCTAssertLessThan(titleUse.lowerBound, classification.lowerBound)

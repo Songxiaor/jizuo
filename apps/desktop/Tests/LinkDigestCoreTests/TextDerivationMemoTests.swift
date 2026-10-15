@@ -21,9 +21,9 @@ final class TextDerivationMemoTests: XCTestCase {
     let memo = TextDerivationMemo<Int>()
     var calls = 0
     let text = longText("甲")
-    _ = memo.value(for: text) { calls += 1; return 1 }
+    _ = memo.value(for: text) { _ in calls += 1; return 1 }
     let copy = String(text.unicodeScalars)  // 内容相同、存储不同
-    _ = memo.value(for: copy) { calls += 1; return 1 }
+    _ = memo.value(for: copy) { _ in calls += 1; return 1 }
     XCTAssertEqual(calls, 1)
   }
 
@@ -39,8 +39,8 @@ final class TextDerivationMemoTests: XCTestCase {
   func testShortTextIsNotCached() {
     let memo = TextDerivationMemo<Int>()
     var calls = 0
-    _ = memo.value(for: "短") { calls += 1; return 0 }
-    _ = memo.value(for: "短") { calls += 1; return 0 }
+    _ = memo.value(for: "短") { _ in calls += 1; return 0 }
+    _ = memo.value(for: "短") { _ in calls += 1; return 0 }
     XCTAssertEqual(calls, 2)
   }
 
@@ -48,10 +48,10 @@ final class TextDerivationMemoTests: XCTestCase {
     let memo = TextDerivationMemo<Int>(capacity: 2)
     var calls = 0
     let texts = ["甲", "乙", "丙"].map(longText)
-    for text in texts { _ = memo.value(for: text) { calls += 1; return 0 } }
-    _ = memo.value(for: texts[0]) { calls += 1; return 0 }
+    for text in texts { _ = memo.value(for: text) { _ in calls += 1; return 0 } }
+    _ = memo.value(for: texts[0]) { _ in calls += 1; return 0 }
     XCTAssertEqual(calls, 4, "容量 2 时最早那份已被挤掉，要重算")
-    _ = memo.value(for: texts[2]) { calls += 1; return 0 }
+    _ = memo.value(for: texts[2]) { _ in calls += 1; return 0 }
     XCTAssertEqual(calls, 4, "最近用过的还在")
   }
 
