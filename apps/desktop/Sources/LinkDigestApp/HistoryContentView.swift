@@ -4528,6 +4528,9 @@ private struct HistoryDetailView: View, Equatable {
   /// 切侧栏范围那一小段空档里的替身（见 `HistoryViewModel.navigationStandInDetail`）：
   /// 不响应菜单命令，按钮全灰，视频卡片不挂（和拆掉时一样停下）。
   @Environment(\.isNavigationStandIn) private var isNavigationStandIn
+  /// 替身换成新的一条时，滚动位置按「整页新建」处理：回到偏移 0。切条目用的顶部锚点落在
+  /// 顶部留白 4pt 之下，比新建时高 4pt；原来切侧栏是整页新建，这里保持那个位置不变。
+  @State private var pendingStandInScrollReset = false
   /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
   /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
   /// 这里只比较真正决定画面的值输入，闭包按「行为不随实例变化」处理，不参与比较。
@@ -6105,7 +6108,16 @@ private struct HistoryDetailView: View, Equatable {
     }
     // 变成替身（切侧栏范围的空档）：输入焦点交出去、正在改的原文收尾，和原来整页拆掉时一样。
     .onChange(of: isNavigationStandIn) { _, standIn in
-      guard standIn else { return }
+      guard standIn else {
+        // 新的一条和替身是同一条时，下面按条目切换的那一步不会触发，这里补上。
+        DispatchQueue.main.async {
+          guard pendingStandInScrollReset else { return }
+          pendingStandInScrollReset = false
+          readingScrollKeeper.scrollToTop()
+        }
+        return
+      }
+      pendingStandInScrollReset = true
       isInlineNoteFocused = false
       focusedField = nil
       finishSourceEditing()
@@ -6278,7 +6290,12 @@ private struct HistoryDetailView: View, Equatable {
     }
     .typeErased()
     .onChange(of: detail.task.id) { _, _ in
-      scrollProxy.scrollTo(Self.detailTopAnchor, anchor: .top)
+      if pendingStandInScrollReset {
+        pendingStandInScrollReset = false
+        readingScrollKeeper.scrollToTop()
+      } else {
+        scrollProxy.scrollTo(Self.detailTopAnchor, anchor: .top)
+      }
       transcriptSnapshotWhenRunBegan = liveTranscriptionState.isActive
         ? latestTranscriptionSnapshot?.id.rawValue
         : nil

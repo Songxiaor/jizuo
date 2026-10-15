@@ -144,6 +144,14 @@ final class ReadingScrollKeeper: NSObject {
   private var expiry: DispatchWorkItem?
   static let holdDuration: TimeInterval = 0.6
 
+  /// 回到最顶上，和整页新建时的位置一样。滚动区伸到工具栏底下，最顶上是「负的顶部内边距」，不是 0。
+  func scrollToTop() {
+    guard let scroll = scrollView else { return }
+    stop()
+    scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: -scroll.contentInsets.top))
+    scroll.reflectScrolledClipView(scroll.contentView)
+  }
+
   func keepDistanceFromBottom() {
     guard let scroll = scrollView, let document = scroll.documentView else { return }
     stop()
