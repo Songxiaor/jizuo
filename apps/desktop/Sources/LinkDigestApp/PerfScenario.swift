@@ -40,6 +40,10 @@ enum PerfScenario {
       await profileLoop(scenario, model: model, environment: environment)
       return
     }
+    if scenario == "visual" {
+      await visualTour(model: model, environment: environment)
+      return
+    }
     guard scenario == "full" else { return }
 
     // 打开：最新几条（刚抓的）。
@@ -159,6 +163,45 @@ enum PerfScenario {
       break
     }
     PerfProbe.mark("profile.end")
+  }
+
+  /// 截图巡检：改动前后各跑一遍，逐张比对界面有没有变。截的是 App 自己的窗口（不需要屏幕录制权限）。
+  private static func visualTour(model: HistoryViewModel, environment: [String: String]) async {
+    guard let directory = environment["LINKDIGEST_PERF_SNAPSHOT_DIR"] else { return }
+    try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+    func shoot(_ name: String) async {
+      _ = await monitor.waitForQuiet(quiet: 800, timeout: 10_000, after: PerfProbe.nowMilliseconds())
+      try? await Task.sleep(for: .milliseconds(400))
+      for (index, window) in NSApp.windows.enumerated() where window.isVisible && window.frame.width > 300 {
+        guard let view = window.contentView?.superview ?? window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let data = rep.representation(using: .png, properties: [:])
+        try? data?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name)-w\(index).png"))
+      }
+      PerfProbe.mark("snapshot \(name)")
+    }
+    await shoot("01-launch")
+    for (label, taskID) in parseTasks(environment["LINKDIGEST_PERF_TASKS"]) {
+      model.selectedTaskID = taskID
+      await shoot("02-open-\(label)")
+    }
+    let scopes: [(String, HistoryListScope)] = [("notes", .notes), ("favorite", .favorite), ("all", .all)]
+    for (label, scope) in scopes {
+      model.selectScope(scope)
+      await shoot("03-scope-\(label)")
+    }
+    if let platform = model.navigationCounts.externalPlatforms.first {
+      model.selectHost(platform.host, scope: .external)
+      await shoot("04-platform")
+    }
+    model.enterCreatorDirectory()
+    await shoot("05-creators")
+    model.selectScope(.all)
+    if let item = settingsMenuItem(in: NSApp.mainMenu), let menu = item.menu {
+      menu.performActionForItem(at: menu.index(of: item))
+      await shoot("06-settings")
+    }
   }
 
   private static func settingsMenuItem(in menu: NSMenu?) -> NSMenuItem? {
