@@ -80,6 +80,8 @@ def run_once(app: Path, log: Path, scenario: str, timeout: float = 300):
         "LINKDIGEST_PERF_PROFILE_SECONDS": os.environ.get("PROFILE_SECONDS", "20"),
         "LINKDIGEST_PERF_SNAPSHOT_DIR": os.environ.get("SNAPSHOT_DIR", str(log.parent / (log.stem + "-shots"))),
     }
+    # 试验开关原样转交（只有带同名判断的测速构建才认）。
+    env.update({k: v for k, v in os.environ.items() if k.startswith("PERF_EXPERIMENT_")})
     cmd = ["open", "-g", "-n", "-W"]
     for k, v in env.items():
         cmd += ["--env", f"{k}={v}"]
