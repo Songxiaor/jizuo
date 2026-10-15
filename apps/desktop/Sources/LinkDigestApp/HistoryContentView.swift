@@ -4606,7 +4606,11 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// 各阅读面板的实测高度：ZStack 容器按「当前活动面板的高度」定高，
   /// 隐藏面板保持自然尺寸不被折叠——切换因此不触发任何几何重算。
-  @State private var paneHeights: [ReadingPane: CGFloat] = [:]
+  ///
+  /// 放在单独的可观察对象里，只有定高那一小层（`ReadingPaneHeightFrame`）读它。长文的文字引擎
+  /// 边排边估高，滑动时正文高度一直在变；原来高度是本视图的 @State，每变一次整个详情页就重算
+  /// 一遍（2026-10-16 测速：维基长文滑 5 秒，详情页 body 重算 66 次）。
+  @State private var paneHeights = ReadingPaneHeights<ReadingPane>()
   @State private var pendingSourceCitation: String?
   @State private var measuredTitleHeightStore: PerItem<CGFloat>?
   private var measuredTitleHeight: CGFloat {
@@ -9191,12 +9195,13 @@ private struct HistoryDetailView: View, Equatable {
   /// 两次透明度翻转。未访问过的面板不挂载（惰性）。各面板高度由
   /// GeometryReader 上报，只随内容变化，与切换无关。
   @ViewBuilder private var content: some View {
-    ZStack(alignment: .top) {
-      mountedReadingPane(.summary)
-      mountedReadingPane(.translation)
-      mountedReadingPane(.source)
+    ReadingPaneHeightFrame(heights: paneHeights, pane: effectiveReadingPane) {
+      ZStack(alignment: .top) {
+        mountedReadingPane(.summary)
+        mountedReadingPane(.translation)
+        mountedReadingPane(.source)
+      }
     }
-    .frame(height: paneHeights[effectiveReadingPane], alignment: .top)
     // 只在上下方向裁：左右各放出一条边，标题左侧的收起三角（`SectionFoldToggle`）
     // 画在正文左边界外，原来的 `.clipped()` 会把它整个裁掉。
     .clipShape(HorizontalBleedClip(bleed: 32))
@@ -9228,9 +9233,9 @@ private struct HistoryDetailView: View, Equatable {
         )
         .onPreferenceChange(ReadingPaneHeightPreferenceKey.self) { reported in
           for (reportedPane, height) in reported {
-            // 高度只在内容变化时更新；同值重复写 @State 也会触发无效重求值。
-            if paneHeights[reportedPane] != height {
-              paneHeights[reportedPane] = height
+            // 高度只在内容变化时更新；同值重复写也会触发无效重求值。
+            if paneHeights.values[reportedPane] != height {
+              paneHeights.values[reportedPane] = height
             }
           }
         }
@@ -11809,6 +11814,30 @@ final class DetailDerivedMemo {
     let value = compute()
     entries[key] = value
     return value
+  }
+}
+
+/// 阅读区各页签的实测高度（见 `HistoryDetailView.paneHeights`）。
+@MainActor @Observable
+final class ReadingPaneHeights<Pane: Hashable> {
+  var values: [Pane: CGFloat] = [:]
+}
+
+/// 按当前页签的实测高度给阅读区定高。只有这一层观察高度，高度变了只重算这一小层，
+/// 里面的页签内容是外层算好传进来的值，不跟着重建。
+struct ReadingPaneHeightFrame<Pane: Hashable, Content: View>: View {
+  let heights: ReadingPaneHeights<Pane>
+  let pane: Pane
+  let content: Content
+
+  init(heights: ReadingPaneHeights<Pane>, pane: Pane, @ViewBuilder content: () -> Content) {
+    self.heights = heights
+    self.pane = pane
+    self.content = content()
+  }
+
+  var body: some View {
+    content.frame(height: heights.values[pane], alignment: .top)
   }
 }
 
