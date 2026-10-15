@@ -66,6 +66,14 @@ public extension ModelCatalogLoading {
 /// failure is intentionally ignored by the run orchestrator.
 public protocol SummaryTagGenerating: Sendable {
   func generateSummaryTags(profile: ProviderProfile, apiKey: String, summary: String) async throws -> String
+  /// 带上已有标签表，让模型优先复用（见 `HistoryTagVocabulary`）。
+  func generateSummaryTags(profile: ProviderProfile, apiKey: String, summary: String, existingTags: [String]) async throws -> String
+}
+
+public extension SummaryTagGenerating {
+  func generateSummaryTags(profile: ProviderProfile, apiKey: String, summary: String, existingTags _: [String]) async throws -> String {
+    try await generateSummaryTags(profile: profile, apiKey: apiKey, summary: summary)
+  }
 }
 
 public enum ModelProviderErrorCode: String, Codable, Sendable, Equatable {

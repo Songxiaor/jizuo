@@ -122,6 +122,31 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(request.description.contains(key))
   }
 
+  func testAutomaticTagsListExistingTagsForReuse() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let response = #"{"choices":[{"message":{"content":"AI 工具"}}]}"#
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(contentType: "application/json", chunks: [.init(response)])
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+
+    _ = try await makeProvider().generateSummaryTags(
+      profile: try profile(baseURL),
+      apiKey: key,
+      summary: "总结",
+      existingTags: ["AI 工具", "折叠屏"]
+    )
+
+    let request = try XCTUnwrap(server.requests.first)
+    let bodyData = try XCTUnwrap(request.body.data(using: String.Encoding.utf8))
+    let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+    let messages = try XCTUnwrap(body["messages"] as? [[String: String]])
+    let system = try XCTUnwrap(messages.first?["content"])
+    XCTAssertTrue(system.contains("AI 工具、折叠屏"))
+    XCTAssertTrue(system.contains("最多新建 1 个"))
+  }
+
   func testEndpointPreservesPathPrefixAndRejectsCompletedEndpoint() throws {
     let baseURL = try XCTUnwrap(URL(string: "https://example.test/openai/v1///"))
     let endpoint = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: baseURL)

@@ -541,11 +541,22 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     )
   }
 
+  /// 已有标签表（中文提示词版）。表空时不加任何字，提示词与原来一致。
+  static func tagReuseInstruction(existingTags: [String]) -> String {
+    guard !existingTags.isEmpty else { return "" }
+    return "优先从这些已有标签里选，照原样写：\(existingTags.joined(separator: "、"))。只有都不合适时才新建，且最多新建 \(HistoryTagVocabulary.maximumNewTagsPerItem) 个。"
+  }
+
   public func generateSummaryTags(profile: ProviderProfile, apiKey: String, summary: String) async throws -> String {
+    try await generateSummaryTags(profile: profile, apiKey: apiKey, summary: summary, existingTags: [])
+  }
+
+  public func generateSummaryTags(profile: ProviderProfile, apiKey: String, summary: String, existingTags: [String]) async throws -> String {
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
     let tagSystemPrompt = "为以下摘要输出 1-5 个中文主题标签，逗号分隔，不要输出其他内容。标签必须是可用于归类多篇文章的领域名或实体名（如：AI 工具、折叠屏、Claude Code），严禁输出文中章节标题或“概述/建议/要点”这类结构词。"
+      + Self.tagReuseInstruction(existingTags: existingTags)
     let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(profile: profile, model: profile.model)
     let url = usesAnthropicMessages
       ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)

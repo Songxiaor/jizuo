@@ -9312,7 +9312,7 @@ private struct HistoryDetailView: View, Equatable {
         // 剥离与清理都是整篇扫描，走备忘缓存，正文没变不重付。
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
-          source: translationTimecodesApplied(
+          source: summaryTimestampLinked(translationTimecodesApplied(
             (pane == .summary ? MarkdownPresentation.strippingSummaryPreamble : { $0 })(displayedArtifactMarkdown(
               ReadingRenderCache.paneBody(
                 // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
@@ -9321,7 +9321,7 @@ private struct HistoryDetailView: View, Equatable {
               )
             )),
             pane: pane
-          ),
+          ), pane: pane),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
           localMediaFileURL: nil,
@@ -9335,7 +9335,8 @@ private struct HistoryDetailView: View, Equatable {
           showsInlinePlainTextToggle: false,
           navigationModules: navigationModules,
           anchorScope: anchorScope(for: pane),
-          onFollowWikiLink: { title in model.followWikiLink(toTitle: title) }
+          onFollowWikiLink: { title in model.followWikiLink(toTitle: title) },
+          onSeekMedia: { seconds in model.requestMediaSeek(toSeconds: seconds) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
@@ -9965,6 +9966,13 @@ private struct HistoryDetailView: View, Equatable {
   private func translationTimecodesApplied(_ text: String, pane: ReadingPane) -> String {
     guard pane == .translation, !showsTranscriptTimecodes else { return text }
     return TranscriptReadingText.removingTimecodes(from: text)
+  }
+
+  /// 视频写法的总结里 `[mm:ss]` 变成可点击链接；同样只在有视频时做（理由同 `hasSeekableMedia`）。
+  /// 放在最外层，理由同原文页：先让前面的清理做完，再生成链接语法。
+  private func summaryTimestampLinked(_ text: String, pane: ReadingPane) -> String {
+    guard pane == .summary, hasSeekableMedia else { return text }
+    return MediaSeekLink.linkifyingBracketedTimestamps(in: text)
   }
 
   /// 有视频才把段首时间码变成可点击链接。
