@@ -221,6 +221,7 @@ enum PerfScenario {
   private static func measureStep(_ name: String, readyPrefix: String?, action: () -> Void) async {
     _ = await monitor.waitForQuiet(quiet: 600, timeout: 10_000, after: PerfProbe.nowMilliseconds())
     let start = PerfProbe.nowMilliseconds()
+    let countersBefore = PerfProbe.counters
     PerfProbe.mark("step.begin \(name)")
     action()
     var ready: Double?
@@ -229,8 +230,13 @@ enum PerfScenario {
     }
     let settled = await monitor.waitForQuiet(quiet: 500, timeout: 15_000, after: ready ?? start)
     let stretches = monitor.stretches(from: start, to: settled)
+    var counts: [String: Int] = [:]
+    for (key, value) in PerfProbe.counters where value != countersBefore[key] {
+      counts[key] = value - (countersBefore[key] ?? 0)
+    }
     emit([
       "step": name,
+      "counts": counts,
       "ready": json(ready.map { $0 - start }),
       "settled": settled - start,
       "busyTotal": stretches.reduce(0) { $0 + $1.duration },
@@ -254,6 +260,7 @@ enum PerfScenario {
     let driver = ScrollDriver(scrollView: scrollView, pointsPerSecond: pointsPerSecond, seconds: seconds)
     let start = PerfProbe.nowMilliseconds()
     let startOffset = scrollView.contentView.bounds.origin.y
+    let countersBefore = PerfProbe.counters
     PerfProbe.mark("step.begin \(name)")
     await driver.run(window: window)
     let end = PerfProbe.nowMilliseconds()
@@ -264,8 +271,13 @@ enum PerfScenario {
       guard !during.isEmpty else { return 0 }
       return during[min(during.count - 1, Int((Double(during.count) * p).rounded(.down)))]
     }
+    var counts: [String: Int] = [:]
+    for (key, value) in PerfProbe.counters where value != countersBefore[key] {
+      counts[key] = value - (countersBefore[key] ?? 0)
+    }
     emit([
       "step": name,
+      "counts": counts,
       "frames": driver.frames,
       "droppedFrames": driver.droppedFrames,
       "frameDuration": driver.nominalFrameDuration * 1_000,

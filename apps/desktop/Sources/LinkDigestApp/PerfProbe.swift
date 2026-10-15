@@ -40,6 +40,25 @@ enum PerfProbe {
     writer?.append("\(String(format: "%.3f", milliseconds))\t\(kind)\t\(detail)")
   }
 
+  /// 计数（主线程）：视图 body 求值了几次之类。场景脚本按步骤取差值。
+  nonisolated(unsafe) static var counters: [String: Int] = [:]
+  static func count(_ name: StaticString) {
+    guard writer != nil else { return }
+    counters["\(name)", default: 0] += 1
+  }
+
+  /// 量一段代码：≥1ms 才记 `span\t名字 毫秒`。
+  @discardableResult
+  static func span<T>(_ name: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T {
+    guard writer != nil else { return try body() }
+    let start = nowMilliseconds()
+    defer {
+      let elapsed = nowMilliseconds() - start
+      if elapsed >= 1 { write("span", "\(name()) \(String(format: "%.2f", elapsed))") }
+    }
+    return try body()
+  }
+
   static func mark(_ name: @autoclosure () -> String) {
     guard writer != nil else { return }
     let text = name()
@@ -178,6 +197,9 @@ final class PerfLogWriter: @unchecked Sendable {
 #else
 enum PerfProbe {
   @inline(__always) static func mark(_ name: @autoclosure () -> String) {}
+  @inline(__always) static func count(_ name: StaticString) {}
+  @inline(__always) @discardableResult
+  static func span<T>(_ name: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T { try body() }
   @inline(__always) static func install() {}
 }
 #endif

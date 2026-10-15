@@ -36,6 +36,19 @@ enum ReadingRenderCache {
     return parsed
   }
 
+  // MARK: - 正文目录
+
+  /// 每份正文的章节目录（见 `MarkdownContentView.outlineEntries`）。键是整份正文。
+  private static var outlineStore = LRUStore<String, [MarkdownOutline.Entry]>()
+
+  static func outline(for source: String) -> [MarkdownOutline.Entry]? {
+    outlineStore.lookup(source)
+  }
+
+  static func rememberOutline(_ entries: [MarkdownOutline.Entry], for source: String) {
+    outlineStore.remember(entries, forKey: source, capacity: capacity)
+  }
+
   // MARK: - 评论行内 Markdown
 
   private static var inlineStore = LRUStore<String, AttributedString>()
@@ -255,6 +268,7 @@ enum ReadingRenderCache {
   /// 测试入口：清空全部缓存。不改变生产路径的容量、键或返回值。
   static func resetForTests() {
     blockStore = LRUStore()
+    outlineStore = LRUStore()
     inlineStore = LRUStore()
     attributedStore = LRUStore()
     plainStore = LRUStore()

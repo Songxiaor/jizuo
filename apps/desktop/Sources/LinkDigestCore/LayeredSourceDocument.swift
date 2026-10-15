@@ -74,11 +74,17 @@ public enum LayeredSourceDocument {
     return (cleaned, quotes.joined(separator: "\n\n"))
   }
 
+  private static let bodyMemo = TextDerivationMemo<String>()
+
+  /// 去掉属性头、首尾空白后的正文。只由 `bodyText` 决定，同一份长正文直接拿上次的结果
+  /// （见 `TextDerivationMemo`：详情页一次刷新会在十几处调到它）。
   public static func body(of snapshot: ContentSnapshot) -> String {
-    let parsed = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    if !parsed.isEmpty { return parsed }
-    return snapshot.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    bodyMemo.value(for: snapshot.bodyText) { bodyText in
+      let parsed = MarkdownNoteFrontmatter.parse(bodyText).body
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !parsed.isEmpty { return parsed }
+      return bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
   }
 
   /// 发给总结/翻译/脑图的正文：有配文和转写就两层都带上，并标清楚各是什么。

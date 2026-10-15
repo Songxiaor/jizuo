@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 
 /// 阅读区可选字体的目录。
@@ -14,9 +15,22 @@ enum ReadingFontCatalog {
   /// 枚举一次要遍历几百个家族并各做一次 CoreText 查询，够慢到不能放进 body。
   nonisolated(unsafe) private static var cachedFamilies: [String]?
 
-  private static let registeredFontNames = Set(
-    NSFontManager.shared.availableFontFamilies + NSFontManager.shared.availableFonts
-  )
+  /// 本机已注册的字体家族名和 PostScript 名。
+  ///
+  /// 用 CoreText 取，不用 NSFontManager：两边给的是同一份名单（2026-10-16 本机 868 个，逐个比过），
+  /// 但 NSFontManager 第一次枚举要 90ms、只能在主线程，而侧栏第一次画字就要用到它——启动时
+  /// 这一下压在主窗口出现之前。CoreText 的这两个函数可在任意线程调，启动时先在后台取好
+  /// （见 `prewarmRegisteredFontNames`）。
+  private static let registeredFontNames: Set<String> = {
+    let families = (CTFontManagerCopyAvailableFontFamilyNames() as? [String]) ?? []
+    let postScriptNames = (CTFontManagerCopyAvailablePostScriptNames() as? [String]) ?? []
+    return Set(families + postScriptNames)
+  }()
+
+  /// App 启动时调一次：在后台把字体名单取好，主线程第一次要用时直接拿现成的。
+  static func prewarmRegisteredFontNames() {
+    Task.detached(priority: .userInitiated) { _ = registeredFontNames.count }
+  }
 
   /// 只实例化已注册字体，避免缺失字体触发系统字体服务的长时间查找。
   /// 思源宋体的本机显示名与家族名不同，保留已支持的中文别名。

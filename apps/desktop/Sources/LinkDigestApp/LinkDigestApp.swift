@@ -1302,6 +1302,8 @@ struct MainWindowLaunchGuard: ViewModifier {
 
   init() {
     PerfProbe.install()
+    // 侧栏第一次画字就要查本机字体名单；放到后台先取，不压在主窗口出现之前。
+    ReadingFontCatalog.prewarmRegisteredFontNames()
     // 记下进程启动时刻：`MainWindowLaunchGuard` 只在启动后那一小段时间里补开主窗口。
     _ = MainWindowLaunchGuard.processStart
     // 每次模型调用的成败都记到「模型可用状态」里，设置页据此提示已下架等问题。
