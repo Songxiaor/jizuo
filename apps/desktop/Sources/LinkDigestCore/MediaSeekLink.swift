@@ -47,6 +47,39 @@ public enum MediaSeekLink {
     return output.joined(separator: "\n")
   }
 
+  /// 把总结里方括号包着的时间码 `[03:12]` / `[1:04:09]` 变成可点击链接。
+  ///
+  /// 总结按「视频」写法生成时，每段开头写 `### [mm:ss] 小标题`，要点里也可能带
+  /// `[mm:ss]`。和转写稿不同，它们不一定在行首，所以单独认方括号这种写法：方括号
+  /// 本身就说明这是时间码，不会误伤正文里的 `3:15`。已经是链接（后面紧跟 `(`）的不动。
+  public static func linkifyingBracketedTimestamps(in markdown: String) -> String {
+    guard markdown.contains(":"), markdown.contains("]") else { return markdown }
+    let pattern = #"\[((?:\d{1,2}:)?\d{1,2}:\d{2})\](?!\()"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return markdown }
+    var result = markdown
+    let matches = regex.matches(in: markdown, range: NSRange(markdown.startIndex..., in: markdown))
+    for match in matches.reversed() {
+      guard let whole = Range(match.range, in: markdown),
+            let inner = Range(match.range(at: 1), in: markdown),
+            let seconds = seconds(ofClock: String(markdown[inner]))
+      else { continue }
+      result.replaceSubrange(whole, with: "[\(markdown[inner])](\(url(atSeconds: seconds).absoluteString))")
+    }
+    return result
+  }
+
+  /// `03:12` → 192，`1:04:09` → 3849；分、秒超过 59 的不算时间码。
+  public static func seconds(ofClock clock: String) -> Int? {
+    let fields = clock.split(separator: ":").map { Int($0) }
+    guard fields.count == 2 || fields.count == 3,
+          fields.allSatisfy({ $0 != nil }),
+          clock.split(separator: ":").last?.count == 2
+    else { return nil }
+    let values = fields.compactMap { $0 }
+    guard values.dropFirst().allSatisfy({ $0 < 60 }) else { return nil }
+    return values.reduce(0) { $0 * 60 + $1 }
+  }
+
   /// 行首时间码的解析结果。
   struct LeadingTimestamp {
     let text: String

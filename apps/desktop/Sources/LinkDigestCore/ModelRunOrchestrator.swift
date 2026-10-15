@@ -140,6 +140,8 @@ public actor ModelRunOrchestrator {
   private var currentUIPublishTask: Task<Void, Never>?
   private var currentPartialSaveTask: Task<Void, Never>?
   private var currentTaskID: TaskID?
+  /// 本次总结开始时读到的常用标签（按使用次数取前 100），供总结尾行和补打标签复用。
+  private var currentExistingTagNames: [String] = []
   private var currentStateHandler: StateHandler?
 
   public init(
@@ -466,15 +468,24 @@ public actor ModelRunOrchestrator {
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let translationText = strippedBody.isEmpty ? text : strippedBody
 
+    // 读不到标签表不影响总结本身：当作标签库为空，提示词保持原样。
+    currentExistingTagNames = intentKind == .summarize
+      ? HistoryTagVocabulary.topNames(from: (try? history.navigationCounts().tags) ?? [])
+      : []
+    let summaryTemplate = SummaryTemplate.select(origin: capture.origin, url: capture.url, text: text)
+    let resolvedSummaryPrompt = ModelPreferences.summaryPrompt(
+      configuredPrompt: summaryPrompt ?? ModelPreferences.defaultSummaryPrompt,
+      outputLanguage: targetLanguage ?? ModelPreferences.defaultTargetLanguage,
+      existingTags: currentExistingTagNames,
+      template: summaryTemplate,
+      includesCommentAnalysis: SummaryTemplate.appendsCommentAnalysis(summaryTemplate, text: text)
+    )
     let intent: RunIntent = switch intentKind {
     case .summarize:
       .summarize(
         title: title?.isEmpty == true ? nil : title,
         text: text,
-        prompt: ModelPreferences.summaryPrompt(
-          configuredPrompt: summaryPrompt ?? ModelPreferences.defaultSummaryPrompt,
-          outputLanguage: targetLanguage ?? ModelPreferences.defaultTargetLanguage
-        )
+        prompt: resolvedSummaryPrompt
       )
     case .translate:
       .translate(
@@ -488,12 +499,36 @@ public actor ModelRunOrchestrator {
 
     // 长正文翻译改走分片并发：译文长度和原文同量级，单条请求里模型只能串行吐
     // token，所以整篇一次发时耗时随长度线性增长（实测 3.8 万字 6.5 分钟未完）。
-    // 只有翻译走这条路——总结的输出远短于输入，瓶颈不在这里，拆开反而丢上下文。
+    // 长正文总结走「分片提要点 → 合并」（见 ChunkedSummaryStreamer）；短文单请求，
+    // 单请求被服务商判为超长时再换一次分片。
+    let concurrency = translationConcurrency ?? ModelPreferences.defaultTranslationConcurrency
+    let summaryStreamer: @Sendable (Int) -> AsyncThrowingStream<ModelStreamEvent, Error> = { [provider] limit in
+      ChunkedSummaryStreamer(
+        provider: provider,
+        concurrency: concurrency,
+        chunkCharacterLimit: limit
+      ).stream(
+        profile: effectiveProfile,
+        apiKey: credentials.apiKey,
+        title: title?.isEmpty == true ? nil : title,
+        text: text,
+        summaryPrompt: resolvedSummaryPrompt,
+        outputLanguage: targetLanguage ?? ModelPreferences.defaultTargetLanguage
+      )
+    }
     let events: AsyncThrowingStream<ModelStreamEvent, Error>
-    if intentKind == .translate, ChunkedTranslationStreamer.shouldChunk(translationText) {
+    if intentKind == .summarize, ChunkedSummaryStreamer.shouldChunk(text) {
+      events = summaryStreamer(ChunkedSummaryStreamer.defaultChunkCharacterLimit)
+    } else if intentKind == .summarize {
+      let fallbackLimit = ChunkedSummaryStreamer.fallbackChunkLimit(forCharacterCount: text.count)
+      events = ChunkedSummaryStreamer.fallingBackOnInputTooLarge(
+        provider.stream(profile: effectiveProfile, apiKey: credentials.apiKey, intent: intent),
+        to: { summaryStreamer(fallbackLimit) }
+      )
+    } else if intentKind == .translate, ChunkedTranslationStreamer.shouldChunk(translationText) {
       events = ChunkedTranslationStreamer(
         provider: provider,
-        concurrency: translationConcurrency ?? ModelPreferences.defaultTranslationConcurrency
+        concurrency: concurrency
       ).stream(
         profile: effectiveProfile,
         apiKey: credentials.apiKey,
@@ -728,6 +763,7 @@ public actor ModelRunOrchestrator {
     guard currentRunID == runID else { return }
     guard await flushSecretHoldback(runID: runID, intent: intent) else { return }
     let rawText = currentCommittedPartialText
+    let existingTagNames = currentExistingTagNames
     let split = intent == .summarize ? SummaryTagTrailer.split(rawText) : (body: rawText, tags: [])
     let text = split.body
     currentCommittedPartialText = text
@@ -756,6 +792,7 @@ public actor ModelRunOrchestrator {
       to: taskID,
       generatedText: text,
       embeddedTags: split.tags,
+      existingTagNames: existingTagNames,
       profile: profile,
       apiKey: apiKey
     )
@@ -874,18 +911,23 @@ public actor ModelRunOrchestrator {
     to taskID: TaskID,
     generatedText: String,
     embeddedTags: [HistoryTag] = [],
+    existingTagNames: [String] = [],
     profile: ProviderProfile,
     apiKey: String
   ) async {
-    var tags = embeddedTags
+    var tags = HistoryTagVocabulary.limitingNewTags(embeddedTags, existing: existingTagNames)
     if tags.isEmpty, let summaryTagGenerator {
       do {
         let response = try await summaryTagGenerator.generateSummaryTags(
           profile: profile,
           apiKey: apiKey,
-          summary: generatedText
+          summary: generatedText,
+          existingTags: existingTagNames
         )
-        tags = HistoryTagNormalizer.automaticTags(from: response)
+        tags = HistoryTagVocabulary.limitingNewTags(
+          HistoryTagNormalizer.automaticTags(from: response),
+          existing: existingTagNames
+        )
       } catch {
         // Fail-open by design: tagging must not change a completed run, its
         // visible state, or the data-destination confirmation contract.
@@ -936,6 +978,7 @@ public actor ModelRunOrchestrator {
     currentPartialSaveTask?.cancel()
     currentRunID = nil
     currentIntent = nil
+    currentExistingTagNames = []
     currentCommittedPartialText = ""
     currentPersistedPartialText = ""
     currentPublishedPartialText = ""
