@@ -6330,6 +6330,10 @@ private struct HistoryDetailView: View, Equatable {
       readingScrollKeeper.enterSection(key)
     }
     .onChange(of: detail.task.id) { _, _ in
+      // 换条目时正文表头会重建，`onGeometryChange` 不报初始值：上一条滚到下面时留下的
+      // 「吸顶」不会自己翻回来，新的一条停在顶上也压着一条吸顶表头、挡住标题第一行
+      // （2026-10-16 0.3.8 验收实测）。这里先落回原位，新的位置由几何回调再报。
+      isReadingHeaderPinned = false
       readingScrollKeeper.resetSections()
       if pendingStandInScrollReset {
         pendingStandInScrollReset = false
