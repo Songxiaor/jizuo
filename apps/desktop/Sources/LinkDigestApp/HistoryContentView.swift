@@ -1279,6 +1279,7 @@ struct HistoryContentView: View {
         }
       case .loaded, .loading, .failed, .idle, .empty:
         ScrollViewReader { batchScroll in
+          let _ = PerfProbe.count("list.body")
           // 同名标题只算一次。写在每一行里的话，每一行都要把全部标题再数一遍。
           let sharedTitles = rowsSharingATitle
           List(selection: $model.selectedTaskIDs) {
@@ -1319,7 +1320,6 @@ struct HistoryContentView: View {
             HistorySelectionRow(
               row: row,
               isSelected: model.selectedTaskIDs.contains(row.taskID),
-              faviconURL: model.faviconImageURL(for: row),
               theme: theme,
               showsAuthor: index == section.entries.first?.index
                 || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
@@ -1352,18 +1352,9 @@ struct HistoryContentView: View {
           if !model.visibleRelatedRows.isEmpty {
             relatedRowsSection
           }
-          if model.isLoadingNextPage { HStack { Spacer(); ProgressView().controlSize(.small); Spacer() } }
-          else if model.listErrorCode != nil, model.canRetryList {
-            HStack(alignment: .firstTextBaseline) {
-              Text("下一页没能载入。已经显示的内容都在，也没有发生任何写入。点「重试」再读一次。")
-                .themedFont(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-              Spacer(minLength: DesignTokens.Space.sm)
-              Button("重试", action: model.retryList)
-                .accessibilityIdentifier("history-list-next-page-retry")
-            }
-          }
+          // 翻页转圈和重试放进单独的视图，由它自己读状态：写在这里的话，每翻一页
+          // 「开始读 / 读完」各让整张列表重算一遍、和系统表格整表比对一遍（2026-10-16 采样）。
+          HistoryNextPageFooter(model: model)
         }
         .listStyle(.sidebar)
           .background(RowActionBinder { installRowActions() }.frame(width: 0, height: 0))
@@ -11991,7 +11982,6 @@ final class HistoryRowActions {
 private struct HistorySelectionRow: View, Equatable {
   let row: HistoryRowProjection
   let isSelected: Bool
-  let faviconURL: URL?
   let theme: HistoryThemeTokens
   let showsAuthor: Bool
   let showsDisambiguatingDate: Bool
@@ -12001,17 +11991,18 @@ private struct HistorySelectionRow: View, Equatable {
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.row == rhs.row
       && lhs.isSelected == rhs.isSelected
-      && lhs.faviconURL == rhs.faviconURL
       && lhs.theme == rhs.theme
       && lhs.showsAuthor == rhs.showsAuthor
       && lhs.showsDisambiguatingDate == rhs.showsDisambiguatingDate
   }
 
   var body: some View {
+    // 网站图标在行里读：图标陆续到货时只重画屏幕上这几行。放在列表那一层读，
+    // 每到一批图标整张列表都要重算、整表比对一遍。
     UIReadingHistoryRow(
       row: row,
       isSelected: isSelected,
-      faviconURL: faviconURL,
+      faviconURL: model.faviconImageURL(for: row),
       theme: theme,
       showsAuthor: showsAuthor,
       showsDisambiguatingDate: showsDisambiguatingDate,
@@ -12021,6 +12012,26 @@ private struct HistorySelectionRow: View, Equatable {
       moreMenu: { AnyView(DeferredMenuContent { actions.menu(row) }) }
     )
     .contextMenu { DeferredMenuContent { actions.menu(row) } }
+  }
+}
+
+/// 列表末尾：读下一页时转圈，读失败给重试。
+private struct HistoryNextPageFooter: View {
+  let model: HistoryViewModel
+
+  var body: some View {
+    if model.isLoadingNextPage { HStack { Spacer(); ProgressView().controlSize(.small); Spacer() } }
+    else if model.listErrorCode != nil, model.canRetryList {
+      HStack(alignment: .firstTextBaseline) {
+        Text("下一页没能载入。已经显示的内容都在，也没有发生任何写入。点「重试」再读一次。")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: DesignTokens.Space.sm)
+        Button("重试", action: model.retryList)
+          .accessibilityIdentifier("history-list-next-page-retry")
+      }
+    }
   }
 }
 

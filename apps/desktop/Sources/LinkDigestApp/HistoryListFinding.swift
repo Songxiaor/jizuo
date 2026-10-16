@@ -107,11 +107,14 @@ enum HistoryListFinding {
     for row in rows {
       let title = row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       guard !title.isEmpty, title != CapturedDocumentTitle.missing else { continue }
-      // 「抖音图文」这类占位标题显示时已经换成「无标题（作者 · 日期）」，再按原标题补日期会重复。
-      if CapturedContentNaming.skipsDateDisambiguation(title) { continue }
       counts[title, default: 0] += 1
     }
-    return Set(counts.compactMap { title, count in count > 1 ? title : nil })
+    // 「抖音图文」这类占位标题显示时已经换成「无标题（作者 · 日期）」，再按原标题补日期会重复。
+    // 判断占位要先剥 Markdown 记号，很贵：只对确实重名的那几个标题做。列表每次重算都走
+    // 这里，原来几千行各剥一遍，滑动中翻页时压在主线程上（2026-10-16 采样）。
+    return Set(counts.compactMap { title, count in
+      count > 1 && !CapturedContentNaming.skipsDateDisambiguation(title) ? title : nil
+    })
   }
 
   // MARK: - 标题：跳过开头的感叹

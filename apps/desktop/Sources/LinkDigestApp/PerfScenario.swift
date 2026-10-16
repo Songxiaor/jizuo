@@ -159,6 +159,12 @@ enum PerfScenario {
         await measureScroll("profile.scroll.list", target: .list, pointsPerSecond: index % 2 == 0 ? 2_800 : -2_800, seconds: 4)
         index += 1
       }
+    case "profile-list-deep":
+      // 一直往下滑，不回头：每段都滑到没见过的条目，翻页也照常发生（和日常往下翻一样）。
+      while PerfProbe.nowMilliseconds() < deadline {
+        await measureScroll("profile.scroll.list-deep", target: .list, pointsPerSecond: 2_800, seconds: 4)
+        index += 1
+      }
     default:
       break
     }
@@ -372,7 +378,10 @@ enum PerfScenario {
       .sorted { frame($0).minX < frame($1).minX }
     switch target {
     case .list:
-      return tables.first
+      if let table = tables.first { return table }
+      // 列表不是表格（LAZYSTACK 试验）：取侧栏右边、最靠左的那个。
+      return candidates.filter { frame($0).minX > 60 && !($0.documentView is NSTableView) }
+        .min { frame($0).minX < frame($1).minX }
     case .reading:
       let listMaxX = tables.first.map { frame($0).maxX } ?? 0
       return candidates

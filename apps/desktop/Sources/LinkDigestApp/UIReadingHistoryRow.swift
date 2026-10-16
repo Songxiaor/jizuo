@@ -322,20 +322,21 @@ struct UIReadingHistoryRow: View {
           // 标签是总结后自动打的主题词，放在这里正好当找回的关键词。
           // 放不下就整枚不显示：原来被挤成一两个像素宽，看着像作者名后面多了个乱码符号
           // （2026-10-01 走查「AI超元域 (@AISup… ꜝ」）。
-          ViewThatFits(in: .horizontal) {
-            ForEach(Array(stride(from: text.visibleTags.count, through: 0, by: -1)), id: \.self) { count in
-              HStack(spacing: DesignTokens.Space.xs) {
-                ForEach(text.visibleTags.prefix(count), id: \.self) { tag in
-                  Text("#\(tag)")
-                    .themedFont(.caption)
-                    .foregroundStyle(theme.secondaryText)
-                    .lineLimit(1)
-                    .fixedSize()
-                }
-              }
+          //
+          // 行里最多一枚（`visibleTagLimit`）。没有标签的行不挂 ViewThatFits，有标签就在
+          // 「这一枚」和「什么都不放」之间选：原来按数量倒数生成一组候选，是动态列表，
+          // 每张卡片滑进来都要多建一层、多量几遍（2026-10-16 列表滑动采样）。
+          if let tag = text.visibleTags.first {
+            ViewThatFits(in: .horizontal) {
+              Text("#\(tag)")
+                .themedFont(.caption)
+                .foregroundStyle(theme.secondaryText)
+                .lineLimit(1)
+                .fixedSize()
+              Color.clear.frame(width: 0, height: 0)
             }
+            .accessibilityHidden(true)
           }
-          .accessibilityHidden(true)
           Spacer(minLength: 4)
           // 行尾的日期和小图标：悬停时让位给收藏 / 总结 / 更多（2026-10-01 走查：三个按钮
           // 原来浮在整行右侧，盖住两行标题的末尾）。只把透明度归零、位置还占着，再把按钮

@@ -47,6 +47,11 @@ enum PerfProbe {
     counters["\(name)", default: 0] += 1
   }
 
+  /// 试验开关：`PERF_EXPERIMENT_<名字>` 设了就算开。同一个测速版里对照改法，不用每种改法各编一版。
+  static func experiment(_ name: StaticString) -> Bool {
+    ProcessInfo.processInfo.environment["PERF_EXPERIMENT_\(name)"] != nil
+  }
+
   /// 量一段代码：≥1ms 才记 `span\t名字 毫秒`。
   @discardableResult
   static func span<T>(_ name: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T {
@@ -198,6 +203,7 @@ final class PerfLogWriter: @unchecked Sendable {
 enum PerfProbe {
   @inline(__always) static func mark(_ name: @autoclosure () -> String) {}
   @inline(__always) static func count(_ name: StaticString) {}
+  @inline(__always) static func experiment(_ name: StaticString) -> Bool { false }
   @inline(__always) @discardableResult
   static func span<T>(_ name: @autoclosure () -> String, _ body: () throws -> T) rethrows -> T { try body() }
   @inline(__always) static func install() {}
