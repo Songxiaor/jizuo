@@ -178,6 +178,7 @@ final class ReadingScrollKeeper: NSObject {
     guard let scroll = scrollView else { return }
     let offset = scroll.contentView.bounds.minY
     sectionOffsets[key] = offset
+    offsetOnLeave = offset
     if let headerTop = sectionHeaderTop(in: scroll) {
       headerPassedOnLeave = offset + scroll.contentInsets.top > headerTop + 1
     }
@@ -190,18 +191,26 @@ final class ReadingScrollKeeper: NSObject {
   /// 跳回了视频那一屏；再切回来，原来读到的地方也没了。现在：
   /// - 这个页签读过：回到上次读到的地方；
   /// - 没读过、切换前读者已经滚过了表头：把表头放到视口最上面，新内容从第一行开始；
-  /// - 表头还在视野里（或不是点页签切过来的，比如生成完自动跳页）：不动。
+  /// - 表头还在视野里：守住点之前的位置。正文换掉的那一下页面会先变矮再长回来，
+  ///   不守的话会被夹回视频那一屏（2026-10-16 Syc 截图：点「译文对应」的转写稿，跳到视频）。
+  /// 不是点页签切过来的（比如生成完自动跳页）：不动。
   func enterSection(_ key: String) {
-    defer { headerPassedOnLeave = false }
+    defer {
+      headerPassedOnLeave = false
+      offsetOnLeave = nil
+    }
     guard let scroll = scrollView else { return }
     if let saved = sectionOffsets[key] {
       hold(.offset(saved))
     } else if headerPassedOnLeave, let headerTop = sectionHeaderTop(in: scroll) {
       hold(.offset(headerTop - scroll.contentInsets.top))
+    } else if let offsetOnLeave {
+      hold(.offset(offsetOnLeave))
     }
   }
 
   private var headerPassedOnLeave = false
+  private var offsetOnLeave: CGFloat?
 
   private func sectionHeaderTop(in scroll: NSScrollView) -> CGFloat? {
     guard let anchor = sectionAnchor, let document = scroll.documentView,
