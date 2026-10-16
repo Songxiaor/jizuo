@@ -959,6 +959,10 @@ final class HistoryViewModel {
     didSet {
       let previous = Self.singleSelection(in: oldValue)
       let current = selectedTaskID
+      // 不是切范围时把选中清空（取消选择、删掉了这一条……）：替身也撤掉，右边照常显示空状态。
+      if selectedTaskIDs.isEmpty, !isDroppingSelectionForNavigation, navigationStandInDetail != nil {
+        navigationStandInDetail = nil
+      }
       if current != previous {
         if profileImportReturnTarget?.taskID != current {
           profileImportReturnTarget = nil
@@ -1047,6 +1051,14 @@ final class HistoryViewModel {
   ///
   /// 所以值照常更新（`detailState == .loading` 仍然是「读取进行中」的可靠判据），
   /// 只有在真会改变画面时才发通知。
+  /// 切侧栏范围时，新列表和它的第一条到手之前那一小段空档里，右边留着的上一条详情。
+  ///
+  /// 只当「替身」：详情页挂着不拆，但不显示、不能点（见 `HistoryContentView.detailStateContent`）。
+  /// 拆掉再重建时，右上角那排按钮要整排换成占位、新的一条到了再换回来，每次切换多花约 90ms
+  /// （2026-10-16 测速）。新的一条一到、或这一页没有可选的，就撤掉。
+  private(set) var navigationStandInDetail: HistoryDetailProjection?
+  @ObservationIgnored private var isDroppingSelectionForNavigation = false
+
   @ObservationIgnored private var detailStateStorage: HistoryDetailState = .idle
   var detailState: HistoryDetailState {
     access(keyPath: \.detailState)
@@ -2225,6 +2237,7 @@ final class HistoryViewModel {
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
     historyReadOnlyRecoveryHint = isReadOnly ? readOnlyRecoveryHint : nil
     blockingErrorCode = unavailableCode
+    navigationStandInDetail = nil
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; localMediaOriginalMissing = nil; originalRelocationState = .idle; faviconImageURLs = [:]; nextCursor = nil
     availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; selectedForm = nil; searchText = ""
     formCountsTask?.cancel(); listFormCounts = []; formCountsBaseFilter = nil
@@ -2283,6 +2296,7 @@ final class HistoryViewModel {
 
   private func discardVisibleList(state: HistoryListState) {
     invalidateInFlightListRequest()
+    navigationStandInDetail = nil
     rows = []
     listState = state
     selectedTaskIDs = []
@@ -2315,6 +2329,7 @@ final class HistoryViewModel {
     listRequestID = requestID; pageTask?.cancel(); isLoadingNextPage = false
     listState = .loading; listErrorCode = nil; nextCursor = nil
     if refreshesAggregates { aggregatesRefreshPending = true }
+    PerfProbe.mark("list.request")
     pageTask = Task { [weak self] in
       let result = await Task.detached(priority: .userInitiated) {
         Self.pageResult(history, cursor: nil, filter: filter)
@@ -6168,7 +6183,10 @@ final class HistoryViewModel {
     nextCursor = nil
     listState = .loading
     if dropsSelection {
+      if let detail { navigationStandInDetail = detail }
+      isDroppingSelectionForNavigation = true
       selectedTaskIDs = []
+      isDroppingSelectionForNavigation = false
       detail = nil
       setDetailState(.idle)
     }
@@ -6272,8 +6290,10 @@ final class HistoryViewModel {
     if hostsChanged, !searchText.isEmpty {
       searchText = ""
     }
-    // 切换或从工作台回到图库时立刻清空旧 rows/详情。
+    // 切换或从工作台回到图库时立刻清空旧 rows/详情。上一条照样留作看不见的替身，见 `navigationStandInDetail`。
+    let previousDetail = detail
     discardVisibleList(state: .loading)
+    if let previousDetail { navigationStandInDetail = previousDetail }
     reload()
   }
 
@@ -7067,6 +7087,7 @@ final class HistoryViewModel {
         listRebuildToken += 1
       }
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
+      PerfProbe.mark("list.applied rows=\(page.rows.count)")
       searchResultCount = searchText.isEmpty ? nil : page.totalCount
       if searchText != lastReceivedSearchText {
         lastReceivedSearchText = searchText
@@ -7077,6 +7098,7 @@ final class HistoryViewModel {
       if let preservedSelection {
         selectedTaskIDs = preservedSelection
         if preservedSelection.isEmpty {
+          navigationStandInDetail = nil
           detail = nil
           setDetailState(.idle)
         } else if detail == nil {
@@ -7085,10 +7107,12 @@ final class HistoryViewModel {
         return
       }
       if page.rows.isEmpty {
+        navigationStandInDetail = nil
         selectedTaskIDs = []; detail = nil; setDetailState(.idle)
       } else if selectedTaskIDs.isEmpty {
         if suppressesAutomaticSelection {
           // 图库/博主作品：阅读点选与批量勾选分开，进入时不自动打勾首条。
+          navigationStandInDetail = nil
           detail = nil
           setDetailState(.idle)
         } else {
@@ -7126,6 +7150,7 @@ final class HistoryViewModel {
         }
       }
     case let .failure(code):
+      navigationStandInDetail = nil
       listState = .failed; listErrorCode = code; rows = []; selectedTaskIDs = []; detail = nil; setDetailState(.idle)
     }
   }
@@ -7137,6 +7162,7 @@ final class HistoryViewModel {
     case let .success(page):
       let existing = Set(rows.map(\.taskID)); let additions = page.rows.filter { !existing.contains($0.taskID) }
       rows.append(contentsOf: additions); nextCursor = page.nextCursor
+      PerfProbe.mark("list.nextPage.applied rows=\(rows.count)")
       loadFavicons(for: additions, generation: generation)
     case let .failure(code): listErrorCode = code
     }
@@ -7175,6 +7201,7 @@ final class HistoryViewModel {
     // 状态也一起留到 `receiveDetail`，避免中途卡片消失又出现，白白多一次重排。
     let generation = configurationGeneration, requestID = UUID()
     detailRequestID = requestID; detailTask?.cancel(); detailErrorCode = nil; setDetailState(.loading)
+    PerfProbe.mark("detail.request \(taskID.rawValue)")
     let imageCache = self.imageCache
     detailTask = Task { [weak self] in
       let payload = await Task.detached(priority: .userInitiated) {
@@ -8718,6 +8745,7 @@ final class HistoryViewModel {
     requestID: UUID
   ) {
     guard generation == configurationGeneration, requestID == detailRequestID, selectedTaskID == taskID else { return }
+    navigationStandInDetail = nil
     switch result {
     case let .success(value):
       // 先放上后台读好的分段和排版，再换详情。换详情会立刻让界面来取这两份，
@@ -8796,6 +8824,7 @@ final class HistoryViewModel {
         if let carriedOver { persistNoteDetached(carriedOver) }
       }
       setDetailState(.loaded)
+      PerfProbe.mark("detail.applied \(taskID.rawValue)")
     case let .failure(code):
       preloadedTranscriptParagraphs = []
       preloadedTranscriptParagraphSnapshotID = nil
@@ -9466,6 +9495,14 @@ final class HistoryViewModel {
   }
 
   nonisolated private static func pageResult(_ history: HistoryApplicationService, cursor: HistoryPageCursor?, filter: HistoryListFilter) -> PageResult {
+    #if LINKDIGEST_PERF
+    let perfStart = PerfProbe.nowMilliseconds()
+    defer { PerfProbe.write("read", String(format: "page %.3f", PerfProbe.nowMilliseconds() - perfStart)) }
+    // 截图巡检要拍到「切范围、新列表还没到」那一下：把读页拖慢一点。
+    if let delay = ProcessInfo.processInfo.environment["PERF_EXPERIMENT_SLOW_PAGE_MS"].flatMap(Double.init) {
+      Thread.sleep(forTimeInterval: delay / 1_000)
+    }
+    #endif
     do {
       return .success(try history.historyPage(limit: 50, after: cursor, filter: filter))
     }
@@ -9524,6 +9561,10 @@ final class HistoryViewModel {
     taskID: TaskID,
     imageCache: GitHubREADMEImageCache?
   ) -> (DetailResult, DetailSideload) {
+    #if LINKDIGEST_PERF
+    let perfStart = PerfProbe.nowMilliseconds()
+    defer { PerfProbe.write("read", String(format: "detail %.3f", PerfProbe.nowMilliseconds() - perfStart)) }
+    #endif
     let result = detailResult(history, taskID: taskID)
     guard case let .success(value) = result else { return (result, DetailSideload()) }
     let side = detailSideload(

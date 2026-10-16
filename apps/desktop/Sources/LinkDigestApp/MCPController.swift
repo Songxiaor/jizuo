@@ -31,7 +31,7 @@ final class MCPController: ObservableObject {
 
   /// 调试版用隔离数据目录跑测试实例时，MCP 通道也放进那个目录，不和正在用的汲作抢同一个 socket。
   static var defaultSocketPath: String {
-    #if DEBUG
+    #if DEBUG || LINKDIGEST_PERF
     if let root = ProcessInfo.processInfo.environment[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] {
       return URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent("mcp.sock").path
     }

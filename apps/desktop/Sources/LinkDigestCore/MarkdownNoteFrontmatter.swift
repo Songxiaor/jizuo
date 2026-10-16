@@ -132,8 +132,17 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     return url
   }
 
+  private static let parseMemo = TextDerivationMemo<MarkdownNoteFrontmatter>()
+
   /// Parses a leading `---` … `---` block. Invalid/incomplete frontmatter returns the original text as body.
+  ///
+  /// 同一份长正文反复解析时直接拿上次的结果（见 `TextDerivationMemo`）。
   public static func parse(_ markdown: String) -> MarkdownNoteFrontmatter {
+    guard markdown.hasPrefix("---") else { return .init(body: markdown) }
+    return parseMemo.value(for: markdown, compute: parseUncached)
+  }
+
+  private static func parseUncached(_ markdown: String) -> MarkdownNoteFrontmatter {
     // 详情页会反复读取没有属性头的正文，先避开整篇 Unicode 归一化，
     // 才不会让这个冷门格式的兼容成本落在每一次正文渲染上。
     guard markdown.hasPrefix("---") else {

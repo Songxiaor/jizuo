@@ -1132,7 +1132,8 @@ final class HistoryContentViewTests: XCTestCase {
       source.contains("if showsPlatformGallerySurface || model.isCreatorDirectoryActive {\n        if #available(macOS 26.0, *) {\n          ToolbarSpacer(.flexible)"),
       "卡片墙、博主页不要再在窗口工具栏加弹性空白：它会把收起侧栏按钮推到侧栏右缘"
     )
-    XCTAssertTrue(source.contains("withMenuCommands(themedBody)\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
+    // 菜单命令挂在整个窗口内容最外层；中间那层 `typeErased()` 只为断开超长的视图类型（启动提速）。
+    XCTAssertTrue(source.contains("return withMenuCommands(themedBody.typeErased())\n      .typeErased()\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
     XCTAssertTrue(source.contains("model.loadNextPageIfNeeded(after: last)"), "分页不能依赖被展开批次替换的末条卡片")
     XCTAssertTrue(source.contains("model.toggleGallerySelection(row.taskID)"))
@@ -2975,7 +2976,9 @@ final class HistoryContentViewTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestCore/LayeredSourceDocument.swift"),
       encoding: .utf8
     )
-    XCTAssertTrue(layered.contains("MarkdownNoteFrontmatter.parse(snapshot.bodyText).body"))
+    // 2026-10-16 起按原文备忘（见 `TextDerivationMemo`），解析的仍是这一层自己的正文。
+    XCTAssertTrue(layered.contains("bodyMemo.value(for: snapshot.bodyText)"))
+    XCTAssertTrue(layered.contains("MarkdownNoteFrontmatter.parse(bodyText).body"))
     let detail = section(in: historyContentViewSource(), from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertFalse(detail.contains("source: sourceFrontmatter.body"))
   }
@@ -3563,13 +3566,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-note-tag-bar"))
     // 2026-09-24：笔记输入框仍收在整页最后（摘录之后）；分类（归属 · 素材类型 · 标签）移到标题下。
     let annotations = source.range(of: "ReadingAnchor.module(\"annotations\")")
-    let noteBarUse = source.range(of: "noteBar\n            .padding(.top, DesignTokens.Space.xl)")
+    // `.typeErased()` 只为断开超长的视图类型（2026-10-16 启动提速），不改位置和样式。
+    let noteBarUse = source.range(of: "noteBar.typeErased()\n            .padding(.top, DesignTokens.Space.xl)")
     XCTAssertNotNil(noteBarUse)
     if let annotations, let noteBarUse {
       XCTAssertLessThan(annotations.lowerBound, noteBarUse.lowerBound)
     }
-    let classification = source.range(of: "        classificationBar\n")
-    let titleUse = source.range(of: "        titleView\n")
+    let classification = source.range(of: "        classificationBar.typeErased()\n")
+    let titleUse = source.range(of: "        titleView.typeErased()\n")
     XCTAssertNotNil(classification)
     if let classification, let titleUse, let annotations {
       XCTAssertLessThan(titleUse.lowerBound, classification.lowerBound)

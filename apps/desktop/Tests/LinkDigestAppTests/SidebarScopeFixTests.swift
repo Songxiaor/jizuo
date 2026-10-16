@@ -78,6 +78,61 @@ final class SidebarScopeFixTests: XCTestCase {
     await waitUntil { model.selectedTaskID == newer && model.detail?.task.id == newer }
   }
 
+  /// 2026-10-16 提速：切范围的空档里，上一条当替身留着（界面不显示），新的第一条一到就撤。
+  /// 选中和 `detail` 仍照走查 #9 的规矩先撤掉。
+  func testSwitchingScopeKeepsHiddenStandInUntilFirstRowLoads() async throws {
+    let older = try capture("older", at: 1_000), newer = try capture("newer", at: 2_000)
+    try repository.setFavorite(true, for: older)
+    let model = await makeModel()
+    model.selectScope(.favorite)
+    await waitUntil { model.rows.map(\.taskID) == [older] }
+    model.selectedTaskID = older
+    await waitUntil { model.detail?.task.id == older }
+
+    model.selectScope(.all)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    XCTAssertNil(model.detail)
+    XCTAssertEqual(model.navigationStandInDetail?.task.id, older, "空档里留着上一条当替身")
+    await waitUntil { model.detail?.task.id == newer }
+    XCTAssertNil(model.navigationStandInDetail, "新的一条到了替身就撤")
+  }
+
+  /// 切来源（侧栏里的平台一行）同样留替身，新列表第一条一到就撤。
+  func testSwitchingSourceKeepsHiddenStandInUntilFirstRowLoads() async throws {
+    let first = try capture("first", at: 1_000)
+    let model = await makeModel()
+    await waitUntil { model.detail?.task.id == first }
+    let host = try XCTUnwrap(model.rows.first?.host)
+
+    model.selectHost(host)
+    XCTAssertNil(model.detail)
+    XCTAssertEqual(model.navigationStandInDetail?.task.id, first)
+    await waitUntil { model.detail?.task.id == first }
+    XCTAssertNil(model.navigationStandInDetail)
+  }
+
+  /// 新范围一条都没有：替身撤掉，右边照常显示空状态。
+  func testStandInIsDroppedWhenNewScopeIsEmpty() async throws {
+    let only = try capture("only", at: 1_000)
+    let model = await makeModel()
+    await waitUntil { model.detail?.task.id == only }
+
+    model.selectScope(.favorite)
+    XCTAssertEqual(model.navigationStandInDetail?.task.id, only)
+    await waitUntil { model.listState == .empty }
+    XCTAssertNil(model.navigationStandInDetail)
+    XCTAssertNil(model.detail)
+  }
+
+  /// 不是切范围、而是自己把选中清空：不留替身。
+  func testClearingSelectionOutsideNavigationLeavesNoStandIn() async throws {
+    let only = try capture("only", at: 1_000)
+    let model = await makeModel()
+    await waitUntil { model.detail?.task.id == only }
+    model.selectedTaskIDs = []
+    XCTAssertNil(model.navigationStandInDetail)
+  }
+
   /// 审查 #2：重复点当前已经亮着的那一行，不撤选中、不换详情。
   func testReselectingCurrentScopeKeepsSelection() async throws {
     let first = try capture("a", at: 1_000)

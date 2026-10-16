@@ -55,7 +55,9 @@ final class HostedBlockAttachment: NSTextAttachment {
 
   func height(forWidth width: CGFloat) -> CGFloat {
     if let measured, abs(measured.width - width) < 0.5 { return measured.height }
-    let size = hostingController().sizeThatFits(in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+    let size = PerfProbe.span("block.measure") {
+      hostingController().sizeThatFits(in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+    }
     let height = ceil(max(1, size.height))
     measured = (width, height)
     return height

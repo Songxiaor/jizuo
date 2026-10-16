@@ -682,7 +682,15 @@ enum MarkdownPresentation {
     let normalized = normalizingCJKEmphasis(withWiki)
     let parsed = (try? AttributedString(markdown: normalized, options: options))
       ?? AttributedString(normalized)
-    return applyingScripts(applyingHighlights(trimmingCJKSwallowedAutolinks(parsed)))
+    var result = trimmingCJKSwallowedAutolinks(parsed)
+    // 高亮和上下标都要在富文本里逐字找记号，整段找一遍不便宜；绝大多数文字两样都没有。
+    // 先在纯文字里看一眼有没有记号，没有就不进去找（结果和进去找一遍完全一样）。
+    let plain = String(result.characters)
+    if plain.contains("==") { result = applyingHighlights(result) }
+    if plain.unicodeScalars.contains(where: { (0xF8F0...0xF8F3).contains($0.value) }) {
+      result = applyingScripts(result)
+    }
+    return result
   }
 
   /// 裸链接后面紧跟中文时，GFM 自动链接一直延伸到下一个空白，
@@ -2406,8 +2414,11 @@ enum MarkdownPresentation {
   }
 
   private static func strippingLightboxFileInfoLine(_ line: String) -> String {
+    // 灯箱信息行一定以 KB/MB/GB 结尾、带「×」。先用这两个便宜的判断筛掉绝大多数行，
+    // 不再每一行都跑一遍正则（长文几千行，打开时这一步占主线程一成）。
+    guard line.contains("×") else { return line }
     let trimmed = line.trimmingCharacters(in: .whitespaces)
-    guard !trimmed.isEmpty,
+    guard !trimmed.isEmpty, trimmed.hasSuffix("B"),
           let metaRange = trimmed.range(
             of: #"(\S+)\s+(\d{2,5})×(\d{2,5})\s+(\d+(?:\.\d+)?)\s*(KB|MB|GB)$"#,
             options: .regularExpression
@@ -2493,23 +2504,11 @@ extension AttributedString {
     mutable.enumerateAttribute(.font, in: full) { value, range, _ in
       let traits = (value as? NSFont)?.fontDescriptor.symbolicTraits ?? []
       if value != nil { sawFont = true }
-      var descriptor = readingFont.nsFontDescriptor(size: size)
-      if traits.contains(.bold) {
-        descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .bold])
-      }
-      if traits.contains(.italic) {
-        descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .italic])
-      }
-      let font = NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size)
+      let font = readingFont.nsFont(size: size, bold: traits.contains(.bold), italic: traits.contains(.italic))
       mutable.addAttribute(.font, value: font, range: range)
     }
     if !sawFont {
-      let descriptor = readingFont.nsFontDescriptor(size: size)
-      mutable.addAttribute(
-        .font,
-        value: NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size),
-        range: full
-      )
+      mutable.addAttribute(.font, value: readingFont.nsFont(size: size, bold: false, italic: false), range: full)
     }
     return AttributedString(mutable)
   }
@@ -2565,11 +2564,36 @@ struct MarkdownContentView: View {
   /// 打开了源码的流程图、打开了预览的 html 代码块（按内容区分）。
   @State private var toggledCodeBlocks: Set<String> = []
 
-  /// 正文章节。
+  /// 后台解析出来的正文章节，以及它属于哪一份正文。
   ///
   /// 缓存在 state 里而不是每次 body 求值现算：解析全文的成本随正文长度线性增长，
   /// 库里最长那条 73432 字，跟着每次重绘重算会肉眼可见地卡。按 source 重算一次。
-  @State private var outlineEntries: [MarkdownOutline.Entry] = []
+  @State private var loadedOutline: (source: String, entries: [MarkdownOutline.Entry])?
+
+  /// 正文章节。
+  ///
+  /// 目录决定整篇富文本里的折叠小三角和章节锚点，原来它在后台解析、晚一拍才到：每打开
+  /// 一条都先按「没有目录」拼一遍整篇，目录一到再整篇重拼一遍（2026-10-16 测速：长文第二遍
+  /// 还要 6–86ms，小三角也是后冒出来的）；而且这一拍里用的是**上一条**的目录。现在：
+  /// - 只属于这一份正文的结果才用，换条目时不再借上一条的；
+  /// - 纯文字的正文（整篇一段）拼的时候本来就要解析这一段，目录直接从同一份解析结果里取，
+  ///   第一遍就带上；
+  /// - 解析过的正文记在 `ReadingRenderCache` 里，再打开同一条直接拿到。
+  private var outlineEntries: [MarkdownOutline.Entry] {
+    if let loadedOutline, loadedOutline.source == source { return loadedOutline.entries }
+    if let known = ReadingRenderCache.outline(for: source) { return known }
+    guard isSingleTextSegment else { return [] }
+    let entries = MarkdownOutline.entries(from: ReadingRenderCache.blocks(from: source))
+    ReadingRenderCache.rememberOutline(entries, for: source)
+    return entries
+  }
+
+  /// 整篇按一段纯文字排（没有本机图片、引用推文、视频）：和 `buildArticleDocument` 的切段判据一致。
+  private var isSingleTextSegment: Bool {
+    localImageURLs.isEmpty
+      && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil
+      && LocalMarkdownImageLayout.firstVideoMarkerRange(in: source) == nil
+  }
   /// 收起的章节（按全文标题序号）。只改显示，不写回正文；换条目清空。
   @State private var collapsedHeadings: Set<Int> = []
   /// 整篇文章拼成的富文本（见 `articleDocumentView`）：输入没变就拿回同一份。
@@ -2794,14 +2818,20 @@ struct MarkdownContentView: View {
     // 换条目就重算一次目录；同一条正文内的重绘不再解析。
     .task(id: source) {
       collapsedHeadings = []
+      let text = source
+      // 已经知道的（纯文字正文在拼的时候就取了，或者这一份之前解析过）不再后台重算。
+      if let known = ReadingRenderCache.outline(for: text) {
+        loadedOutline = (text, known)
+        return
+      }
       // 整篇清洗 + 解析放到后台线程（2026-10-06）：10 万字的长文在这里要 0.2s 以上，
       // 原来在主线程上做，打开长文时界面先卡一下。和缓存版同一个解析，块序号一致。
-      let text = source
       let entries = await Task.detached(priority: .userInitiated) {
         MarkdownOutline.entries(from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(text)))
       }.value
       guard !Task.isCancelled else { return }
-      outlineEntries = entries
+      ReadingRenderCache.rememberOutline(entries, for: text)
+      loadedOutline = (text, entries)
     }
       .onChange(of: scrollTarget) { _, target in
         guard let target else { return }
@@ -2837,7 +2867,9 @@ struct MarkdownContentView: View {
   private static let foldGutter: CGFloat = 20
 
   private var articleDocumentView: some View {
-    let document = articleCache.document(for: articleKey, reuseScope: blockReuseScope) { buildArticleDocument() }
+    let document = articleCache.document(for: articleKey, reuseScope: blockReuseScope) {
+      PerfProbe.span("article.build chars=\(source.utf16.count) outline=\(outlineEntries.count)") { buildArticleDocument() }
+    }
     return SelectableReadingTextView(
       attributed: document.text,
       accent: NSColor(accentColor),

@@ -149,8 +149,11 @@ struct HistoryContentView: View {
   }
 
   var body: some View {
+    PerfProbe.count("content.body")
     // 菜单命令（⌘F、⇧⌘N、⌘D、⌘[、Esc）挂在最外层，见 `withMenuCommands`。
-    withMenuCommands(themedBody)
+    // 主窗口的视图类型很长，分几段断开，见 `typeErased()`。
+    return withMenuCommands(themedBody.typeErased())
+      .typeErased()
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
       // 图片灯箱盖在整个窗口内容之上；点击图外区域或 Esc 退出。
@@ -164,6 +167,7 @@ struct HistoryContentView: View {
       .foregroundStyle(theme.primaryText)
       .tint(theme.accent)
       .accentColor(theme.accent)
+      .typeErased()
       .onAppear {
         AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
         synchronizeRemotePreviewPreheat()
@@ -251,6 +255,7 @@ struct HistoryContentView: View {
           }
         )
       }
+      .typeErased()
       .onChange(of: manualLink.creatorAssociationRevision) { _, _ in
         model.handleCreatorAssociationChanged()
       }
@@ -422,6 +427,7 @@ struct HistoryContentView: View {
               else if model.isCreatorDirectoryActive { creatorDirectorySurface }
               else { detailColumn }
             }
+              .typeErased()
               .frame(maxWidth: .infinity, maxHeight: .infinity)
               .background(theme.card)
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
@@ -432,7 +438,7 @@ struct HistoryContentView: View {
             NavigationSplitView(columnVisibility: $columnVisibility) {
               // 左侧栏可拖；拖出的宽度由 WindowColumnDividerInstaller 记下，
               // 这里和图库页都从同一个值起步，切换分类不再各自一个宽度。
-              navigationRail.navigationSplitViewColumnWidth(
+              navigationRail.typeErased().navigationSplitViewColumnWidth(
                 min: DesignTokens.Layout.sidebarMin,
                 ideal: threeColumnWidths.sidebar,
                 max: DesignTokens.Layout.sidebarMax
@@ -455,6 +461,7 @@ struct HistoryContentView: View {
                   sidebar
                 }
               }
+              .typeErased()
               // 列表滚动时行文字原样从「全部」标题和搜索、「＋」图标底下穿过（2026-09-24
               // 走查实测；系统 scroll edge 在这一列同样不生效）。和详情列同一层渐隐遮罩。
               .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
@@ -475,6 +482,7 @@ struct HistoryContentView: View {
                 else if showsPlatformGallerySurface { platformGallerySurface }
                 else { detailColumn }
               }
+              .typeErased()
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
               .toolbar { fullWidthSurfaceToolbar }
             }
@@ -489,6 +497,7 @@ struct HistoryContentView: View {
           .background(WindowColumnDividerInstaller(
             lineColor: (columnVisibility == .detailOnly || theme.isNative || inlineImageLightbox.url != nil || videoCinema.isPresented) ? nil : NSColor(theme.hairline)
           ))
+          .typeErased()
           .alert(model.deletionConfirmationTitle, isPresented: $model.isDeleteConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelDeletion() }
             Button(model.deletionConfirmationActionTitle, role: .destructive) {
@@ -528,6 +537,7 @@ struct HistoryContentView: View {
           .alert(model.deleteOutcomeTitle, isPresented: $model.isDeleteOutcomePresented) {
             Button("知道了") { model.dismissDeleteOutcome() }
           } message: { Text(model.deleteOutcomeMessage) }
+          .typeErased()
           .sheet(isPresented: $isNewSparkPresented) { newSparkSheet }
           .sheet(isPresented: $model.isTagManagerPresented) { TagManagerView(model: model) }
           .alert("工作台", isPresented: Binding(
@@ -610,6 +620,7 @@ struct HistoryContentView: View {
               )
             }
           } message: { Text(model.batchTranslationConfirmationMessage) }
+          .typeErased()
           .alert("批量翻译结果", isPresented: $model.isBatchTranslationOutcomePresented) {
             Button("知道了") { model.dismissBatchTranslationOutcome() }
             if model.batchTranslationOutcomeMessage.contains("失败") {
@@ -640,6 +651,7 @@ struct HistoryContentView: View {
           } message: {
             Text("汲作会在本机从视频里取出声音、切成小段，发给你设置的在线转写服务商。完整视频和视频地址不会交给服务商；转写稿保存在资料库里。")
           }
+          .typeErased()
           .alert("将转写文字发送给聊天模型校对？", isPresented: $model.isTranscriptTidyConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelTranscriptTidyConfirmation() }
             Button("同意并校对") { model.confirmTranscriptTidy() }
@@ -772,6 +784,7 @@ struct HistoryContentView: View {
     // 转写一完成就接着校对（设置里开着「自动校对」时）。只认「这一次从运行中进入完成」：
     // 打开一条早就转写过的记录，状态也会恢复成完成，不能因此重复调用模型、重复计费。
     // 挂在根视图上一处，不挂在各个视频卡片里——卡片换条目、收起时会错过完成的那一刻。
+    .typeErased()
     .onChange(of: model.transcriptionState) { oldState, newState in
       guard oldState.isActive, newState == .completed, let taskID = model.transcriptionTaskID else { return }
       model.continueWithTidyAfterTranscription(
@@ -1365,6 +1378,7 @@ struct HistoryContentView: View {
           // 而真正的边栏在它左边。显式命名成它实际装的东西。
           .accessibilityLabel("内容列表")
           .accessibilityIdentifier("history-content-list")
+          .typeErased()
           // 滚动中整表一直在长高（行高是估算的、翻页又多 50 行），滑块平滑过渡，不再一跳一跳。
           .background(SmoothKnobScrollerInstaller().frame(width: 0, height: 0))
           .scrollContentBackground(.hidden)
@@ -1384,6 +1398,7 @@ struct HistoryContentView: View {
             }
             model.consumeProfileImportScrollTarget()
           }
+          .typeErased()
           // 搜索、从博主页回来：等新列表落地再滚到顶。只靠整表重建不够——实测从博主页
           // 回到「全部」，列表仍停在 9 月 8 日那段（2026-10-01 自查）。
           .task(id: model.searchScrollToTopToken) {
@@ -1426,6 +1441,7 @@ struct HistoryContentView: View {
         }
       }
     }
+    .typeErased()
     // 剪贴板提示改成浮层。原来它排在列表上面，出现和消失都会把整张列表
     // 往下推一截又弹回来——用户正在读的那一行会自己跑掉。
     // 浮在列表**底部**：放在顶部会一直盖住列表第一条（通常正是刚选中、正在读的那条）。
@@ -3041,11 +3057,12 @@ struct HistoryContentView: View {
         }
       )
     } else if model.isWorkbenchActive, isWorkbenchVisible {
-      workbenchPlaceholder
+      workbenchPlaceholder.typeErased()
     } else if model.isCreatorDirectoryActive {
-      creatorDirectoryDetail
+      creatorDirectoryDetail.typeErased()
     } else {
-      detail
+      // 各分支各包一层（见 `typeErased()`）：启动时只解正在显示的那一支。
+      detail.typeErased()
     }
   }
 
@@ -3630,8 +3647,16 @@ struct HistoryContentView: View {
         protectedTaskIDs: protectedTaskIDs,
         theme: theme
       )
-    } else if let detail = model.detail {
+    } else if let detail = model.detail ?? model.navigationStandInDetail {
+      // 切侧栏范围的空档里 `model.detail` 已清空，上一条当替身留在原处：不显示、不能点、读屏跳过，
+      // 右上角那排按钮跟着灰掉，样子和占位一样（见 `HistoryViewModel.navigationStandInDetail`）。
+      // 必须和正常详情同一个分支：换分支等于拆掉重建，就省不下这一下了。
+      let isStandIn = model.detail == nil
       articleDetail(detail: detail)
+        .environment(\.isNavigationStandIn, isStandIn)
+        .opacity(isStandIn ? 0 : 1)
+        .allowsHitTesting(!isStandIn)
+        .accessibilityHidden(isStandIn)
     } else {
       switch model.detailState {
     case .loading:
@@ -4500,6 +4525,12 @@ struct PlatformNavigationIcon: View {
 
 private struct HistoryDetailView: View, Equatable {
   @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
+  /// 切侧栏范围那一小段空档里的替身（见 `HistoryViewModel.navigationStandInDetail`）：
+  /// 不响应菜单命令，按钮全灰，视频卡片不挂（和拆掉时一样停下）。
+  @Environment(\.isNavigationStandIn) private var isNavigationStandIn
+  /// 替身换成新的一条时，滚动位置按「整页新建」处理：回到偏移 0。切条目用的顶部锚点落在
+  /// 顶部留白 4pt 之下，比新建时高 4pt；原来切侧栏是整页新建，这里保持那个位置不变。
+  @State private var pendingStandInScrollReset = false
   /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
   /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
   /// 这里只比较真正决定画面的值输入，闭包按「行为不随实例变化」处理，不参与比较。
@@ -4589,7 +4620,11 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// 各阅读面板的实测高度：ZStack 容器按「当前活动面板的高度」定高，
   /// 隐藏面板保持自然尺寸不被折叠——切换因此不触发任何几何重算。
-  @State private var paneHeights: [ReadingPane: CGFloat] = [:]
+  ///
+  /// 放在单独的可观察对象里，只有定高那一小层（`ReadingPaneHeightFrame`）读它。长文的文字引擎
+  /// 边排边估高，滑动时正文高度一直在变；原来高度是本视图的 @State，每变一次整个详情页就重算
+  /// 一遍（2026-10-16 测速：维基长文滑 5 秒，详情页 body 重算 66 次）。
+  @State private var paneHeights = ReadingPaneHeights<ReadingPane>()
   @State private var pendingSourceCitation: String?
   @State private var measuredTitleHeightStore: PerItem<CGFloat>?
   private var measuredTitleHeight: CGFloat {
@@ -5448,7 +5483,7 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
   private var suppressesEmbeddedMedia: Bool {
-    latestSnapshot?.platform == "wechat" || hasInlineArticleVideos
+    isNavigationStandIn || latestSnapshot?.platform == "wechat" || hasInlineArticleVideos
   }
   private var hasResultBody: Bool {
     guard let artifact = latestArtifact else { return false }
@@ -5628,11 +5663,12 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   var body: some View {
+    PerfProbe.count("detail.body")
     // 菜单栏「内容」里的生成总结 / 翻译：原来这两个核心动作只能用鼠标点（2026-10-02 键盘走查）。
     // 阅读区外面套一层隔离：量尺寸时不往里量（见 `ReadingSizeIsolation`）。
-    ReadingSizeIsolation { scrollBody }
-      .focusedSceneValue(\.summarizeCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
-      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) })
+    return ReadingSizeIsolation { scrollBody }
+      .focusedSceneValue(\.summarizeCurrent, isOwnWriting || isNavigationStandIn ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
+      .focusedSceneValue(\.translateCurrent, isOwnWriting || isNavigationStandIn ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) })
   }
 
   /// `startRun` 读的是这一份 `detail`：换了条目、多了一版正文或生成记录变了，菜单里的闭包都要跟着换。
@@ -5686,7 +5722,7 @@ private struct HistoryDetailView: View, Equatable {
           .padding(.bottom, 10)
           .accessibilityIdentifier("history-run-unfinished-banner")
         }
-        titleView
+        titleView.typeErased()
         // 来源一行（谁 · 哪天发布）、互动数一行（2026-10-09 Syc 走查）：来源行删到只剩两段后，
         // 互动数字放大加粗，不再挤在同一行末尾。
         if !isOwnWriting, sourceFrontmatter.hasEngagementStats {
@@ -5704,7 +5740,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         // 分类信息（归属 · 素材类型 · 标签）紧跟标题：原来收在整页最后，长转写稿要滚一万多点
         // 才能看到、改到（2026-09-24 走查）。笔记输入框仍在页尾——想法是读完才有的。
-        classificationBar
+        classificationBar.typeErased()
           .padding(.top, DesignTokens.Space.sm)
         // 首次设置横条还在时它已经说了「配置模型」，这里不再说第二遍（2026-10-02 新用户走查）。
         if !providerSettings.hasConfiguredAPIKey, isCaptureOnboardingDismissed {
@@ -5726,7 +5762,7 @@ private struct HistoryDetailView: View, Equatable {
         }
 
         if presentsArticleBeforeMedia, showsReadingSurface {
-          readingSurface
+          readingSurface.typeErased()
             // 笔记 16：首行标题藏掉后（见 displayedSourceMarkdown），正文第一段直接贴着分类行，
             // 原来那段间距是标题自带的上边距（2026-10-01 自查）。
             .padding(.top, isOwnWriting ? DesignTokens.Space.lg : 18)
@@ -5938,7 +5974,7 @@ private struct HistoryDetailView: View, Equatable {
         // Video-first captures keep playback before their short source text.
         // Substantive WeChat articles already rendered the reading surface above.
         if !presentsArticleBeforeMedia, showsReadingSurface {
-          readingSurface
+          readingSurface.typeErased()
             // 笔记 16：首行标题藏掉后（见 displayedSourceMarkdown），正文第一段直接贴着分类行，
             // 原来那段间距是标题自带的上边距（2026-10-01 自查）。
             .padding(.top, isOwnWriting ? DesignTokens.Space.lg : 18)
@@ -5989,7 +6025,7 @@ private struct HistoryDetailView: View, Equatable {
         // 笔记是读完之后的产物：想法读完才有，所以输入框收在整页最后。
         // 标签和素材类型已移到标题下（classificationBar）。
         if !isOwnWriting {
-          noteBar
+          noteBar.typeErased()
             .padding(.top, DesignTokens.Space.xl)
           ColophonView(
             text: colophonText,
@@ -6023,6 +6059,8 @@ private struct HistoryDetailView: View, Equatable {
         readingContentOverflows = overflows
         readingScrollerTrackWidth = trackWidth
       }
+      // 详情页正文这一整列是全 App 最大的视图类型：断开，滚动视图外面那一长串修饰符才不用每层都解一遍它。
+      .typeErased()
     }
     .popover(
       isPresented: $isRegeneratePopoverPresented,
@@ -6030,6 +6068,7 @@ private struct HistoryDetailView: View, Equatable {
       arrowEdge: .top
     ) { regeneratePopover }
     .coordinateSpace(name: HistoryDetailView.readingScrollSpace)
+    .typeErased()
     .overlay(alignment: .top) {
       VStack(spacing: DesignTokens.Space.sm) {
         if isReadingHeaderPinned, !isOwnWriting, showsReadingSurface {
@@ -6067,6 +6106,23 @@ private struct HistoryDetailView: View, Equatable {
     .onChange(of: readingPane) { _, pane in
       if pane != .source { finishSourceEditing() }
     }
+    // 变成替身（切侧栏范围的空档）：输入焦点交出去、正在改的原文收尾，和原来整页拆掉时一样。
+    .onChange(of: isNavigationStandIn) { _, standIn in
+      guard standIn else {
+        // 新的一条和替身是同一条时，下面按条目切换的那一步不会触发，这里补上。
+        DispatchQueue.main.async {
+          guard pendingStandInScrollReset else { return }
+          pendingStandInScrollReset = false
+          readingScrollKeeper.scrollToTop()
+        }
+        return
+      }
+      pendingStandInScrollReset = true
+      isInlineNoteFocused = false
+      focusedField = nil
+      finishSourceEditing()
+    }
+    .typeErased()
     .onChange(of: detail.task.id, initial: true) { _, _ in
       // 先把上一条笔记的草稿落库，再重置状态——顺序反了就等于丢掉它。
       if let leaving = editingNote {
@@ -6165,6 +6221,7 @@ private struct HistoryDetailView: View, Equatable {
       readingPaneChoice = nil
     }
     .onDisappear { ReadingSelectionRouter.shared.formatter = nil }
+    .typeErased()
     .onChange(of: showsLiveRunInReadingPane) { wasShown, isShown in
       // 生成过程就在总结/翻译页里。完成后草稿换成落库正文，闪一下横幅。
       // 停止和失败仍留在这一页，把原因说清楚。
@@ -6191,9 +6248,11 @@ private struct HistoryDetailView: View, Equatable {
       }
       ToolbarItemGroup(placement: .primaryAction) {
         detailActionsCapsule
+          .disabled(isNavigationStandIn)
       }
     }
     .accessibilityIdentifier("history-detail")
+    .typeErased()
     .sheet(isPresented: $isCommentPickerPresented) {
       if let url = commentSourceURL {
         CommentPickerSheet(url: url, title: title, onSave: { selected, expected in
@@ -6229,8 +6288,14 @@ private struct HistoryDetailView: View, Equatable {
     .onChange(of: completedStepStamps) { _, steps in
       noteCompletedSteps(steps)
     }
+    .typeErased()
     .onChange(of: detail.task.id) { _, _ in
-      scrollProxy.scrollTo(Self.detailTopAnchor, anchor: .top)
+      if pendingStandInScrollReset {
+        pendingStandInScrollReset = false
+        readingScrollKeeper.scrollToTop()
+      } else {
+        scrollProxy.scrollTo(Self.detailTopAnchor, anchor: .top)
+      }
       transcriptSnapshotWhenRunBegan = liveTranscriptionState.isActive
         ? latestTranscriptionSnapshot?.id.rawValue
         : nil
@@ -9166,12 +9231,13 @@ private struct HistoryDetailView: View, Equatable {
   /// 两次透明度翻转。未访问过的面板不挂载（惰性）。各面板高度由
   /// GeometryReader 上报，只随内容变化，与切换无关。
   @ViewBuilder private var content: some View {
-    ZStack(alignment: .top) {
-      mountedReadingPane(.summary)
-      mountedReadingPane(.translation)
-      mountedReadingPane(.source)
+    ReadingPaneHeightFrame(heights: paneHeights, pane: effectiveReadingPane) {
+      ZStack(alignment: .top) {
+        mountedReadingPane(.summary)
+        mountedReadingPane(.translation)
+        mountedReadingPane(.source)
+      }
     }
-    .frame(height: paneHeights[effectiveReadingPane], alignment: .top)
     // 只在上下方向裁：左右各放出一条边，标题左侧的收起三角（`SectionFoldToggle`）
     // 画在正文左边界外，原来的 `.clipped()` 会把它整个裁掉。
     .clipShape(HorizontalBleedClip(bleed: 32))
@@ -9203,9 +9269,9 @@ private struct HistoryDetailView: View, Equatable {
         )
         .onPreferenceChange(ReadingPaneHeightPreferenceKey.self) { reported in
           for (reportedPane, height) in reported {
-            // 高度只在内容变化时更新；同值重复写 @State 也会触发无效重求值。
-            if paneHeights[reportedPane] != height {
-              paneHeights[reportedPane] = height
+            // 高度只在内容变化时更新；同值重复写也会触发无效重求值。
+            if paneHeights.values[reportedPane] != height {
+              paneHeights.values[reportedPane] = height
             }
           }
         }
@@ -9254,10 +9320,20 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
+  /// 三个页签（总结 / 译文 / 原文）各包一层（见 `typeErased()`）：打开一条只解正在看的那一页的类型。
+  /// 外面再套一层同样参数的 VStack，页签里的几块仍按原来的间距排。
   @ViewBuilder
   private func readingPaneContent(_ pane: ReadingPane) -> some View {
     switch pane {
     case .summary, .translation:
+      VStack(alignment: .leading, spacing: 0) { resultPaneContent(pane) }.typeErased()
+    case .source:
+      VStack(alignment: .leading, spacing: 0) { sourcePaneBody }.typeErased()
+    }
+  }
+
+  @ViewBuilder
+  private func resultPaneContent(_ pane: ReadingPane) -> some View {
       let placeholder = liveReadingPlaceholder(for: pane)
       if let placeholder, !placeholder.keepsSavedBody {
         switch placeholder {
@@ -9344,9 +9420,6 @@ private struct HistoryDetailView: View, Equatable {
       } else {
         missingPaneNotice(for: pane)
       }
-    case .source:
-      sourcePaneBody
-    }
   }
 
   /// 配文和转写是两层：转写完成后配文仍留在原文里，不再被转写稿盖掉。
@@ -11785,6 +11858,35 @@ final class DetailDerivedMemo {
     let value = compute()
     entries[key] = value
     return value
+  }
+}
+
+extension EnvironmentValues {
+  /// 这一页详情是不是切侧栏范围空档里的替身（见 `HistoryViewModel.navigationStandInDetail`）。
+  @Entry var isNavigationStandIn = false
+}
+
+/// 阅读区各页签的实测高度（见 `HistoryDetailView.paneHeights`）。
+@MainActor @Observable
+final class ReadingPaneHeights<Pane: Hashable> {
+  var values: [Pane: CGFloat] = [:]
+}
+
+/// 按当前页签的实测高度给阅读区定高。只有这一层观察高度，高度变了只重算这一小层，
+/// 里面的页签内容是外层算好传进来的值，不跟着重建。
+struct ReadingPaneHeightFrame<Pane: Hashable, Content: View>: View {
+  let heights: ReadingPaneHeights<Pane>
+  let pane: Pane
+  let content: Content
+
+  init(heights: ReadingPaneHeights<Pane>, pane: Pane, @ViewBuilder content: () -> Content) {
+    self.heights = heights
+    self.pane = pane
+    self.content = content()
+  }
+
+  var body: some View {
+    content.frame(height: heights.values[pane], alignment: .top)
   }
 }
 

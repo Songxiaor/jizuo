@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 
 /// 阅读区可选字体的目录。
@@ -14,9 +15,22 @@ enum ReadingFontCatalog {
   /// 枚举一次要遍历几百个家族并各做一次 CoreText 查询，够慢到不能放进 body。
   nonisolated(unsafe) private static var cachedFamilies: [String]?
 
-  private static let registeredFontNames = Set(
-    NSFontManager.shared.availableFontFamilies + NSFontManager.shared.availableFonts
-  )
+  /// 本机已注册的字体家族名和 PostScript 名。
+  ///
+  /// 用 CoreText 取，不用 NSFontManager：两边给的是同一份名单（2026-10-16 本机 868 个，逐个比过），
+  /// 但 NSFontManager 第一次枚举要 90ms、只能在主线程，而侧栏第一次画字就要用到它——启动时
+  /// 这一下压在主窗口出现之前。CoreText 的这两个函数可在任意线程调，启动时先在后台取好
+  /// （见 `prewarmRegisteredFontNames`）。
+  private static let registeredFontNames: Set<String> = {
+    let families = (CTFontManagerCopyAvailableFontFamilyNames() as? [String]) ?? []
+    let postScriptNames = (CTFontManagerCopyAvailablePostScriptNames() as? [String]) ?? []
+    return Set(families + postScriptNames)
+  }()
+
+  /// App 启动时调一次：在后台把字体名单取好，主线程第一次要用时直接拿现成的。
+  static func prewarmRegisteredFontNames() {
+    Task.detached(priority: .userInitiated) { _ = registeredFontNames.count }
+  }
 
   /// 只实例化已注册字体，避免缺失字体触发系统字体服务的长时间查找。
   /// 思源宋体的本机显示名与家族名不同，保留已支持的中文别名。
@@ -269,6 +283,43 @@ enum ReadingFontSelection: Equatable {
   }
 }
 
+/// `ResolvedReadingFont` 解析出的描述符和字体。字体和描述符都是不可变对象，任何线程可用。
+/// 本机字体在 App 运行期间不会变；新装的字体下次启动生效（和字体目录 `registeredFontNames` 一致）。
+final class ResolvedFontCache: @unchecked Sendable {
+  static let shared = ResolvedFontCache()
+
+  private struct Key: Hashable {
+    let face: ResolvedReadingFont.Face
+    let size: CGFloat
+    let bold: Bool
+    let italic: Bool
+  }
+
+  private let lock = NSLock()
+  private var descriptors: [Key: NSFontDescriptor] = [:]
+  private var fonts: [Key: NSFont] = [:]
+
+  func descriptor(face: ResolvedReadingFont.Face, size: CGFloat, make: () -> NSFontDescriptor) -> NSFontDescriptor {
+    let key = Key(face: face, size: size, bold: false, italic: false)
+    lock.lock()
+    if let cached = descriptors[key] { lock.unlock(); return cached }
+    lock.unlock()
+    let made = make()
+    lock.lock(); descriptors[key] = made; lock.unlock()
+    return made
+  }
+
+  func font(face: ResolvedReadingFont.Face, size: CGFloat, bold: Bool, italic: Bool, make: () -> NSFont) -> NSFont {
+    let key = Key(face: face, size: size, bold: bold, italic: italic)
+    lock.lock()
+    if let cached = fonts[key] { lock.unlock(); return cached }
+    lock.unlock()
+    let made = make()
+    lock.lock(); fonts[key] = made; lock.unlock()
+    return made
+  }
+}
+
 /// 阅读区正文字号偏好。
 enum ReadingFontSize {
   static let storageKey = "com.syc.linkdigest.reading-font-size"
@@ -343,7 +394,24 @@ struct ResolvedReadingFont: Equatable, Hashable {
   }
 
   /// AttributedString 基底字体路径使用的 NSFont 描述符；与 `font(size:)` 保持同源。
+  ///
+  /// 按「字体 + 字号」记住结果：拼一篇长文要对每一段文字各问一次，指定字体家族时每次都得
+  /// 现建一个字体去验证家族在不在，2026-10-16 采样打开内容时这里占主线程约 5%。
   func nsFontDescriptor(size: CGFloat) -> NSFontDescriptor {
+    ResolvedFontCache.shared.descriptor(face: face, size: size) { uncachedFontDescriptor(size: size) }
+  }
+
+  /// 正文排版用的具体字体（含粗体、斜体）。同一组参数只建一次。
+  func nsFont(size: CGFloat, bold: Bool, italic: Bool) -> NSFont {
+    ResolvedFontCache.shared.font(face: face, size: size, bold: bold, italic: italic) {
+      var descriptor = nsFontDescriptor(size: size)
+      if bold { descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .bold]) }
+      if italic { descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .italic]) }
+      return NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size)
+    }
+  }
+
+  private func uncachedFontDescriptor(size: CGFloat) -> NSFontDescriptor {
     switch face {
     case .sans:
       return NSFont.systemFont(ofSize: size).fontDescriptor

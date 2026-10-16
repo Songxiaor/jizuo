@@ -42,7 +42,16 @@ enum TranscriptManuscript {
 
   /// 抓到的评论写在转写稿末尾（`## 评论…` 起）。它不是转写：不挂时间码、不进朱批比对，
   /// 交回评论组件单独排（2026-09-28 修：原来被当成转写段落，符号、ISO 时间全露出来）。
+  private static let commentSplitMemo = TextDerivationMemo<(transcript: String, comments: String?)>()
+
+  /// 转写稿末尾挂着的评论段拆出来。阅读区每次重画都会问（朱批开关那一行），长稿整篇跑正则
+  /// 很贵：先看有没有「## 评论」这几个字，再按原文记住结果（2026-10-16 提速）。
   static func splittingComments(_ text: String) -> (transcript: String, comments: String?) {
+    guard text.contains("## 评论") else { return (text, nil) }
+    return commentSplitMemo.value(for: text, compute: splittingCommentsUncached)
+  }
+
+  private static func splittingCommentsUncached(_ text: String) -> (transcript: String, comments: String?) {
     guard let range = text.range(of: #"(?m)^## 评论"#, options: .regularExpression) else { return (text, nil) }
     let transcript = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     let comments = String(text[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)

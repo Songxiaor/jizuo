@@ -1,0 +1,315 @@
+<title>汲作提速报告</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+/* 版式：一栏读物，纸面 + 墨色 + 印泥朱，数字一律等宽；改前灰、改后朱。 */
+:root {
+  --paper: #fbfaf7; --ink: #1d1c1a; --ink-2: #5b5852; --ink-3: #8c877e; --rule: #e6e2da;
+  --seal: #c23a2b; --seal-soft: #f3d9d4; --before: #c9c4ba; --good: #2f7d4f; --worse: #b4541a;
+  --card: #ffffff;
+  --display: "Noto Serif SC", "Songti SC", serif;
+  --body: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #171614; --ink: #ece8e1; --ink-2: #b7b1a7; --ink-3: #8a847a; --rule: #2e2b27;
+  --seal: #e0604f; --seal-soft: #3a211d; --before: #4a463f; --good: #6cc08f; --worse: #e39255; --card: #1f1d1a; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --paper: #171614; --ink: #ece8e1; --ink-2: #b7b1a7; --ink-3: #8a847a; --rule: #2e2b27;
+  --seal: #e0604f; --seal-soft: #3a211d; --before: #4a463f; --good: #6cc08f; --worse: #e39255; --card: #1f1d1a; color-scheme: dark; }
+body { background: var(--paper); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.7; }
+.wrap { max-width: 760px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: flex; flex-direction: column; gap: 40px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; }
+h1 { font-size: 34px; letter-spacing: 0.02em; }
+h2 { font-size: 21px; display: flex; align-items: baseline; gap: 10px; }
+h2 .seal { font-family: var(--body); font-size: 12px; color: var(--seal); border: 1px solid var(--seal); border-radius: 3px; padding: 0 5px; letter-spacing: .05em; }
+p { margin: 0; color: var(--ink-2); max-width: 65ch; }
+.meta { color: var(--ink-3); font-size: 13px; }
+section { display: flex; flex-direction: column; gap: 14px; }
+.lead { font-size: 17px; color: var(--ink); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.stat { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.stat .k { font-size: 13px; color: var(--ink-3); }
+.stat .v { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
+.stat .v s { color: var(--ink-3); font-weight: 400; font-size: 15px; margin-right: 6px; }
+.change { display: flex; flex-direction: column; gap: 12px; padding-block: 16px; border-top: 1px solid var(--rule); }
+.change h3 { margin: 0; font-size: 16px; }
+.change .what { color: var(--ink-2); }
+.change .commit { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink-3); }
+.pair { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; }
+.pair-label { grid-column: 1 / -1; font-size: 13px; color: var(--ink-2); }
+.pair-label .note { color: var(--ink-3); margin-left: 6px; }
+.bars { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bar-row { display: grid; grid-template-columns: 34px 1fr 80px; gap: 8px; align-items: center; }
+.tag { font-size: 12px; color: var(--ink-3); }
+.track { height: 10px; background: transparent; }
+.bar { height: 10px; border-radius: 2px; }
+.bar.before { background: var(--before); }
+.bar.after { background: var(--seal); }
+.num { font-variant-numeric: tabular-nums; font-size: 13px; text-align: right; }
+.delta { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; min-width: 48px; text-align: right; }
+.delta.good, td.good { color: var(--good); }
+td.worse { color: var(--worse); }
+.delta.flat, td.flat { color: var(--ink-3); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 520px; }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--rule); text-align: left; }
+th { color: var(--ink-3); font-weight: 500; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+ul.check { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+ul.check li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; color: var(--ink-2); }
+ul.check li::before { content: ""; width: 12px; height: 12px; margin-top: 6px; border: 1.5px solid var(--seal); border-radius: 2px; }
+ul.plain { margin: 0; padding-left: 1.2em; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+</style>
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <div class="meta">汲作 0.3.6 → 分支 claude/jizuo-perf · 2026-10-16 · 用你本机资料库的副本（1449 条）实测</div>
+    <h1>汲作提速报告</h1>
+    <p class="lead">启动后看到第一条内容从 2.31 秒 降到 1.05 秒；打开内容少花 5%–40% 的工夫，文章越长省得越多；长文第一遍往下滑基本不再掉帧；切侧栏少花一到两成。界面逐像素比对 35 屏，一处没变。</p>
+  </header>
+
+  <section>
+    <div class="stats">
+      <div class="stat"><span class="k">启动到看到第一条内容</span><span class="v"><s>2.31 秒</s>1.05 秒</span></div>
+      <div class="stat"><span class="k">启动时最长卡住</span><span class="v"><s>1.28 秒</s>616 毫秒</span></div>
+      <div class="stat"><span class="k">长文第一遍滑 5 秒掉帧</span><span class="v"><s>113 帧</s>8 帧</span></div>
+      <div class="stat"><span class="k">打开 10 万字 YouTube 稿</span><span class="v"><s>717 毫秒</s>441 毫秒</span></div>
+    </div>
+    <p class="meta">每项是同一台 Mac 上改前、改后交替各启动 3 次取中位数。「卡住」指主线程连续忙着、界面不响应的时间。</p>
+  </section>
+
+  <section>
+    <h2>每处改动<span class="seal">6 处</span></h2>
+
+    <div class="change">
+      <h3>1. 启动：把几个超大的界面拆开</h3>
+      <p class="what">详情页、主窗口、设置页在程序里各是一个套了几十层的「大类型」。App 第一次画它们时，系统要一层层把它们解出来，越大越慢，采样里启动时九成时间花在这儿。在大块之间断开后，各段分开解，没显示的分支也不用解。</p>
+      
+      <div class="pair">
+        <div class="pair-label">启动到看到第一条内容</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">2.31 秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:45.5%"></div></div><span class="num">1.05 秒</span></div>
+        </div>
+        <div class="delta good">-54%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">启动到列表出来</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">1.03 秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:67.5%"></div></div><span class="num">696 毫秒</span></div>
+        </div>
+        <div class="delta good">-32%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">启动时最长卡住</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">1.28 秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:48.1%"></div></div><span class="num">616 毫秒</span></div>
+        </div>
+        <div class="delta good">-52%</div>
+      </div>
+      <span class="commit">55df16e7</span>
+    </div>
+
+    <div class="change">
+      <h3>2. 打开内容：同一份正文不再反复解析</h3>
+      <p class="what">打开一条时，详情页会在十几处各自把整篇正文从头解析一遍（去属性头、判断有没有评论、拆引用……），长文每次都是几万字。现在同一份正文只算一次。正文目录原来晚一拍才到，每打开一条都要整篇排两遍，现在纯文字正文第一遍就带上目录。</p>
+      
+      <div class="pair">
+        <div class="pair-label">打开 12 万字的维基百科<span class="note">主线程忙的总时长</span></div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">722 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:64.9%"></div></div><span class="num">469 毫秒</span></div>
+        </div>
+        <div class="delta good">-35%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">打开 4 万字的备忘录</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">256 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:72.9%"></div></div><span class="num">187 毫秒</span></div>
+        </div>
+        <div class="delta good">-27%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">打开 8 月的公众号文章</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">234 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:79.0%"></div></div><span class="num">185 毫秒</span></div>
+        </div>
+        <div class="delta good">-21%</div>
+      </div>
+      <span class="commit">10014a62</span>
+    </div>
+
+    <div class="change">
+      <h3>3. 长文滑动：正文变高不再让整页重算</h3>
+      <p class="what">长文边滑边排版，正文高度一直在变，原来每变一次整个详情页就重算一遍，滑 5 秒重算 66 次。现在只有给正文定高的那一小层跟着变。</p>
+      
+      <div class="pair">
+        <div class="pair-label">维基长文第一遍滑 5 秒：掉帧</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">113 帧</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:7.1%"></div></div><span class="num">8 帧</span></div>
+        </div>
+        <div class="delta good">-93%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">最慢的 5% 帧<span class="note">120Hz 屏一帧预算 8.3 毫秒</span></div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">45.6 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:23.4%"></div></div><span class="num">10.7 毫秒</span></div>
+        </div>
+        <div class="delta good">-77%</div>
+      </div>
+      <span class="commit">1e031e1d</span>
+    </div>
+
+    <div class="change">
+      <h3>4. 长稿打开：少做必然没结果的工作</h3>
+      <p class="what">字体每段文字都现查一次，改成查过就记住；灯箱信息、高亮、上下标、转写稿末尾的评论段，先看一眼有没有再逐字找。输出完全一样。</p>
+      
+      <div class="pair">
+        <div class="pair-label">打开 10 万字 YouTube 转写稿</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">717 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:61.5%"></div></div><span class="num">441 毫秒</span></div>
+        </div>
+        <div class="delta good">-39%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">打开 8 万字本地视频转写</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">386 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:85.5%"></div></div><span class="num">330 毫秒</span></div>
+        </div>
+        <div class="delta good">-14%</div>
+      </div>
+      <span class="commit">4dbf4ceb · d826597e</span>
+    </div>
+
+    <div class="change">
+      <h3>5. 字体名单：放到后台先取</h3>
+      <p class="what">侧栏第一次画字要查本机装了哪些字体，原来在主窗口出现前现查（约 90 毫秒），改成启动时在后台用更快的方式取好。结果和原来是同一份名单（868 个，逐个比过）。</p>
+      <span class="commit">10014a62</span>
+    </div>
+
+    <div class="change">
+      <h3>6. 切侧栏：上一条先当替身，不拆掉重建</h3>
+      <p class="what">切「全部 / 收藏 / 笔记」或某个来源时，右边原来整页拆掉，右上角那排按钮换成灰色占位，新的第一条到了再拆占位、重建详情页。现在上一条留在原处但看不见、点不到、按钮灰着（样子和原来一样），新的一条到了直接换上。</p>
+      
+      <div class="pair">
+        <div class="pair-label">切到「外部」</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">462 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:78.0%"></div></div><span class="num">360 毫秒</span></div>
+        </div>
+        <div class="delta good">-22%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">切到「全部」</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">485 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:79.6%"></div></div><span class="num">386 毫秒</span></div>
+        </div>
+        <div class="delta good">-20%</div>
+      </div>
+      
+      <div class="pair">
+        <div class="pair-label">切到来源「X」</div>
+        <div class="bars">
+          <div class="bar-row"><span class="tag">改前</span><div class="track"><div class="bar before" style="width:100.0%"></div></div><span class="num">454 毫秒</span></div>
+          <div class="bar-row"><span class="tag">改后</span><div class="track"><div class="bar after" style="width:94.2%"></div></div><span class="num">428 毫秒</span></div>
+        </div>
+        <div class="delta good">-6%</div>
+      </div>
+      <span class="commit">cf9cd554 · 821e4589</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>打开每一条：主线程忙了多久</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>内容</th><th class=n>改前</th><th class=n>改后</th><th class=n>变化</th><th class=n>最长卡住·前</th><th class=n>最长卡住·后</th></tr></thead>
+      <tbody><tr><td>最新一条（X）</td><td class=n>246 毫秒</td><td class=n>207 毫秒</td><td class='n good'>-16%</td><td class=n>163 毫秒</td><td class=n>145 毫秒</td></tr>
+<tr><td>第二条</td><td class=n>327 毫秒</td><td class=n>249 毫秒</td><td class='n good'>-24%</td><td class=n>165 毫秒</td><td class=n>145 毫秒</td></tr>
+<tr><td>第三条</td><td class=n>324 毫秒</td><td class=n>254 毫秒</td><td class='n good'>-21%</td><td class=n>220 毫秒</td><td class=n>183 毫秒</td></tr>
+<tr><td>8 月的 X 长帖</td><td class=n>196 毫秒</td><td class=n>182 毫秒</td><td class='n good'>-7%</td><td class=n>125 毫秒</td><td class=n>97 毫秒</td></tr>
+<tr><td>8 月的公众号文章</td><td class=n>234 毫秒</td><td class=n>185 毫秒</td><td class='n good'>-21%</td><td class=n>164 毫秒</td><td class=n>123 毫秒</td></tr>
+<tr><td>7 月的抖音视频</td><td class=n>317 毫秒</td><td class=n>244 毫秒</td><td class='n good'>-23%</td><td class=n>163 毫秒</td><td class=n>136 毫秒</td></tr>
+<tr><td>8 月的 GitHub 项目</td><td class=n>209 毫秒</td><td class=n>179 毫秒</td><td class='n good'>-14%</td><td class=n>116 毫秒</td><td class=n>65 毫秒</td></tr>
+<tr><td>2021 年的语音备忘录</td><td class=n>163 毫秒</td><td class=n>149 毫秒</td><td class='n good'>-9%</td><td class=n>98 毫秒</td><td class=n>72 毫秒</td></tr>
+<tr><td>4 万字的备忘录</td><td class=n>256 毫秒</td><td class=n>187 毫秒</td><td class='n good'>-27%</td><td class=n>176 毫秒</td><td class=n>127 毫秒</td></tr>
+<tr><td>11 万字的 X 长文</td><td class=n>198 毫秒</td><td class=n>190 毫秒</td><td class='n flat'>-4%</td><td class=n>139 毫秒</td><td class=n>120 毫秒</td></tr>
+<tr><td>12 万字的维基百科</td><td class=n>722 毫秒</td><td class=n>469 毫秒</td><td class='n good'>-35%</td><td class=n>529 毫秒</td><td class=n>346 毫秒</td></tr>
+<tr><td>10 万字的 YouTube 转写稿</td><td class=n>717 毫秒</td><td class=n>441 毫秒</td><td class='n good'>-39%</td><td class=n>617 毫秒</td><td class=n>370 毫秒</td></tr>
+<tr><td>8 万字的本地视频转写</td><td class=n>386 毫秒</td><td class=n>330 毫秒</td><td class='n good'>-14%</td><td class=n>297 毫秒</td><td class=n>249 毫秒</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>切到每个页面：主线程忙了多久</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>页面</th><th class=n>改前</th><th class=n>改后</th><th class=n>变化</th><th class=n>最长卡住·前</th><th class=n>最长卡住·后</th></tr></thead>
+      <tbody><tr><td>全部</td><td class=n>485 毫秒</td><td class=n>386 毫秒</td><td class='n good'>-20%</td><td class=n>146 毫秒</td><td class=n>141 毫秒</td></tr>
+<tr><td>收藏</td><td class=n>394 毫秒</td><td class=n>317 毫秒</td><td class='n good'>-19%</td><td class=n>146 毫秒</td><td class=n>137 毫秒</td></tr>
+<tr><td>待总结</td><td class=n>558 毫秒</td><td class=n>505 毫秒</td><td class='n good'>-9%</td><td class=n>271 毫秒</td><td class=n>247 毫秒</td></tr>
+<tr><td>待转写</td><td class=n>620 毫秒</td><td class=n>566 毫秒</td><td class='n good'>-9%</td><td class=n>253 毫秒</td><td class=n>256 毫秒</td></tr>
+<tr><td>笔记</td><td class=n>411 毫秒</td><td class=n>373 毫秒</td><td class='n good'>-9%</td><td class=n>202 毫秒</td><td class=n>188 毫秒</td></tr>
+<tr><td>自有</td><td class=n>526 毫秒</td><td class=n>452 毫秒</td><td class='n good'>-14%</td><td class=n>206 毫秒</td><td class=n>223 毫秒</td></tr>
+<tr><td>外部</td><td class=n>462 毫秒</td><td class=n>360 毫秒</td><td class='n good'>-22%</td><td class=n>183 毫秒</td><td class=n>141 毫秒</td></tr>
+<tr><td>回收站</td><td class=n>456 毫秒</td><td class=n>362 毫秒</td><td class='n good'>-21%</td><td class=n>164 毫秒</td><td class=n>192 毫秒</td></tr>
+<tr><td>来源：X</td><td class=n>454 毫秒</td><td class=n>428 毫秒</td><td class='n flat'>-6%</td><td class=n>140 毫秒</td><td class=n>203 毫秒</td></tr>
+<tr><td>来源：抖音</td><td class=n>495 毫秒</td><td class=n>400 毫秒</td><td class='n good'>-19%</td><td class=n>230 毫秒</td><td class=n>169 毫秒</td></tr>
+<tr><td>来源：公众号</td><td class=n>484 毫秒</td><td class=n>397 毫秒</td><td class='n good'>-18%</td><td class=n>174 毫秒</td><td class=n>137 毫秒</td></tr>
+<tr><td>来源：B 站</td><td class=n>410 毫秒</td><td class=n>368 毫秒</td><td class='n good'>-10%</td><td class=n>137 毫秒</td><td class=n>195 毫秒</td></tr>
+<tr><td>点一个标签</td><td class=n>432 毫秒</td><td class=n>292 毫秒</td><td class='n good'>-33%</td><td class=n>299 毫秒</td><td class=n>140 毫秒</td></tr>
+<tr><td>合集</td><td class=n>345 毫秒</td><td class=n>233 毫秒</td><td class='n good'>-32%</td><td class=n>129 毫秒</td><td class=n>99 毫秒</td></tr>
+<tr><td>博主</td><td class=n>237 毫秒</td><td class=n>234 毫秒</td><td class='n flat'>-1%</td><td class=n>173 毫秒</td><td class=n>186 毫秒</td></tr>
+<tr><td>工作台</td><td class=n>226 毫秒</td><td class=n>240 毫秒</td><td class='n flat'>+6%</td><td class=n>214 毫秒</td><td class=n>240 毫秒</td></tr>
+<tr><td>设置窗口</td><td class=n>321 毫秒</td><td class=n>276 毫秒</td><td class='n good'>-14%</td><td class=n>309 毫秒</td><td class=n>260 毫秒</td></tr></tbody>
+    </table></div>
+    <p class="meta">±7% 以内算误差（灰色）。标签、博主、工作台、设置这几处这次没有专门改。</p>
+  </section>
+
+  <section>
+    <h2>还没动的瓶颈</h2>
+    <ul class="plain">
+      <li>中间列表滑动：每帧主线程约 8 毫秒（改前 8），在 120Hz 屏上约三成帧超预算。成本在系统列表为每一行新建界面，要动列表行的结构，这次没碰。</li>
+      <li>切侧栏还剩约 0.3–0.5 秒的活：一半是系统列表重排 50 行，另有右上角按钮里菜单图标的重建。</li>
+      <li>维基这类带大表格的长文，第一次打开时量表格尺寸仍要 0.1–0.2 秒。</li>
+      <li>设置窗口第一次打开约 0.27 秒；关掉再开很快。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>请你检查</h2>
+    <ul class="check">
+      <li>关掉汲作再打开，第一条内容出现得比以前快。</li>
+      <li>在侧栏来回点「全部、收藏、笔记、外部」和某个来源：右上角那排按钮不跳、不闪，右边先空一下再出第一条，和以前一样。</li>
+      <li>打开一篇很长的文章（比如维基百科那条）一路往下滑，比以前顺。</li>
+      <li>有好几个小标题的文章：目录按钮、标题旁的折叠小三角第一次打开就在。</li>
+      <li>视频正在播放时切侧栏，声音会停；正在写笔记时切侧栏，写的字还在。</li>
+      <li>设置里每个页签都能正常打开。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>怎么测的、怎么撤回</h2>
+    <ul class="plain">
+      <li>测的是测速版汲作：同一份代码多编进一个计时探针（日用版里是空的），用资料库的只读快照、单独的数据目录和抓取通道，你正在用的汲作没碰。</li>
+      <li>每次启动前把资料库恢复成同一份，改前改后交替各跑 3 遍，取中位数。工具已放进仓库 <code>scripts/perf</code>，以后改性能可以照样测。</li>
+      <li>单元测试：本分支桌面端 App 1264 条、Core 779 条通过（一条依赖网页加载的测试全量跑时超时一次，单独重跑通过）。试合并到打包分支 synara/jizuo-0.3.7：没有冲突，编译通过，App 1266 条、Core 797 条全过。</li>
+      <li>界面：改前、改后各截 35 屏（启动、10 种内容、各个侧栏页面、博主、设置）逐像素比对，完全一样；切侧栏「新列表还没到」那一下也单独截了，右边空白、按钮灰着，和原来一样。</li>
+      <li>改动在分支 <code>claude/jizuo-perf</code>，一处一个提交，没有推送、没有部署。哪处有问题，撤回对应提交即可。</li>
+    </ul>
+  </section>
+</div>
