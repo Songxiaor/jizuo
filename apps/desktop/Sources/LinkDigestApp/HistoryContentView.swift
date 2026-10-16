@@ -4592,10 +4592,13 @@ private struct HistoryDetailView: View, Equatable {
   ///
   /// 按条目记，而不是换条目时在 onChange 里把它改回默认：那一改会让整页再重算一遍，
   /// 切一条要多卡 40–140ms（2026-10-05 逐次计数）。下面几个「只对这一条有效」的状态同理。
-  @State private var readingPaneChoice: PerItem<ReadingPane>?
+  ///
+  /// 每一条各记各的（本次打开 App 内有效）：切到别的条目再回来，还停在刚才看的页签上，
+  /// 存下的阅读位置才对得上那一页（2026-10-16 Syc：不会记住用户看到哪里）。
+  @State private var readingPaneChoices: [TaskID: ReadingPane] = [:]
   private var readingPane: ReadingPane {
-    get { readingPaneChoice?.value(for: detail.task.id) ?? defaultReadingPane }
-    nonmutating set { readingPaneChoice = PerItem(taskID: detail.task.id, value: newValue) }
+    get { readingPaneChoices[detail.task.id] ?? defaultReadingPane }
+    nonmutating set { readingPaneChoices[detail.task.id] = newValue }
   }
   /// 点了总结/翻译、Run 还没变成可见态时，先把对应页签打开。
   /// 否则抖音图文只有「原文」，生成过程只能再挂一块预览卡片。
@@ -4634,24 +4637,64 @@ private struct HistoryDetailView: View, Equatable {
   @State private var isTitleExpanded = false
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   /// 长配文 / 长转写默认收起，避免把「重新转写」顶出一屏。
-  @State private var isCaptionExpanded = false
-  @State private var isQuoteExpanded = false
-  @State private var isTranscriptExpanded = false
-  @State private var isImportedImageTextExpanded = false
+  /// 展开了哪几段长文，按条目记（本次打开 App 内有效）。原来换条目就全部收起：
+  /// 展开转写读到一半切走，再回来又是收起的，页面短了一大截，读到的位置也找不回来
+  /// （2026-10-16 Syc：不会记住用户看到哪里）。
+  @State private var expandedBlocks: [TaskID: Set<String>] = [:]
+  private var isCaptionExpanded: Bool {
+    get { expandedBlocks[detail.task.id]?.contains("isCaptionExpanded") ?? false }
+    nonmutating set { setExpanded("isCaptionExpanded", newValue) }
+  }
+  private var isQuoteExpanded: Bool {
+    get { expandedBlocks[detail.task.id]?.contains("isQuoteExpanded") ?? false }
+    nonmutating set { setExpanded("isQuoteExpanded", newValue) }
+  }
+  private var isTranscriptExpanded: Bool {
+    get { expandedBlocks[detail.task.id]?.contains("isTranscriptExpanded") ?? false }
+    nonmutating set { setExpanded("isTranscriptExpanded", newValue) }
+  }
+  private var isImportedImageTextExpanded: Bool {
+    get { expandedBlocks[detail.task.id]?.contains("isImportedImageTextExpanded") ?? false }
+    nonmutating set { setExpanded("isImportedImageTextExpanded", newValue) }
+  }
+  private var isSubtitleExpanded: Bool {
+    get { expandedBlocks[detail.task.id]?.contains("isSubtitleExpanded") ?? false }
+    nonmutating set { setExpanded("isSubtitleExpanded", newValue) }
+  }
+  private func setExpanded(_ name: String, _ expanded: Bool) {
+    var blocks = expandedBlocks[detail.task.id] ?? []
+    if expanded { blocks.insert(name) } else { blocks.remove(name) }
+    expandedBlocks[detail.task.id] = blocks
+  }
+
+  private func expansionBinding(_ name: String) -> Binding<Bool> {
+    Binding(
+      get: { expandedBlocks[detail.task.id]?.contains(name) ?? false },
+      set: { setExpanded(name, $0) }
+    )
+  }
   @State private var renamingSpeaker: String?
   @State private var speakerNameDraft = ""
   @State private var isOnlineDiarizationConfirmPresented = false
-  @State private var isSubtitleExpanded = false
   /// 收起长文时把按钮留在原处（见 `ReadingScrollKeeper`）。
   @State private var readingScrollKeeper = ReadingScrollKeeper()
   /// 选中的原文层。nil 表示还没手动切过，按 `defaultSourceLayer` 走。
-  @State private var selectedSourceLayer: SourceLayer?
+  /// 按条目记，理由同 `readingPaneChoices`。
+  @State private var selectedSourceLayers: [TaskID: SourceLayer] = [:]
+  private var selectedSourceLayer: SourceLayer? {
+    get { selectedSourceLayers[detail.task.id] }
+    nonmutating set { selectedSourceLayers[detail.task.id] = newValue }
+  }
   /// 选中的译文层。
   ///
   /// 和 `selectedSourceLayer` 分开存，不共用：两边可选的层不一定一样——译文是
   /// 翻译那一刻的快照，之后新跑出来的字幕/转写不在里面。共用一个状态会出现
   /// 「在原文里选了画面字幕，切到翻译却是空的」。
-  @State private var selectedTranslationLayer: SourceLayer?
+  @State private var selectedTranslationLayers: [TaskID: SourceLayer] = [:]
+  private var selectedTranslationLayer: SourceLayer? {
+    get { selectedTranslationLayers[detail.task.id] }
+    nonmutating set { selectedTranslationLayers[detail.task.id] = newValue }
+  }
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
   /// 从阅读区点进来时对回源码的光标。
@@ -5696,6 +5739,16 @@ private struct HistoryDetailView: View, Equatable {
         // 中间、标题被卷走（2026-10-03 Syc 走查）。
         Color.clear.frame(height: 0).id(Self.detailTopAnchor)
           .background(ReadingScrollKeeperProbe(keeper: readingScrollKeeper))
+          // 记住、恢复这一条读到哪。必须放在滚动区**里面**：原来挂在 ScrollView 外面的
+          // background 上，往上找不到这个滚动区，进度从来没存进库，切走再回来总是从头开始
+          // （2026-10-16 实测：滚到 40% 切走再点回来停在 0%，库里没有这一条的记录）。
+          .background(
+            ReadingScrollContinuity(
+              identity: detail.task.id.rawValue,
+              progress: readingProgressModel
+            )
+            .frame(width: 0, height: 0)
+          )
         if model.isReadOnly {
           ReadOnlyHistoryCallout(
             reason: model.historyReadOnlyReason,
@@ -6084,13 +6137,6 @@ private struct HistoryDetailView: View, Equatable {
         .padding(.bottom, 16)
         .padding(.trailing, 16 + SubtleScroller.trackWidth)
     }
-    .background(
-      ReadingScrollContinuity(
-        identity: detail.task.id.rawValue,
-        progress: readingProgressModel
-      )
-      .frame(width: 0, height: 0)
-    )
     // `initial: true` so the first item rendered also lands on the right pane;
     // previously the @State default won and a summary-less item opened on an
     // empty 总结 pane.
@@ -6109,12 +6155,10 @@ private struct HistoryDetailView: View, Equatable {
     // 变成替身（切侧栏范围的空档）：输入焦点交出去、正在改的原文收尾，和原来整页拆掉时一样。
     .onChange(of: isNavigationStandIn) { _, standIn in
       guard standIn else {
-        // 新的一条和替身是同一条时，下面按条目切换的那一步不会触发，这里补上。
-        DispatchQueue.main.async {
-          guard pendingStandInScrollReset else { return }
-          pendingStandInScrollReset = false
-          readingScrollKeeper.scrollToTop()
-        }
+        // 新的一条和替身是同一条时，下面按条目切换的那一步不会触发：还是这一条，
+        // 读到哪就留在哪。原来这里补了一次回到顶部，切侧栏后选中的还是同一条，
+        // 正文也跳回首屏（2026-10-16 Syc）。
+        DispatchQueue.main.async { pendingStandInScrollReset = false }
         return
       }
       pendingStandInScrollReset = true
@@ -6143,15 +6187,8 @@ private struct HistoryDetailView: View, Equatable {
       model.loadReformat(taskID: detail.task.id)
       completionBanner = nil
       pendingRunPane = nil
-      isCaptionExpanded = false
-      isQuoteExpanded = false
-      isTranscriptExpanded = false
-      isImportedImageTextExpanded = false
       isInlineNoteRequested = false
-      isSubtitleExpanded = false
-      selectedSourceLayer = nil
-      selectedTranslationLayer = nil
-      // 页签、保活集合、标题高度都按条目记（见 `readingPaneChoice`），换条目不用在这里改回默认。
+      // 页签、保活集合、标题高度都按条目记（见 `readingPaneChoices`），换条目不用在这里改回默认。
       // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
       pendingSourceCitation = nil
       ReadingSelectionRouter.shared.formatter = { selected in
@@ -6217,8 +6254,8 @@ private struct HistoryDetailView: View, Equatable {
       // Prefer the fresh result when a run lands, but keep 原文 one tap away.
       // 只管「同一条刚出了结果」：换条目时这个值也会变，但新的一条本来就落在默认页签上，
       // 这里再写一次只会让整页多重算一遍（2026-10-05）。清掉手选，页签就回到默认。
-      guard hasResult, readingPaneChoice?.taskID == detail.task.id else { return }
-      readingPaneChoice = nil
+      guard hasResult, readingPaneChoices[detail.task.id] != nil else { return }
+      readingPaneChoices[detail.task.id] = nil
     }
     .onDisappear { ReadingSelectionRouter.shared.formatter = nil }
     .typeErased()
@@ -6289,7 +6326,11 @@ private struct HistoryDetailView: View, Equatable {
       noteCompletedSteps(steps)
     }
     .typeErased()
+    .onChange(of: readingSectionKey) { _, key in
+      readingScrollKeeper.enterSection(key)
+    }
     .onChange(of: detail.task.id) { _, _ in
+      readingScrollKeeper.resetSections()
       if pendingStandInScrollReset {
         pendingStandInScrollReset = false
         readingScrollKeeper.scrollToTop()
@@ -6881,6 +6922,7 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private func selectReadingTab(_ tab: ReadingTab) {
+    readingScrollKeeper.leaveSection(readingSectionKey)
     switch tab {
     case let .source(layer):
       readingPane = .source
@@ -7946,6 +7988,7 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 点页尾的章：跳到那份内容。
   private func openStep(_ step: ProcessStep) {
+    readingScrollKeeper.leaveSection(readingSectionKey)
     switch step {
     case .record, .proof, .comments:
       readingPane = .source
@@ -8096,6 +8139,7 @@ private struct HistoryDetailView: View, Equatable {
         // preference 每帧上报纵坐标，滑动的每一帧都要沿整棵正文视图树传一遍值，
         // 哪怕结论没变。`onGeometryChange` 只在这一位翻转时才回调。
         readingHeaderRow(pinned: false)
+          .background(ReadingSectionAnchorProbe(keeper: readingScrollKeeper))
           .onGeometryChange(for: Bool.self) { proxy in
             proxy.frame(in: .named(HistoryDetailView.readingScrollSpace)).minY < 0
           } action: { pinned in
@@ -8188,7 +8232,10 @@ private struct HistoryDetailView: View, Equatable {
       ForEach(layers) { layer in
         let isActive = (active ?? layers.first) == layer
         Button {
-          MainActor.assumeIsolated { select(layer) }
+          MainActor.assumeIsolated {
+            readingScrollKeeper.leaveSection(readingSectionKey)
+            select(layer)
+          }
         } label: {
           Text(layerDisplayName(layer))
             .themedFont(.caption, weight: isActive ? .semibold : .regular)
@@ -8217,7 +8264,10 @@ private struct HistoryDetailView: View, Equatable {
   private var readingPanePicker: some View {
     // 只切换已有原文/摘要/译文，不会发起付费生成。重新生成在「AI 处理」。
     HStack(spacing: DesignTokens.Space.sm) {
-      Picker("阅读内容", selection: Binding(get: { readingPane }, set: { readingPane = $0 })) {
+      Picker("阅读内容", selection: Binding(get: { readingPane }, set: {
+        readingScrollKeeper.leaveSection(readingSectionKey)
+        readingPane = $0
+      })) {
         ForEach(availableReadingPanes) { pane in
           Text(paneLabel(pane)).tag(pane)
         }
@@ -9442,7 +9492,7 @@ private struct HistoryDetailView: View, Equatable {
           collapsibleSourceSection(
             heading: LayeredSourceDocument.subtitleHeading,
             snapshot: subtitles,
-            isExpanded: $isSubtitleExpanded
+            isExpanded: expansionBinding("isSubtitleExpanded")
           )
         }
         sourceLayerHeading(displayHeading(LayeredSourceDocument.transcriptHeading))
@@ -9464,7 +9514,7 @@ private struct HistoryDetailView: View, Equatable {
             collapsibleSourceSection(
               heading: showsSourceLayerPicker ? captionTabTitle : readingTabTitle(.source(nil)),
               snapshot: caption,
-              isExpanded: $isCaptionExpanded,
+              isExpanded: expansionBinding("isCaptionExpanded"),
               layerBody: captionIsSplit ? captionParts.text : nil
             )
           }
@@ -9473,7 +9523,7 @@ private struct HistoryDetailView: View, Equatable {
             collapsibleSourceSection(
               heading: SourceLayer.quote.tabTitle,
               snapshot: caption,
-              isExpanded: $isQuoteExpanded,
+              isExpanded: expansionBinding("isQuoteExpanded"),
               layerBody: captionParts.quotes
             )
           }
@@ -9484,7 +9534,7 @@ private struct HistoryDetailView: View, Equatable {
             collapsibleSourceSection(
               heading: LayeredSourceDocument.subtitleHeading,
               snapshot: subtitles,
-              isExpanded: $isSubtitleExpanded
+              isExpanded: expansionBinding("isSubtitleExpanded")
             )
           }
         case .transcript:
@@ -9492,7 +9542,7 @@ private struct HistoryDetailView: View, Equatable {
             collapsibleSourceSection(
               heading: displayHeading(LayeredSourceDocument.transcriptHeading),
               snapshot: transcript,
-              isExpanded: $isTranscriptExpanded,
+              isExpanded: expansionBinding("isTranscriptExpanded"),
               showsSpeakerBar: true
             )
           }
@@ -9510,7 +9560,7 @@ private struct HistoryDetailView: View, Equatable {
         collapsibleSourceSection(
           heading: displayHeading(LayeredSourceDocument.transcriptHeading),
           snapshot: snapshot,
-          isExpanded: $isTranscriptExpanded,
+          isExpanded: expansionBinding("isTranscriptExpanded"),
           showsSpeakerBar: true
         )
           .accessibilityIdentifier("history-reading-source")
@@ -9520,7 +9570,7 @@ private struct HistoryDetailView: View, Equatable {
         collapsibleSourceSection(
           heading: LayeredSourceDocument.subtitleHeading,
           snapshot: snapshot,
-          isExpanded: $isSubtitleExpanded
+          isExpanded: expansionBinding("isSubtitleExpanded")
         )
           .accessibilityIdentifier("history-reading-source")
       } else if LayeredSourceDocument.placeholderCaptionMethods.contains(snapshot.captureMethod),
@@ -10151,6 +10201,18 @@ private struct HistoryDetailView: View, Equatable {
       isEditingTranscription = false
       if !isOwnWriting { transcriptionDraft = "" }
     }
+  }
+
+  /// 「现在看的是哪一份」：页签加上它里面选中的层。切页签、切「译文对应」都会变，
+  /// `ReadingScrollKeeper` 按它分别记每一份读到哪。带上条目，换条目时不会和上一条的记录撞上。
+  private var readingSectionKey: String {
+    let pane = effectiveReadingPane
+    let layer: SourceLayer? = switch pane {
+    case .source: activeSourceLayer
+    case .translation: activeTranslationLayer
+    default: nil
+    }
+    return "\(detail.task.id.rawValue)|\(pane)|\(layer.map { "\($0)" } ?? "")"
   }
 
   private var effectiveReadingPane: ReadingPane {

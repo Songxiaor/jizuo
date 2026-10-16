@@ -138,11 +138,21 @@ final class ReadingProgressModel: ObservableObject {
 @MainActor
 final class ReadingScrollKeeper: NSObject {
   weak var scrollView: NSScrollView?
-  /// 收起那一刻视口底边到页面底边的距离；nil 表示没在保持。
-  private var distanceFromBottom: CGFloat?
+  /// 正文表头（页签那一行）里的探针，用来算「表头在页面里的位置」。
+  weak var sectionAnchor: NSView?
+  /// 保持期间要守住的位置：页面变高变矮都按它重新校正。nil 表示没在保持。
+  private var holdTarget: HoldTarget?
   private var observedDocument: NSView?
   private var expiry: DispatchWorkItem?
+  /// 这一条里各页签（含「译文对应」的层）各自读到的位置，按页面坐标记。
+  /// 只在这一条里有效：换一条清空，窗口宽度变了也只是近似，切回来时按页面高度夹住。
+  private var sectionOffsets: [String: CGFloat] = [:]
   static let holdDuration: TimeInterval = 0.6
+
+  private enum HoldTarget {
+    case distanceFromBottom(CGFloat)
+    case offset(CGFloat)
+  }
 
   /// 回到最顶上，和整页新建时的位置一样。滚动区伸到工具栏底下，最顶上是「负的顶部内边距」，不是 0。
   func scrollToTop() {
@@ -154,14 +164,63 @@ final class ReadingScrollKeeper: NSObject {
 
   func keepDistanceFromBottom() {
     guard let scroll = scrollView, let document = scroll.documentView else { return }
+    hold(.distanceFromBottom(document.frame.height - scroll.contentView.bounds.minY))
+  }
+
+  /// 换了一条：上一条各页签的位置作废。
+  func resetSections() {
+    sectionOffsets.removeAll()
+  }
+
+  /// 切页签之前记下当前页签读到哪里、表头是不是已经滚过去了。必须在改状态**之前**调：
+  /// 改完之后页面高度一变，滚动区已经被夹到新页面的最底下，记下的就不是读者的位置了。
+  func leaveSection(_ key: String) {
+    guard let scroll = scrollView else { return }
+    let offset = scroll.contentView.bounds.minY
+    sectionOffsets[key] = offset
+    if let headerTop = sectionHeaderTop(in: scroll) {
+      headerPassedOnLeave = offset + scroll.contentInsets.top > headerTop + 1
+    }
+  }
+
+  /// 切到另一个页签（文案 / 转写稿 / 译文，或「译文对应」里的层）之后定位置
+  /// （2026-10-16 Syc：点文案、转写稿，不管读到哪都跳回首屏）。
+  ///
+  /// 原来什么都不做：正文从长换短，页面一下矮了几千点，滚动区被夹到最底，看上去就是
+  /// 跳回了视频那一屏；再切回来，原来读到的地方也没了。现在：
+  /// - 这个页签读过：回到上次读到的地方；
+  /// - 没读过、切换前读者已经滚过了表头：把表头放到视口最上面，新内容从第一行开始；
+  /// - 表头还在视野里（或不是点页签切过来的，比如生成完自动跳页）：不动。
+  func enterSection(_ key: String) {
+    defer { headerPassedOnLeave = false }
+    guard let scroll = scrollView else { return }
+    if let saved = sectionOffsets[key] {
+      hold(.offset(saved))
+    } else if headerPassedOnLeave, let headerTop = sectionHeaderTop(in: scroll) {
+      hold(.offset(headerTop - scroll.contentInsets.top))
+    }
+  }
+
+  private var headerPassedOnLeave = false
+
+  private func sectionHeaderTop(in scroll: NSScrollView) -> CGFloat? {
+    guard let anchor = sectionAnchor, let document = scroll.documentView,
+          anchor.window != nil, anchor.isDescendant(of: document) else { return nil }
+    let rect = anchor.convert(anchor.bounds, to: document)
+    return document.isFlipped ? rect.minY : document.bounds.height - rect.maxY
+  }
+
+  private func hold(_ target: HoldTarget) {
+    guard let scroll = scrollView, let document = scroll.documentView else { return }
     stop()
-    distanceFromBottom = document.frame.height - scroll.contentView.bounds.minY
+    holdTarget = target
     observedDocument = document
     document.postsFrameChangedNotifications = true
     NotificationCenter.default.addObserver(
       self, selector: #selector(documentFrameChanged(_:)),
       name: NSView.frameDidChangeNotification, object: document
     )
+    apply()
     let work = DispatchWorkItem { [weak self] in
       self?.apply()
       self?.stop()
@@ -173,9 +232,14 @@ final class ReadingScrollKeeper: NSObject {
   @objc private func documentFrameChanged(_: Notification) { apply() }
 
   private func apply() {
-    guard let distance = distanceFromBottom, let scroll = scrollView, let document = scroll.documentView else { return }
-    let maximum = max(0, document.frame.height - scroll.contentView.bounds.height)
-    let target = min(max(0, document.frame.height - distance), maximum)
+    guard let holdTarget, let scroll = scrollView, let document = scroll.documentView else { return }
+    let top = -scroll.contentInsets.top
+    let maximum = max(top, document.frame.height - scroll.contentView.bounds.height)
+    let wanted: CGFloat = switch holdTarget {
+    case let .distanceFromBottom(distance): document.frame.height - distance
+    case let .offset(offset): offset
+    }
+    let target = min(max(top, wanted), maximum)
     guard abs(scroll.contentView.bounds.minY - target) > 0.5 else { return }
     scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
     scroll.reflectScrolledClipView(scroll.contentView)
@@ -186,9 +250,24 @@ final class ReadingScrollKeeper: NSObject {
       NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: observedDocument)
     }
     observedDocument = nil
-    distanceFromBottom = nil
+    holdTarget = nil
     expiry?.cancel()
     expiry = nil
+  }
+}
+
+/// 挂在正文表头（页签那一行）背后，告诉 `ReadingScrollKeeper` 表头在哪。
+struct ReadingSectionAnchorProbe: NSViewRepresentable {
+  let keeper: ReadingScrollKeeper
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView()
+    keeper.sectionAnchor = view
+    return view
+  }
+
+  func updateNSView(_ view: NSView, context: Context) {
+    if keeper.sectionAnchor !== view { keeper.sectionAnchor = view }
   }
 }
 
@@ -313,6 +392,7 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       // 先停掉记录、回到顶部，再恢复这一条自己的位置。详情页不随条目重建，原来上一条的
       // 滚动偏移会带过来，换条瞬间的滚动事件又被记成了新这一条的进度——没读过的条目
       // 下次打开也停在中间、标题被卷走（2026-10-03 Syc 走查）。
+      endRestore()
       isRestoring = true
       scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: 0))
       scroll.reflectScrolledClipView(scroll.contentView)
@@ -323,29 +403,83 @@ struct ReadingScrollContinuity: NSViewRepresentable {
 
     static let snapToTopThreshold: CGFloat = 120
 
+    /// 恢复期间守住的比例。新的一条刚换上时正文还在排版（展开的长转写、文字引擎的估高
+    /// 会连着改几次页面高度），只在两拍之后按当时的高度算一次，页面再长高就停在了
+    /// 半路（2026-10-16 实测：存的是 60%，切回来停在 6%）。现在在一小段时间里跟着页面
+    /// 高度重算，读者一动滚轮就放手。
+    private var restoreFraction: Double?
+    private var restoreDocument: NSView?
+    private var restoreExpiry: DispatchWorkItem?
+    static let restoreHoldDuration: TimeInterval = 1.0
+
     private func restore(in scroll: NSScrollView) {
       let stored = ReadingPositionStore.progress(for: parent.identity)
       let percent = Int((stored * 100).rounded())
       parent.progress.setPercent(percent)
       lastPersistedPercent = percent
+      endRestore()
       isRestoring = true
-      // 等新内容排好版再算位置：同一轮里文档高度还是上一条的。
-      DispatchQueue.main.async { [weak self, weak scroll] in
-        DispatchQueue.main.async { [weak self, weak scroll] in
-        guard let self, let scroll, let document = scroll.documentView else { self?.isRestoring = false; return }
-        let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
-        // 只往下看了一点点（标题还没完全滚走）就当没读：按比例恢复会停在标题被
-        // 切掉半截的位置，像排版错了（2026-10-01 走查，窄窗口更明显）。
-        var target = stored * maximum
-        if target < Self.snapToTopThreshold { target = 0 }
-        scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        self.isRestoring = false
-        }
+      restoreFraction = stored
+      if let document = scroll.documentView {
+        restoreDocument = document
+        document.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+          self, selector: #selector(restoreDocumentChanged(_:)),
+          name: NSView.frameDidChangeNotification, object: document
+        )
       }
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(liveScrollStarted(_:)),
+        name: NSScrollView.willStartLiveScrollNotification, object: scroll
+      )
+      // 等新内容排好版再算位置：同一轮里文档高度还是上一条的。
+      DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async { [weak self] in self?.applyRestore() }
+      }
+      let work = DispatchWorkItem { [weak self] in
+        self?.applyRestore()
+        self?.endRestore()
+      }
+      restoreExpiry = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + Self.restoreHoldDuration, execute: work)
     }
 
-    @objc private func boundsChanged(_: Notification) { didScroll() }
+    private func applyRestore() {
+      guard let stored = restoreFraction, let scroll = scrollView, let document = scroll.documentView else { return }
+      let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
+      // 只往下看了一点点（标题还没完全滚走）就当没读：按比例恢复会停在标题被
+      // 切掉半截的位置，像排版错了（2026-10-01 走查，窄窗口更明显）。
+      var target = stored * maximum
+      if target < Self.snapToTopThreshold { target = 0 }
+      guard abs(scroll.contentView.bounds.minY - target) > 0.5 else { return }
+      scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
+      scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    private func endRestore() {
+      restoreExpiry?.cancel()
+      restoreExpiry = nil
+      if let restoreDocument {
+        NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: restoreDocument)
+      }
+      NotificationCenter.default.removeObserver(self, name: NSScrollView.willStartLiveScrollNotification, object: nil)
+      restoreDocument = nil
+      restoreFraction = nil
+      isRestoring = false
+    }
+
+    @objc private func restoreDocumentChanged(_: Notification) { applyRestore() }
+
+    @objc private func liveScrollStarted(_: Notification) { endRestore() }
+
+    @objc private func boundsChanged(_: Notification) {
+      // 恢复期间别处（换条目时的「回到顶部」）又把位置挪走了：拉回来。
+      if restoreFraction != nil {
+        applyRestore()
+        return
+      }
+      didScroll()
+    }
 
     private func didScroll() {
       guard !isRestoring, let scroll = scrollView, let document = scroll.documentView else { return }
