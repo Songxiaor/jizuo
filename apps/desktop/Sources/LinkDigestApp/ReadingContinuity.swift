@@ -212,6 +212,13 @@ final class ReadingScrollKeeper: NSObject {
   private var headerPassedOnLeave = false
   private var offsetOnLeave: CGFloat?
 
+  /// 表头是不是已经滚出滚动区顶边（该由吸顶副本接手）。还没接上滚动区或表头时返回 nil。
+  /// 和详情页 `onGeometryChange` 的判断同一条线（表头在滚动区坐标里 minY < 0），两边才不会各说各的。
+  func isHeaderScrolledPast() -> Bool? {
+    guard let scroll = scrollView, let headerTop = sectionHeaderTop(in: scroll) else { return nil }
+    return scroll.contentView.bounds.minY > headerTop
+  }
+
   private func sectionHeaderTop(in scroll: NSScrollView) -> CGFloat? {
     guard let anchor = sectionAnchor, let document = scroll.documentView,
           anchor.window != nil, anchor.isDescendant(of: document) else { return nil }
@@ -350,9 +357,6 @@ struct ReadingScrollContinuity: NSViewRepresentable {
     private weak var scrollView: NSScrollView?
     private var activeIdentity: String?
     private var isRestoring = false
-    /// 上次持久化的整数百分比：写入按显示粒度量化，一整页滚动最多百来次，
-    /// 而不是每个滚动事件都写一次 UserDefaults。
-    private var lastPersistedPercent: Int?
     /// 还没落库的位置。滚动中只记下来，停下约半秒再写一次：写库是主线程上的
     /// 同步事务，后台正在导入或同步时它要排队，原来每滚过 1% 就写一次，滑动会
     /// 被这些等待卡住。
@@ -406,7 +410,6 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: 0))
       scroll.reflectScrolledClipView(scroll.contentView)
       activeIdentity = parent.identity
-      lastPersistedPercent = nil
       restore(in: scroll)
     }
 
@@ -425,7 +428,6 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       let stored = ReadingPositionStore.progress(for: parent.identity)
       let percent = Int((stored * 100).rounded())
       parent.progress.setPercent(percent)
-      lastPersistedPercent = percent
       endRestore()
       isRestoring = true
       restoreFraction = stored
@@ -494,11 +496,10 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       guard !isRestoring, let scroll = scrollView, let document = scroll.documentView else { return }
       let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
       let value = maximum > 0 ? min(max(scroll.contentView.bounds.minY / maximum, 0), 1) : 0
-      // 标签只显示整数百分比：更新叶子模型（小重绘），持久化按同一粒度量化。
-      let percent = Int((value * 100).rounded())
-      parent.progress.setPercent(percent)
-      guard percent != lastPersistedPercent else { return }
-      lastPersistedPercent = percent
+      // 标签只显示整数百分比：更新叶子模型（小重绘）。
+      parent.progress.setPercent(Int((value * 100).rounded()))
+      // 存停下来的确切位置。原来只在跨过整数百分比时记一次，长转写加评论有几万点高，
+      // 1% 就是半屏，切走再回来差出半屏（2026-10-17 走查）。写库仍由防抖管：停下约半秒写一次。
       scheduleSave(value)
     }
   }

@@ -6325,6 +6325,7 @@ private struct HistoryDetailView: View, Equatable {
       // 「吸顶」不会自己翻回来，新的一条停在顶上也压着一条吸顶表头、挡住标题第一行
       // （2026-10-16 0.3.8 验收实测）。这里先落回原位，新的位置由几何回调再报。
       isReadingHeaderPinned = false
+      reconcileReadingHeaderPin()
       readingScrollKeeper.resetSections()
       if pendingStandInScrollReset {
         pendingStandInScrollReset = false
@@ -7635,6 +7636,22 @@ private struct HistoryDetailView: View, Equatable {
       arrowEdge: .bottom
     ) {
       processPanel
+    }
+  }
+
+  /// 换条目后按实际滚动位置再核对几次「吸不吸顶」。
+  ///
+  /// 上面先落回 false 还不够：换条目那几拍里页面高度、滚动位置连着变（回顶、恢复阅读位置），
+  /// 几何回调可能在落回之后又报一次 true，表头已经回到视野里却不再报 false，吸顶副本就一直
+  /// 压在标题上（2026-10-17 0.3.9 自查：从读到深处的一条换到另一条，标题被盖住、往上滚也不收）。
+  /// 等回顶和恢复位置都做完（恢复最多守 1 秒），照滚动区里表头的真实位置定一次。
+  private func reconcileReadingHeaderPin() {
+    Task { @MainActor in
+      for delay: UInt64 in [50, 350, 750] {
+        try? await Task.sleep(nanoseconds: delay * 1_000_000)
+        guard let passed = readingScrollKeeper.isHeaderScrolledPast() else { continue }
+        if isReadingHeaderPinned != passed { isReadingHeaderPinned = passed }
+      }
     }
   }
 
