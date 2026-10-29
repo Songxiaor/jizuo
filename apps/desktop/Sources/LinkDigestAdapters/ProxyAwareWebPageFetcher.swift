@@ -89,7 +89,8 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
       do {
         return try await proxy.fetch(url: url)
       } catch {
-        guard let fakeIPDirect else { throw error }
+        // 调用方已经取消就到此为止，不再换一条路重新下载。
+        guard let fakeIPDirect, !Task.isCancelled else { throw error }
         return try await fakeIPDirect.fetch(url: url)
       }
     }
@@ -113,7 +114,7 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
         do {
           return try await proxyResource.fetchResource(request)
         } catch {
-          guard let fakeIPDirectResource else { throw error }
+          guard let fakeIPDirectResource, !Task.isCancelled else { throw error }
           return try await fakeIPDirectResource.fetchResource(request)
         }
       } else {

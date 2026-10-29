@@ -29,7 +29,36 @@ private final class RecordingSafeResourceFetcher: WebPageFetcher, SafeResourceFe
   var requests: [SafeResourceRequest] { lock.withLock { resources } }
 }
 
+/// 一直等到被取消才报错，模拟取消时正在进行的系统 transport 请求。
+private final class CancelledResourceFetcher: WebPageFetcher, SafeResourceFetching, @unchecked Sendable {
+  func fetch(url: URL) async throws -> WebPageFetchResult { try await waitForCancel() }
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse { try await waitForCancel() }
+  private func waitForCancel<T>() async throws -> T {
+    while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+    throw ManualLinkError.cancelled
+  }
+}
+
 final class ProxyAwareWebPageFetcherTests: XCTestCase {
+  /// 2026-10-29：取消后不能再换 fake-IP 直连重新下载一遍。博主页封面滑出屏幕时
+  /// 取消下载，原来会带着已取消的任务改走直连，连接在启动前被取消，下载永远不返回。
+  func testCancelledFakeIPRequestDoesNotFallBackToDirectPeer() async throws {
+    let policy = PublicWebURLPolicy(resolver: { _ in ["198.18.1.20"] })
+    let fakeIPDirect = RecordingSafeResourceFetcher()
+    let fetcher = ProxyAwareWebPageFetcher(
+      policy: policy, direct: RecordingWebPageFetcher(marker: "direct"),
+      proxy: CancelledResourceFetcher(), fakeIPDirect: fakeIPDirect
+    )
+    let url = URL(string: "https://fake.example/cover.jpeg")!
+    let resource = Task { try await fetcher.fetchResource(.init(url: url, headers: [:], byteLimit: 1_024)) }
+    let page = Task { try await fetcher.fetch(url: url) }
+    try await Task.sleep(for: .milliseconds(30))
+    resource.cancel(); page.cancel()
+    await XCTAssertThrowsErrorAsync(try await resource.value) { XCTAssertEqual($0 as? ManualLinkError, .cancelled) }
+    await XCTAssertThrowsErrorAsync(try await page.value) { XCTAssertEqual($0 as? ManualLinkError, .cancelled) }
+    XCTAssertTrue(fakeIPDirect.requests.isEmpty)
+  }
+
   func testFakeIPUsesSystemManagedHostnameTransportWhilePublicUsesPeerBoundAndPrivateStillFailsClosed() async throws {
     let policy = PublicWebURLPolicy(resolver: { host in
       switch host {

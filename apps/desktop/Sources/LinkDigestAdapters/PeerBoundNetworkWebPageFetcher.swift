@@ -57,9 +57,11 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     portForTesting: UInt16,
     trustAnchorsForTesting: [SecCertificate]? = nil,
     eventSinkForTesting: @escaping @Sendable (String) -> Void = { _ in },
-    resolverTimeoutSecondsForTesting: TimeInterval = HostResolution.defaultTimeoutSeconds
+    resolverTimeoutSecondsForTesting: TimeInterval = HostResolution.defaultTimeoutSeconds,
+    /// 和 App 里带缓存的解析器一样不检查取消；不传就用 `resolver`。
+    asyncResolverForTesting: AsyncHostResolver? = nil
   ) {
-    self.policy = .init(
+    self.policy = asyncResolverForTesting.map { .init(asyncResolver: $0, allowLoopbackForTesting: allowLoopbackForTesting) } ?? .init(
       resolver: resolver,
       allowLoopbackForTesting: allowLoopbackForTesting,
       resolverTimeoutSeconds: resolverTimeoutSecondsForTesting
@@ -286,43 +288,52 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     }, .global())
   }
 
+  /// 等连接就绪。取消自己负责把等待结束掉：调用方在连接启动前就取消时，
+  /// `connection.cancel()` 先于 `start` 发生，状态回调不一定再来，原来这里会永远等下去
+  /// （2026-10-29：博主页封面卡滑出屏幕取消下载，每次挂死一个下载名额，全部封面转圈）。
   private func ready(_ connection: NWConnection) async throws {
     let gate = ConnectionLifecycle(cancel: { connection.cancel() })
+    let waiter = ReadyWaiter()
     #if DEBUG
     let eventSink = eventSinkForTesting
     #endif
-    try await withCheckedThrowingContinuation { continuation in
-      connection.stateUpdateHandler = { state in
-        switch state {
-        case .preparing:
-          #if DEBUG
-          eventSink("connection-preparing")
-          #endif
-        case .ready:
-          #if DEBUG
-          eventSink("connection-ready")
-          #endif
-          guard gate.finishOnce() else { return }; continuation.resume()
-        case .failed:
-          #if DEBUG
-          eventSink("connection-failed")
-          #endif
-          guard gate.finishOnce() else { return }; continuation.resume(throwing: ManualLinkError.network)
-        case .waiting:
-          #if DEBUG
-          eventSink("connection-waiting")
-          #endif
-          guard gate.finishOnce() else { return }
-          gate.cancelOnce()
-          continuation.resume(throwing: ManualLinkError.network)
-        case .cancelled:
-          #if DEBUG
-          eventSink("connection-cancelled")
-          #endif
-          guard gate.finishOnce() else { return }; continuation.resume(throwing: ManualLinkError.cancelled)
-        default: break
-        }
-      }; connection.start(queue: .global())
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        guard waiter.attach(continuation) else { return }
+        connection.stateUpdateHandler = { state in
+          switch state {
+          case .preparing:
+            #if DEBUG
+            eventSink("connection-preparing")
+            #endif
+          case .ready:
+            #if DEBUG
+            eventSink("connection-ready")
+            #endif
+            waiter.resume(.success(()))
+          case .failed:
+            #if DEBUG
+            eventSink("connection-failed")
+            #endif
+            waiter.resume(.failure(ManualLinkError.network))
+          case .waiting:
+            #if DEBUG
+            eventSink("connection-waiting")
+            #endif
+            gate.cancelOnce()
+            waiter.resume(.failure(ManualLinkError.network))
+          case .cancelled:
+            #if DEBUG
+            eventSink("connection-cancelled")
+            #endif
+            waiter.resume(.failure(ManualLinkError.cancelled))
+          default: break
+          }
+        }; connection.start(queue: .global())
+      }
+    } onCancel: {
+      waiter.resume(.failure(ManualLinkError.cancelled))
+      gate.cancelOnce()
     }
   }
   private func send(_ data: Data, on connection: NWConnection) async throws {
@@ -447,5 +458,41 @@ private struct Response {
       guard source[offset] == 13, source[offset + 1] == 10 else { throw ManualLinkError.network }
       offset += 2
     }
+  }
+}
+
+/// 只结束一次的就绪等待：状态回调和取消谁先到谁算数；取消早于续体挂上时，挂上即结束。
+private final class ReadyWaiter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<Void, Error>?
+  private var early: Result<Void, Error>?
+  private var finished = false
+
+  /// 返回 false 表示已经用早到的结果结束了，不要再启动连接。
+  func attach(_ continuation: CheckedContinuation<Void, Error>) -> Bool {
+    lock.lock()
+    if let early {
+      finished = true
+      lock.unlock()
+      continuation.resume(with: early)
+      return false
+    }
+    self.continuation = continuation
+    lock.unlock()
+    return true
+  }
+
+  func resume(_ result: Result<Void, Error>) {
+    lock.lock()
+    guard !finished else { lock.unlock(); return }
+    guard let continuation else {
+      if early == nil { early = result }
+      lock.unlock()
+      return
+    }
+    finished = true
+    self.continuation = nil
+    lock.unlock()
+    continuation.resume(with: result)
   }
 }

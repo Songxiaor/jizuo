@@ -126,9 +126,9 @@ actor WorkThumbnailLoader {
     } else {
       let id = UUID()
       let task = Task { [self] in
-        await acquire()
-        defer { release() }
         try Task.checkCancellation()
+        // 本机文件和落盘缓存不占下载名额：原来它们也排在网络下载后面，下载一慢，
+        // 早就存在本地的封面也跟着转圈。
         if let localURL {
           let local = Task.detached(priority: .utility) {
             guard let bytes = try? localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
@@ -144,6 +144,9 @@ actor WorkThumbnailLoader {
           Self.readDisk(directory: directory, url: url, pixels: size)
         }.value
         if let stored { try Task.checkCancellation(); return stored }
+        await acquire()
+        defer { release() }
+        try Task.checkCancellation()
         let data = try await fetch(url)
         try Task.checkCancellation()
         let value = try await Task.detached(priority: .utility) {

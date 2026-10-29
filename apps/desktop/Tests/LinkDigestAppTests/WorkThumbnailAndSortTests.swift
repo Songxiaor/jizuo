@@ -56,6 +56,32 @@ final class WorkThumbnailAndSortTests: XCTestCase {
     XCTAssertEqual(calls, 1)
   }
 
+  /// 2026-10-29：已经落盘的封面不排下载名额。名额全被慢下载占着时，原来本地有的封面也一起转圈。
+  func testDiskCachedThumbnailDoesNotWaitForBusyDownloadSlots() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("thumb-slot-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cached = URL(string: "https://images.example.test/cached.png")!
+    let warm = WorkThumbnailLoader(diskDirectory: directory, fetch: { [data = try png()] _ in data })
+    _ = try await warm.image(url: cached, pixels: 256)
+    let file = WorkThumbnailLoader.diskFileURL(directory: directory, url: cached, pixels: 256)
+    for _ in 0..<50 where !FileManager.default.fileExists(atPath: file.path) {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+    // 唯一的下载名额被一个不会结束的下载占住。
+    let loader = WorkThumbnailLoader(concurrency: 1, diskDirectory: directory, fetch: { _ in
+      try await Task.sleep(for: .seconds(60)); throw CocoaError(.fileReadUnknown)
+    })
+    let stuck = Task { try await loader.image(url: URL(string: "https://images.example.test/slow.png")!, pixels: 256) }
+    defer { stuck.cancel() }
+    try await Task.sleep(for: .milliseconds(50))
+    let loaded = expectation(description: "disk-cached cover loads while the slot is busy")
+    Task { if (try? await loader.image(url: cached, pixels: 256)) != nil { loaded.fulfill() } }
+    await fulfillment(of: [loaded], timeout: 2)
+  }
+
   func testDuplicateThumbnailRequestsShareDownloadAndDecodedCache() async throws {
     let probe = ThumbnailFetchProbe(data: try png())
     let loader = WorkThumbnailLoader(fetch: { try await probe.fetch($0) })

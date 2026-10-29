@@ -188,6 +188,28 @@ final class PeerBoundNetworkWebPageFetcherTests: XCTestCase {
     XCTAssertTrue(server.waitForPeerClose(timeout: 1), "task cancellation must close the local peer connection")
   }
 
+  /// 2026-10-29：连接启动前就取消（任务一开始就是取消状态）时，等连接就绪那一步
+  /// 收不到状态回调，原来会永远挂住；现在必须很快结束。
+  func testCancellationBeforeConnectionStartsReturnsPromptly() async throws {
+    let server = try ControlledHTTPServer(scripts: [.holdOpen])
+    defer { server.stop() }
+    // App 里的解析器带缓存，命中缓存时不看取消，已取消的任务会一路走到建连接。
+    let fetcher = PeerBoundNetworkWebPageFetcher(
+      resolver: { _ in ["127.0.0.1"] }, allowLoopbackForTesting: true,
+      limits: .init(redirects: 1, responseBytes: 1_024, timeout: 1), portForTesting: server.port,
+      asyncResolverForTesting: { _ in ["127.0.0.1"] }
+    )
+    let url = fixtureURL()
+    for _ in 0..<5 {
+      let task = Task { try await fetcher.fetch(url: url) }
+      task.cancel()
+      // 不用 raceWithFetchTimeout：它要等子任务结束，被测的下载真挂住时它也一起挂住。
+      let finished = expectation(description: "cancelled fetch returns")
+      Task { if (try? await task.value) == nil { finished.fulfill() } }
+      await fulfillment(of: [finished], timeout: 3)
+    }
+  }
+
   func testTLSAcceptsMatchingHostnameWithInjectedLocalAnchor() async throws {
     let certificate = try TemporaryTLSFixture(hostname: "fixture.test")
     let server = try OpenSSLTLSHTTPServer(certificate: certificate)
