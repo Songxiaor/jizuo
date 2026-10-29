@@ -67,6 +67,25 @@ final class MCPProtocolTests: XCTestCase {
     XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_search", arguments: ["collection": ""]))
     XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_collections", arguments: ["collection": "x"]))
   }
+  /// 批量转写（2026-10-29）：提交和停止要转写权限，查询只读；一批最多 20 条。
+  func testBatchTranscriptionToolsAreListedAndValidated() throws {
+    let tools = MCPTools.definitions
+    func readOnly(_ name: String) throws -> Bool? {
+      let tool = try XCTUnwrap(tools.first { $0["name"] as? String == name })
+      return (tool["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool
+    }
+    XCTAssertEqual(try readOnly("jizuo_transcribe_batch"), false)
+    XCTAssertEqual(try readOnly("jizuo_stop_transcribe_batch"), false)
+    XCTAssertEqual(try readOnly("jizuo_transcribe_batch_status"), true)
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_transcribe_batch", arguments: ["task_ids": (0..<20).map { "t\($0)" }]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_transcribe_batch", arguments: ["task_ids": (0..<21).map { "t\($0)" }]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_transcribe_batch", arguments: ["task_ids": []]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_transcribe_batch", arguments: [:]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_transcribe_batch_status", arguments: [:]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_stop_transcribe_batch", arguments: ["batch_id": "b"]))
+    let discovery = try XCTUnwrap(tools.first { $0["name"] as? String == "jizuo_discovery_status" })
+    XCTAssertTrue((discovery["description"] as? String)?.contains("likes") == true)
+  }
   func testUnavailableAppIsNotReportedAsSuccess() throws {
     var server = MCPProtocol(); try initialize(&server)
     let response = try decode(server.respond(request("tools/call", params: ["name": "jizuo_status"])) { _ in throw CocoaError(.fileNoSuchFile) })
