@@ -127,10 +127,11 @@ private extension CapturedContentNaming {
     return presented
   }
 
-  /// 「抖音图文」「无标题」和只有话题标签的串都不是标题。
+  /// 「抖音图文」「无标题」「无法确定标题」和只有话题标签的串都不是标题。
   static func isPlaceholderDisplayTitle(_ title: String) -> Bool {
     let presented = present(title)
     if presented.isEmpty || presented == CapturedDocumentTitle.missing { return true }
+    if CapturedDocumentTitle.isIndeterminate(presented) { return true }
     if ["抖音图文", "抖音视频", "抖音作品"].contains(presented) { return true }
     return isHashtagOnly(presented)
   }

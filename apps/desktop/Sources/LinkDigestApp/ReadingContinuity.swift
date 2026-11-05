@@ -407,7 +407,9 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       // 下次打开也停在中间、标题被卷走（2026-10-03 Syc 走查）。
       endRestore()
       isRestoring = true
-      scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: 0))
+      // 顶部是 -contentInsets.top，不是 0：窗口工具栏压在滚动区上方，停在 0 时标题整行
+      // 藏在工具栏下面，要往上滚一下才看得见（2026-11-04 体检实测）。
+      scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: -scroll.contentInsets.top))
       scroll.reflectScrolledClipView(scroll.contentView)
       activeIdentity = parent.identity
       restore(in: scroll)
@@ -457,11 +459,12 @@ struct ReadingScrollContinuity: NSViewRepresentable {
 
     private func applyRestore() {
       guard let stored = restoreFraction, let scroll = scrollView, let document = scroll.documentView else { return }
-      let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
+      let top = -scroll.contentInsets.top
+      let maximum = max(top, document.bounds.height - scroll.contentView.bounds.height)
       // 只往下看了一点点（标题还没完全滚走）就当没读：按比例恢复会停在标题被
       // 切掉半截的位置，像排版错了（2026-10-01 走查，窄窗口更明显）。
-      var target = stored * maximum
-      if target < Self.snapToTopThreshold { target = 0 }
+      var target = top + stored * (maximum - top)
+      if target - top < Self.snapToTopThreshold { target = top }
       guard abs(scroll.contentView.bounds.minY - target) > 0.5 else { return }
       scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
       scroll.reflectScrolledClipView(scroll.contentView)
@@ -494,8 +497,9 @@ struct ReadingScrollContinuity: NSViewRepresentable {
 
     private func didScroll() {
       guard !isRestoring, let scroll = scrollView, let document = scroll.documentView else { return }
-      let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
-      let value = maximum > 0 ? min(max(scroll.contentView.bounds.minY / maximum, 0), 1) : 0
+      let top = -scroll.contentInsets.top
+      let range = max(0, document.bounds.height - scroll.contentView.bounds.height - top)
+      let value = range > 0 ? min(max((scroll.contentView.bounds.minY - top) / range, 0), 1) : 0
       // 标签只显示整数百分比：更新叶子模型（小重绘）。
       parent.progress.setPercent(Int((value * 100).rounded()))
       // 存停下来的确切位置。原来只在跨过整数百分比时记一次，长转写加评论有几万点高，

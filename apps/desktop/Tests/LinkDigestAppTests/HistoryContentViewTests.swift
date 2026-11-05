@@ -514,8 +514,8 @@ final class HistoryContentViewTests: XCTestCase {
   }
 
   /// 展开 / 收起侧栏里的分组，程序不替用户滚（2026-10-13 Syc：点「外部」的展开箭头，
-  /// 顶上的「汲作」标志立刻被顶出屏幕）。原来这里把「离窗口中心最近的那一行」拉回原来的
-  /// 屏幕高度，上面多出十几行，侧栏就被整个往下滚。现在只把点击前的偏移原样钉住。
+  /// 顶上的「汲作」标志立刻被顶出屏幕）。不按锚点行补偿滚动，也不整列往下挪。
+  /// 2026-11-04：不再由系统的滚动夹取决定停在哪，偏移原样留住，不够的范围用底部留白补。
   func testSectionToggleNeverScrollsTheSidebarToKeepAnAnchorRow() {
     let memory = appSource("SidebarScrollMemory.swift")
     XCTAssertFalse(memory.contains("SidebarRowAnchor"), "不能再按锚点行补偿滚动")
@@ -523,7 +523,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(memory.contains("offsetToHoldRow"))
     XCTAssertFalse(memory.contains("anchoredRow"))
     let hold = section(in: memory, from: "func holdVisibleOffset()", to: "func remember(expanding:")
-    XCTAssertTrue(hold.contains("self.scroll(scrollView, to: self.lastOffset)"), "只钉住点击前的偏移")
+    XCTAssertTrue(hold.contains("pinHeldOffset"), "只把点击前的偏移留住")
+    XCTAssertTrue(hold.contains("lastOffset"), "基准是点击前的滚动偏移")
     XCTAssertFalse(
       appSource("CreatorDirectoryViews.swift").contains("再低大约 26"),
       "不要再靠一个拍脑袋的固定点数对齐"
@@ -545,18 +546,22 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
-  /// 收起「来源」时各行下移 160。收起前偏移 350，来源默认 5 行 × 32。
-  /// 收起后内容仍高于窗口（文档 1000、可视 677，最大偏移 323）。350 只比 323 多 27，
-  /// 不该把偏移减掉整段 160 停在 190。列表若已经停在 190，按这一行的屏幕高度加回去，再夹到 323。
-  func testCollapsingSourceOnlyGivesUpTheRealScrollClamp() {
-    XCTAssertEqual(
-      SidebarScrollRestore.offsetAfterSectionToggle(previous: 350, documentHeight: 1_000, viewportHeight: 677),
-      323
-    )
+  /// 收起「来源」时文档变短，旧的滚动偏移会超出新的滚动范围。以前只能让系统夹回去，
+  /// 点中的行就往下跳（来源从 314 跳到 497）。现在由 `SidebarScrollMemory` 自己补一截
+  /// 底部留白 `sectionSlack`，让偏移原样留住——点中的行屏幕位置不变，留白在用户上滚
+  /// 不再需要时自动收回。这里守住「用留白、不靠夹取」这条实现路径。
+  func testCollapsingSourcePadsTheScrollRangeInsteadOfLettingItClamp() {
     let memory = appSource("SidebarScrollMemory.swift")
+    XCTAssertTrue(memory.contains("sectionSlack"), "收起分组后靠底部留白撑住滚动范围")
+    XCTAssertTrue(memory.contains("shrinkSlackIfSafe"), "留白在不需要时收回")
     let hold = section(in: memory, from: "func holdVisibleOffset()", to: "func remember(expanding:")
-    XCTAssertTrue(hold.contains("deadline: .now() + 1.0"), "0.4 秒松手时，列表换 id 后的回顶已经落定")
-    XCTAssertFalse(hold.contains("deadline: .now() + 0.4"))
+    XCTAssertTrue(hold.contains("pinHeldOffset"), "多拍重算留白并把偏移留住")
+    // 列表底部留白要真的挂到滚动内容上，否则补了也撑不开滚动范围。
+    let source = historyContentViewSource()
+    XCTAssertTrue(
+      source.contains(".contentMargins(.bottom, 20 + sidebarScrollMemory.sectionSlack, for: .scrollContent)"),
+      "把 sectionSlack 加进侧栏列表的底部内容留白"
+    )
   }
 
   /// 复测：来源在屏幕 y=314，收起后跳到 497，差 183pt，就是偏移被写成 0。
@@ -1184,7 +1189,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
     XCTAssertTrue(source.contains(".frame(minHeight: 0, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains("navigationPlatformScrollTarget"))
-    XCTAssertTrue(source.contains("contentMargins(.bottom, 20, for: .scrollContent)"))
+    XCTAssertTrue(source.contains("contentMargins(.bottom, 20 + sidebarScrollMemory.sectionSlack, for: .scrollContent)"))
     XCTAssertTrue(source.contains("history-navigation-tags-header"))
     let historyVM = appSource("HistoryViewModel.swift")
     // 封面查库已挪到仓储 worker：网格每张卡上屏都走这里，不能在主线程同步读。

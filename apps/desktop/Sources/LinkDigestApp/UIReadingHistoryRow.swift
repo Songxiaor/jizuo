@@ -143,6 +143,13 @@ struct UIReadingHistoryRow: View {
     return parts.joined(separator: " · ")
   }
 
+  /// 读屏用的时间：只报一个（发布优先，否则「存于」），不再把「存于… · 原帖发布…」两个日期
+  /// 一串念完——列表逐条念时太长（2026-11-05 走查）。悬停提示里仍保留两个日期。
+  private func accessibilityTimeText(_ text: RowText) -> String {
+    if let published = text.publishedText { return "发布 \(published)" }
+    return "存于 \(HistoryRelativeTime.text(savedAtMilliseconds))"
+  }
+
   private var rowSourceText: String {
     let author = row.author?.trimmedNonEmpty.map(HistoryAuthorDisplay.text) ?? ""
     if !author.isEmpty { return author }
@@ -220,8 +227,8 @@ struct UIReadingHistoryRow: View {
 
   private func rowAccessibilityValue(_ text: RowText) -> String {
     var values = [
-      "来源：\(text.sourceText)",
-      savedTimeHelp(text),
+      text.sourceText,
+      accessibilityTimeText(text),
       isSummarized ? "已总结" : "未总结",
     ]
     if !text.visibleTags.isEmpty { values.append("标签：\(text.visibleTags.joined(separator: "、"))") }

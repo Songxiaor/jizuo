@@ -492,7 +492,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
   /// 60 秒足够判出语种，两个候选加起来也只要几秒。
   static let localeProbeDurationSeconds: Double = 60
 
-  /// 听一小段，挑一个真的对得上音频的 locale。
+  /// 听一小段，挑一个真的对得上音频、听出内容最多的 locale。
   ///
   /// 判据见 `CapturedContentLanguage.isPlausibleTranscript`：指错 locale 时
   /// Apple 的输出有两种彻底的坏法（吐异种文字碎片、或直接吐空），两种都能判出来。
@@ -523,6 +523,11 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     defer { try? FileManager.default.removeItem(at: probeURL) }
 
     var rejectedSamples: [String] = []
+    // 说得通的不止一个时，挑听出内容最多的那个，不在第一个说得通的就停。
+    // 英文模型听中文口播不总是吐空：2026-10-28 一条 3 分半的中文口播，英文模型听开头
+    // 60 秒吐出 45 个字母的「Was officially mental legal one jung」，判作说得通，
+    // 整篇就按英文转成了一句乱码；同一段中文模型听出 499 字。多听一个候选只多一两秒。
+    var best: (candidate: String, units: Int)?
     for candidate in candidates {
       if Task.isCancelled { return preferred }
       guard await Self.isModelInstalled(candidate) else { continue }
@@ -530,10 +535,13 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
         continue
       }
       if CapturedContentLanguage.isPlausibleTranscript(sample, forLocaleIdentifier: candidate) {
-        return candidate
+        let units = LocalTranscriptQuality.contentUnitCount(sample)
+        if units > (best?.units ?? -1) { best = (candidate, units) }
+      } else {
+        rejectedSamples.append(sample)
       }
-      rejectedSamples.append(sample)
     }
+    if let best { return best.candidate }
 
     // 听过的都对不上，但某次听写**本身**已经露出了真实语种（例：中文模型听英文讲座，
     // 吐的是一串拉丁字母碎片），而那个语种的模型还没装——就选它，交给调用方现成的

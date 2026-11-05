@@ -19,9 +19,13 @@ enum ReadingTextComposer {
 
   /// 与 MarkdownPresentation 的阅读排版同一套字号体系。
   /// 段后间距：约半行（2026-09-28 正文排版样稿）。行距 7，行和行的缝明显小于段和段的缝。
-  static let paragraphSpacing: CGFloat = 15
+  /// 2026-11-05 Syc 走查：15→10，段与段收一点，整段读起来更连。
+  static let paragraphSpacing: CGFloat = 10
   /// 连续短句段（每段不到一行，公众号一句一段的写法）之间的缝：读成一组，不再句句空一行。
   static let shortRunSpacing: CGFloat = 3
+  /// 「一句一段」但每句都不止一行时（长句单独成段）之间的缝：比短句段松一点，比正常段紧，
+  /// 让连续的单句段读成一组（2026-11-05 走查）。
+  static let sentenceRunSpacing: CGFloat = 6
 
   /// - Parameter emphasizesLede: 这一段文字是全文开头时为 true：第一段大一号当导语。
   static func attributed(
@@ -74,13 +78,23 @@ enum ReadingTextComposer {
           let isLede = ledeAllowed && index == 0 && isLedeCandidate(text)
           // 连着的短句段收成一组：这一段和下一段都不满一行时，只留一道细缝。
           let tightensToNext = isShortLine(text) && next.map(isShortLineParagraph) == true
+          // 长一点的「一句一段」也别句句空一大格：这一段是完整单句（且长到不止一行）、
+          // 下一段也是单句，就收到 sentenceRunSpacing，连着读成一组（2026-11-05 走查）。
+          // 短句段走上面的 shortRunSpacing，短句后面跟长段时仍按正常段距，不和下一段并组。
+          let sentenceRun = !tightensToNext
+            && !isShortLine(text)
+            && Self.isSentenceParagraph(text)
+            && next.map(Self.isSentenceParagraphBlock) == true
+          let spacingAfter = tightensToNext
+            ? Self.shortRunSpacing
+            : (sentenceRun ? Self.sentenceRunSpacing : Self.paragraphSpacing)
           result.append(paragraph(
             inline(
               text, readingFont: readingFont,
               baseSize: isLede ? readingFont.bodySize + 1 : readingFont.bodySize,
               color: palette.primary
             ),
-            spacingAfter: tightensToNext ? Self.shortRunSpacing : Self.paragraphSpacing,
+            spacingAfter: spacingAfter,
             lineSpacing: MarkdownPresentation.bodyLineSpacing
           ))
         }
@@ -195,6 +209,21 @@ enum ReadingTextComposer {
   static func isShortLineParagraph(_ block: MarkdownPresentation.Block) -> Bool {
     guard case let .paragraph(text) = block else { return false }
     return leadingLabel(of: text) == nil && !isItemNote(block) && isShortLine(text)
+  }
+
+  /// 一句话的段落：单行、以句末标点收尾、中间不再有别的句末标点。
+  /// 用来识别「一句一段」的写法（公众号常见），把连续的单句段之间的缝收紧。
+  static func isSentenceParagraph(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !trimmed.contains("\n") else { return false }
+    guard let last = trimmed.last, "。！？!?；;".contains(last) else { return false }
+    let body = trimmed.dropLast()
+    return !body.contains(where: { "。！？!?".contains($0) })
+  }
+
+  static func isSentenceParagraphBlock(_ block: MarkdownPresentation.Block) -> Bool {
+    guard case let .paragraph(text) = block else { return false }
+    return leadingLabel(of: text) == nil && !isItemNote(block) && isSentenceParagraph(text)
   }
 
   /// 导语：一段完整的话（不是图片、标签或一个短标题似的句子）。

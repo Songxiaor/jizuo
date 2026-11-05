@@ -218,4 +218,11 @@ final class TranscriptTidyTests: XCTestCase {
       XCTAssertFalse(LocalTranscriptQuality.isNoSpeechArtifact(real), real)
     }
   }
+
+  /// 语种探测按它比两个说得通的候选：汉字一个一个算，英文一个词算一个，时间码不算。
+  func testContentUnitCountCountsCharactersAndWords() {
+    XCTAssertEqual(LocalTranscriptQuality.contentUnitCount("00:00 我在微信里"), 5)
+    XCTAssertEqual(LocalTranscriptQuality.contentUnitCount("Was officially mental legal one jung, the AH."), 8)
+    XCTAssertEqual(LocalTranscriptQuality.contentUnitCount("00:00 , , , ,"), 0)
+  }
 }

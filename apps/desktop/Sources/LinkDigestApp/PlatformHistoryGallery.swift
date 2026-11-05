@@ -370,6 +370,16 @@ private struct PlatformGalleryCell<Menu: View>: View {
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  /// 卡片悬停提示：保留原有的打开/多选说明，并把**完整作者名**补上——
+  /// 卡片底行太窄，作者名常被截断（如 dontbesli…），悬停就能看到全名。
+  private var cardHelp: String {
+    let base = selectionActive ? "单击勾选或取消；按 Esc 取消全部选择" : "单击打开；⌘ 单击可多选"
+    if let author = row.author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
+      return "\(base)\n作者：\(author)"
+    }
+    return base
+  }
+
   var body: some View {
     // 多选原来只有悬停才露出的右上角小框，键盘、读屏和没想到要悬停的人都用不上
     // （2026-10-01 走查）。和访达一样：⌘ 点卡片就是勾选；已经在多选时，单击也是勾选，
@@ -395,7 +405,7 @@ private struct PlatformGalleryCell<Menu: View>: View {
     .accessibilityIdentifier("\(accessibilityPrefix)-card-\(row.taskID.rawValue)")
     .accessibilityAddTraits(isSelected ? .isSelected : [])
     .accessibilityAction(named: isSelected ? "取消选择" : "选择") { onToggleSelection() }
-    .help(selectionActive ? "单击勾选或取消；按 Esc 取消全部选择" : "单击打开；⌘ 单击可多选")
+    .help(cardHelp)
     .contextMenu { contextMenu() }
     .overlay(alignment: .topTrailing) {
       CreatorWorkSelectionControl(isSelected: isSelected, theme: theme, onToggle: onToggleSelection)

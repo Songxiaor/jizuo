@@ -55,8 +55,14 @@ struct HistoryContentView: View {
   // 「合集」2026-09-29 新加，默认展开：新分组第一次出现时要让人看见（同「形式」）。
   @AppStorage("history.navigation.collections-expanded") private var navigationCollectionsExpanded = true
   @State private var didRevealInitialNavigationPlatform = false
-  /// 换掉整张侧栏（进「全部博主」）之后把滚动位置还原回去。分组展开 / 收起不还原。
-  @State private var sidebarScrollMemory = SidebarScrollMemory()
+  /// 列表列工具栏项是否已挂上（2026-11-05，Syc 拍板）：首屏先把内容画出来，工具栏项晚一拍再挂。
+  /// 工具栏项首次布局会整排重读 SwiftUI 并解析图标，是首帧最长一次卡顿的大头（去掉它们
+  /// longestStall 从 ~609 降到 470，-23%）。晚挂后首屏内容明显更早出现（firstListReady 约 -25%），
+  /// 按钮在列表第一批行上屏后补上（空库则 0.9 秒兜底），最终界面与原来一致。
+  @State private var listColumnToolbarAttached = false
+  /// 换掉整张侧栏（进「全部博主」）之后把滚动位置还原回去。分组展开 / 收起不还原；
+  /// 收起 / 展开时用它的 `sectionSlack` 补底部留白，把点中的行留在原屏幕位置。
+  @StateObject private var sidebarScrollMemory = SidebarScrollMemory()
   @AppStorage(DesignTokens.Layout.sidebarWidthStorageKey) private var storedSidebarWidth: Double = 0
   @AppStorage(DesignTokens.Layout.listWidthStorageKey) private var storedListWidthRaw: Double = 0
   /// 三栏的起始宽度只在三栏建立时取一次。直接绑 `storedSidebarWidth` 的话，拖动中
@@ -469,7 +475,17 @@ struct HistoryContentView: View {
               // 原来这里没有标题，工具栏左上角落成 App 名「汲作」（2026-09-25 走查）。
               .navigationTitle(contentColumnTitle)
               .toolbar(removing: .title)
-              .toolbar { if !usesFullWidthSurface { listColumnToolbar } }
+              .toolbar { if !usesFullWidthSurface && listColumnToolbarAttached { listColumnToolbar } }
+              // 首屏画完再挂工具栏项（见 `listColumnToolbarAttached`）：列表第一批行一上屏
+              // 就补上；0.9 秒兜底，空库或异常时也不会一直没有工具栏。
+              .onAppear { if !model.rows.isEmpty { listColumnToolbarAttached = true } }
+              .onChange(of: model.rows.isEmpty) { _, empty in
+                if !empty { listColumnToolbarAttached = true }
+              }
+              .task {
+                try? await Task.sleep(for: .milliseconds(900))
+                listColumnToolbarAttached = true
+              }
               .navigationSplitViewColumnWidth(
                 min: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMin,
                 ideal: usesFullWidthSurface ? 0 : threeColumnWidths.list,
@@ -1114,12 +1130,7 @@ struct HistoryContentView: View {
         .padding(.horizontal, 10)
         .padding(.bottom, 8)
       }
-      if model.selectedScope == .unsummarized, !providerSettings.autoSummarizeNewCaptures {
-        unsummarizedAutoSummaryBanner
-      }
-      if model.selectedScope == .untranscribed, model.navigationCounts.untranscribed > 0 {
-        untranscribedBulkBanner
-      }
+      if let listTopBanner { listTopBanner }
       switch model.listState {
       case .idle where model.rows.isEmpty:
         HistorySkeletonList(theme: theme)
@@ -1755,6 +1766,10 @@ struct HistoryContentView: View {
   }
 
   private var navigationRail: some View {
+    // 「设置」栏放在列表下面，不用 safeAreaInset 叠在列表上：侧栏是系统表格，
+    // 叠上去的那一截不算进滚动范围，拉到底「回收站」这几行一直压在「设置」底下
+    // （2026-11-04 Syc 反馈）。
+    VStack(spacing: 0) {
     ScrollViewReader { proxy in
     List {
       // 侧栏顶上：「汲作」两字印 + 宋体名字（2026-09-30 Syc 定稿丙：朱白相间、古法右起）。
@@ -1931,8 +1946,8 @@ struct HistoryContentView: View {
     }
     // 第一组没有标题后，「全部」会直接贴住工具栏下沿；补回标题原本占的余白。
     .contentMargins(.top, 8, for: .scrollContent)
-    .contentMargins(.bottom, 20, for: .scrollContent)
-    .safeAreaInset(edge: .bottom, spacing: 0) { navigationFooter }
+    // 收起分组时补出来的底部留白：让点击前的滚动偏移仍落在范围内，点中的行不跳。
+    .contentMargins(.bottom, 20 + sidebarScrollMemory.sectionSlack, for: .scrollContent)
     .accessibilityIdentifier("history-navigation-rail")
     // 只在启动时把「上次选中、但在侧栏下方看不到」的平台露出来一次。
     // 原来每次选中平台都 scrollTo(.center)，分组展开 / 收起重建侧栏时也会触发，
@@ -1947,6 +1962,8 @@ struct HistoryContentView: View {
     }
     }
     .frame(minHeight: 0, maxHeight: .infinity)
+    navigationFooter
+    }
   }
 
   struct ThreeColumnWidths: Equatable {
@@ -2942,6 +2959,17 @@ struct HistoryContentView: View {
     Array(model.rows.prefix(20)).map(\.taskID)
   }
 
+  /// 列表第一行的提示条：待转写的「全部转写」、自动总结关着时的「总结前 N 条」。
+  private var listTopBanner: AnyView? {
+    if model.selectedScope == .unsummarized, !providerSettings.autoSummarizeNewCaptures {
+      return AnyView(unsummarizedAutoSummaryBanner)
+    }
+    if model.selectedScope == .untranscribed, model.navigationCounts.untranscribed > 0 {
+      return AnyView(untranscribedBulkBanner)
+    }
+    return nil
+  }
+
   /// 「待转写」列表顶上：一共多少条、多长，一键全部排队本机转写。
   @ViewBuilder private var untranscribedBulkBanner: some View {
     let count = model.navigationCounts.untranscribed - model.navigationCounts.untranscribedFailed
@@ -2949,9 +2977,10 @@ struct HistoryContentView: View {
     let isRunning = localImport.isTranscriptionQueueRunning
     NoticeBanner(
       icon: "waveform",
-      title: untranscribedSummaryText(count: count),
+      title: "待转写 \(count) 条",
       detail: untranscribedBannerDetail(isRunning: isRunning, failed: failed),
-      actionTitle: isLoadingUntranscribedBacklog ? "正在清点…" : "全部转写…",
+      // 按钮字不带「…」：在窄列里看着像字被截掉了（2026-11-04 Syc 反馈「缺字少字」）。
+      actionTitle: isLoadingUntranscribedBacklog ? "正在清点" : "全部转写",
       isActionDisabled: count <= 0 || isRunning || isLoadingUntranscribedBacklog || model.isReadOnly,
       actionHelp: isRunning ? "已经在转写了，进度在窗口右下角" : "把这里的全部音视频排队转写；开始前会先确认条数和总时长",
       actionIdentifier: "untranscribed-bulk-transcribe",
@@ -2967,14 +2996,11 @@ struct HistoryContentView: View {
   }
 
   private func untranscribedBannerDetail(isRunning: Bool, failed: Int) -> String {
-    let base = isRunning ? "正在排队转写，进度在窗口右下角，转好的会从这里消失。" : "本机听写，免费、不上传；一条一条转，随时可以停。"
+    // 总时长放说明里：和条数挤在标题一行时，窄列里「·」后面折到第二行，读着像缺了字。
+    let duration = Self.roughDuration(model.navigationCounts.untranscribedSeconds).map { "共约 \($0)。" } ?? ""
+    let base = duration + (isRunning ? "正在排队转写，进度在窗口右下角，转好的会从这里消失。" : "本机听写，免费、不上传；一条一条转，随时可以停。")
     guard failed > 0 else { return base }
     return base + "另有 \(failed) 条上次转写失败（多半没有中文人声），会跳过。"
-  }
-
-  private func untranscribedSummaryText(count: Int) -> String {
-    let duration = Self.roughDuration(model.navigationCounts.untranscribedSeconds)
-    return duration.map { "待转写 \(count) 条 · 约 \($0)" } ?? "待转写 \(count) 条"
   }
 
   private var untranscribedConfirmationMessage: String {
@@ -2997,7 +3023,7 @@ struct HistoryContentView: View {
       icon: "sparkles",
       title: "自动总结当前已关闭",
       detail: "新存的内容不会自动生成总结，会一直留在这张列表里。",
-      actionTitle: "总结前 \(count) 条…",
+      actionTitle: "总结前 \(count) 条",
       isActionDisabled: count == 0 || !model.canRunBatchSummary || !providerSettings.arePreferencesReady,
       actionHelp: singleSummaryUnavailableReason ?? "按列表顺序逐条生成总结；开始前会先确认条数、模型和用量",
       actionIdentifier: "unsummarized-bulk-summarize",

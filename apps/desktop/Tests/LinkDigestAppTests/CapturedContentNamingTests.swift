@@ -514,4 +514,44 @@ final class CapturedContentNamingTests: XCTestCase {
   func testStableDayLabelReadsAPrefixedDate() {
     XCTAssertEqual(HistoryPublishedTimestampFormatter.stableDayLabel("发布于 2026-09-23"), "2026年9月23日")
   }
+
+  /// 抓取/标题生成拿不到标题时会把「无法确定标题」整句写进库（实库 X 帖子
+  /// 4bd34d2b，正文只有一条 t.co 短链加一张图）。它是占位不是内容：显示时
+  /// 按「没有标题」处理，列表用作者+日期，别把这句话当成标题给用户看。
+  func testIndeterminatePhraseTitleFallsBackToAuthorAndDate() {
+    let body = """
+    ---
+    author: "拓跋鼠 (@qwerty__cs)"
+    published: "2026-10-17T05:17:17.000Z"
+    original_title: "https://t.co/bkTusJsgWo"
+    likes: "1"
+    views: "261"
+    ---
+
+
+    https://t.co/bkTusJsgWo
+
+    ![](https://pbs.twimg.com/media/HUzvfTiaAAALzfk.jpg)
+    """
+    let name = CapturedContentNaming.name(
+      title: "无法确定标题",
+      body: body,
+      host: "x.com",
+      author: "拓跋鼠 (@qwerty__cs)",
+      published: "2026-10-17T05:17:17.000Z"
+    )
+    XCTAssertNotEqual(name.text, "无法确定标题", "占位句不能原样当标题")
+    XCTAssertEqual(name.origin, .fallback, "没有可用标题/正文时回落到作者+日期")
+    XCTAssertTrue(name.text.contains("拓跋鼠"), "标题里要有作者：\(name.text)")
+    XCTAssertTrue(name.text.contains("2026年10月17日"), "标题里要有日期：\(name.text)")
+    XCTAssertFalse(name.text.contains("t.co"), "裸短链不能当标题：\(name.text)")
+  }
+
+  /// 显示层统一兜底：详情/导出走 `CapturedDocumentTitle.display` 时也要把占位句换成「无标题」。
+  func testCapturedDocumentTitleTreatsIndeterminatePhraseAsMissing() {
+    XCTAssertEqual(CapturedDocumentTitle.display("无法确定标题"), "无标题")
+    XCTAssertEqual(CapturedDocumentTitle.display("  无法确定标题  "), "无标题")
+    XCTAssertEqual(CapturedDocumentTitle.display("正常标题"), "正常标题")
+    XCTAssertFalse(CapturedDocumentTitle.isIndeterminate("正常标题"))
+  }
 }

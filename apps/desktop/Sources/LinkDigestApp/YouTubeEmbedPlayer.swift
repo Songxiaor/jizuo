@@ -156,10 +156,12 @@ struct YouTubeEmbedPlayerCard: View {
         }
       }
       .aspectRatio(16.0 / 9.0, contentMode: .fit)
-      .frame(maxWidth: 720)
+      // 上限从 720 收到 640：详情首屏被视频占去太多、正文要滚很久才露头（2026-11-05 走查）。
+      // 640×16/9≈360pt，横/竖屏都不会把首屏吃满；要看大双击或点「放大」进影院。
+      .frame(maxWidth: 640)
 
       // 「放大」贴在视频正下方右侧：靠近播放器习惯位，又不遮挡 YouTube
-      // 自带的底部控制条；与视频同一 720 宽度约束保证右缘对齐。
+      // 自带的底部控制条；与视频同一 640 宽度约束保证右缘对齐。
       if !isInCinema {
         HStack {
           Spacer()
@@ -171,7 +173,7 @@ struct YouTubeEmbedPlayerCard: View {
             .help("双击视频也可放大")
             .accessibilityIdentifier("history-youtube-cinema")
         }
-        .frame(maxWidth: 720)
+        .frame(maxWidth: 640)
       }
 
       // 无字幕视频：诚实说明，不再提供质量不达标的本机实时转写。

@@ -109,4 +109,37 @@ final class MCPProtocolTests: XCTestCase {
     XCTAssertEqual(servers["jizuo"]?["command"] as? String, path)
     XCTAssertEqual(servers["jizuo"]?["args"] as? [String], [])
   }
+
+  /// 2026-11-05：补的一批「读元数据 / 整理 / 编辑 / 翻译」工具，权限标注和必填参数要对。
+  func testRecordAndManagementToolsAreListedWithCorrectPermissions() throws {
+    let tools = MCPTools.definitions
+    func tool(_ name: String) throws -> [String: Any] {
+      try XCTUnwrap(tools.first { $0["name"] as? String == name })
+    }
+    func readOnly(_ name: String) throws -> Bool? {
+      (try tool(name)["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool
+    }
+    XCTAssertEqual(try readOnly("jizuo_get_record"), true)
+    XCTAssertEqual(try readOnly("jizuo_list_works"), true)
+    XCTAssertEqual(try readOnly("jizuo_collections_manage"), false)
+    XCTAssertEqual(try readOnly("jizuo_tags_manage"), false)
+    XCTAssertEqual(try readOnly("jizuo_update_record"), false)
+    XCTAssertEqual(try readOnly("jizuo_write_note"), false)
+    XCTAssertEqual(try readOnly("jizuo_translate"), false)
+
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_get_record", arguments: ["task_id": "t"]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_get_record", arguments: [:]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_list_works", arguments: ["creator_id": "c"]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_collections_manage", arguments: ["action": "create", "name": "n"]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_collections_manage", arguments: [:]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_tags_manage", arguments: ["action": "rename", "tag": "a", "name": "b"]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_update_record", arguments: ["task_id": "t", "title": "x"]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_write_note", arguments: ["task_id": "t", "body": "x"]))
+    XCTAssertThrowsError(try MCPTools.validate(name: "jizuo_write_note", arguments: ["task_id": "t"]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_translate", arguments: ["task_id": "t"]))
+    XCTAssertNoThrow(try MCPTools.validate(name: "jizuo_search", arguments: ["tag": "灵感", "platform": "x"]))
+    let searchProperties = try XCTUnwrap((try tool("jizuo_search")["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])
+    XCTAssertNotNil(searchProperties["tag"])
+    XCTAssertNotNil(searchProperties["platform"])
+  }
 }

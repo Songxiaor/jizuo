@@ -175,17 +175,33 @@ public struct CaptureMedia: Sendable, Equatable {
 public enum CapturedDocumentTitle {
   public static let missing = "无标题"
 
+  /// 抓取或标题生成拿不到标题时，会把「无法确定标题」这类整句当标题写进库里。
+  /// 它和空标题一样是占位，不是内容：显示时按「没有标题」处理，交给
+  /// `CapturedContentNaming` 用作者、日期或正文首行派生一个能认人的说法。
+  /// 只在显示层判定，不改存储、不迁移数据（AGENTS.md：不能手工 UPDATE）。
+  public static let indeterminatePhrases: Set<String> = [
+    "无法确定标题",
+  ]
+
+  /// 存储的标题是不是「拿不到标题」的整句占位。
+  public static func isIndeterminate(_ title: String?) -> Bool {
+    let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !trimmed.isEmpty && indeterminatePhrases.contains(trimmed)
+  }
+
   /// Stored when capture did not supply a usable page title.
   public static func fallback(for rawURL: String) -> String {
     _ = rawURL
     return missing
   }
 
-  /// List / detail / export display. Maps empty values and the legacy
-  /// `host · /path` fallback shape to `无标题` so old rows stop looking like links.
+  /// List / detail / export display. Maps empty values, the legacy
+  /// `host · /path` fallback shape and the indeterminate-phrase placeholder
+  /// to `无标题` so old rows stop looking like links or error sentences.
   public static func display(_ title: String?, for rawURL: String = "") -> String {
     let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if trimmed.isEmpty { return missing }
+    if isIndeterminate(trimmed) { return missing }
     if isLegacyURLShapedTitle(trimmed, rawURL: rawURL) { return missing }
     return lessonTitle(trimmed)
   }

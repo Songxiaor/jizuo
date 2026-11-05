@@ -253,10 +253,12 @@ struct NoticeBanner: View {
         Image(systemName: icon)
           .foregroundStyle(theme.info)
           .accessibilityHidden(true)
+        // 不用 fixedSize 撑高：算窗口最小高度时这一列按很窄的宽度排版，fixedSize 的文字会
+        // 一字一行排出几百点高，把整窗三栏顶进工具栏底下（2026-11-04 待转写列表实测）。
+        // 平时列表给多少高度它就按实际宽度折行，照样完整显示。
         Text(title)
           .themedFont(.caption, weight: .semibold)
           .foregroundStyle(theme.primaryText)
-          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
         Group {
           switch actionStyle {
@@ -276,7 +278,6 @@ struct NoticeBanner: View {
         Text(detail)
           .themedFont(.caption2)
           .foregroundStyle(theme.secondaryText)
-          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
     }

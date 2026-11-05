@@ -391,6 +391,12 @@ extension LocalVideoTranscribing {
 public enum LocalTranscriptQuality {
   /// 去掉时间码后只剩不到两个字 / 词。一个汉字算一个，一串字母或数字算一个。
   public static func isNoSpeechArtifact(_ text: String) -> Bool {
+    contentUnitCount(text, stoppingAfter: 1) <= 1
+  }
+
+  /// 听出了多少内容：一个汉字（或假名、谚文）算一个，一串字母或数字算一个，
+  /// 时间码和 frontmatter 不算。`stoppingAfter` 数到超过它就停。
+  public static func contentUnitCount(_ text: String, stoppingAfter limit: Int = .max) -> Int {
     let withoutStamps = text.replacingOccurrences(
       of: #"(?m)^\s*(?:\d{1,2}:)?\d{1,2}:\d{2}\s*"#, with: " ", options: .regularExpression
     )
@@ -407,8 +413,8 @@ public enum LocalTranscriptQuality {
       } else {
         inWord = false
       }
-      if units > 1 { return false }
+      if units > limit { return units }
     }
-    return true
+    return units
   }
 }

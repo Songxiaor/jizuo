@@ -47,14 +47,16 @@ enum SidebarScrollRestore {
 /// 在侧栏底部点开「全部博主」，刚点的东西反而看不见（2026-10-04 走查）。
 /// 所以一直记着侧栏滚到哪儿，新侧栏一挂上就还原。分组展开 / 收起不走这里。
 @MainActor
-final class SidebarScrollMemory {
+final class SidebarScrollMemory: ObservableObject {
+  /// 展开 / 收起分组后，为了让点中的那一行留在原来的屏幕位置，列表底部要补的一截留白。
+  /// 收起分组会让文档变短：如果原来的滚动偏移超出新的滚动范围，系统只能把内容夹回去，
+  /// 点的那一行就跟着跳。这里由我们自己补够滚动范围（`navigationRail` 把它加到
+  /// `contentMargins(.bottom:)`），偏移就能原样留住。用户往上滚、不再需要时自动收回。
+  @Published private(set) var sectionSlack: CGFloat = 0
   private weak var scrollView: NSScrollView?
   private var observer: NSObjectProtocol?
   private var lastOffset: CGFloat = 0
   /// 按住分组前的文档高度。用来分辨「列表还没排完」和「收起后真的短于窗口」。
-  private var heldDocumentHeight: CGFloat = 0
-  /// 只在按住的最后一下才允许把偏移夹到 0。前面几下如果文档还没高过可视区，写 0 就回不来了。
-  private var holdCommitsShortDocument = false
   private var isHoldingSection = false
   private var holdPinQueued = false
   private var hasAttached = false
@@ -79,41 +81,64 @@ final class SidebarScrollMemory {
     }
   }
 
-  /// 收起或展开分组前调用。列表会把滚动偏移减掉刚收起的那一块高度
-  /// （2026-10-11 夜：偏移 350，来源 5 行共 160，收起后停在 190。内容仍比窗口高，
-  /// 标题只该为滚动范围变短让出那一点，不该跟着整块挪走）。
-  /// 只把点击前的滚动偏移原样钉住（夹到新的最大范围），不替用户滚。展开出来的内容往下长，
-  /// 超出屏幕就让用户自己去滚；没滚过的侧栏偏移是 0，顶上的「汲作」和「全部」就不会动。
-  /// 以前这里还会把「离窗口中心最近的那一行」拉回原来的屏幕高度：点「外部」的展开箭头，
-  /// 上面多出十几行，侧栏就被整个往下滚，标志被顶出屏幕（2026-10-13 Syc）。
-  /// 也不按新长出来的高度再推一次，那是点「视图」来回跳的原因。
+  /// 收起或展开分组前调用。
+  ///
+  /// 分组换 id 时 `List` 会把这一组拆了重排，文档高度会掉一截，滚动偏移也就可能超出新的
+  /// 范围。以前的做法是「把偏移钉住、夹回新范围」：`min(旧偏移, 文档高度 - 可视高度)`。
+  /// 文档变短时这一夹就把内容整块往上挪，点的那一行跟着跳（2026-10-11 实库：来源从 314
+  /// 跳到 497，差 183pt 正好是偏移被清掉）。现在改成由我们决定停在哪：偏移保持点击前的位置，
+  /// 不够的滚动范围用底部留白 `sectionSlack` 补出来，点中的行屏幕位置不变；用户往上滚、
+  /// 留白不再需要时自动收回。展开出来的内容往下长、留白用不上，偏移也照旧不动。
   func holdVisibleOffset() {
     guard let scrollView else { return }
     lastOffset = scrollView.contentView.bounds.origin.y
-    heldDocumentHeight = scrollView.documentView?.frame.height ?? 0
     pendingReveal = nil
     isRestoring = true
     isHoldingSection = true
-    holdCommitsShortDocument = false
     snapshotGeneration += 1
     let generation = snapshotGeneration
-    let pin = { [weak self] (commitShort: Bool) in
-      guard let self, self.snapshotGeneration == generation, let scrollView = self.scrollView else { return }
-      self.holdCommitsShortDocument = commitShort
-      self.scroll(scrollView, to: self.lastOffset)
-    }
-    DispatchQueue.main.async { pin(false) }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { pin(false) }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { pin(false) }
-    // 分组 id 一换，列表还会再滚回顶部。0.4 秒就松手时，这一下已经落定
-    //（2026-10-11 复测：来源从 314 跳到 497）。多留到文档高度稳定再夹。
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-      pin(true)
+    // 布局分几拍落定（分组换 id → 行删掉 → 文档高度变 → 留白生效）。每一拍都重算留白、
+    // 滚回点击前的偏移；最后一拍才松手。
+    let pin = { [weak self] in self?.pinHeldOffset(generation: generation) }
+    DispatchQueue.main.async { pin() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { pin() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { pin() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { pin() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
       guard let self, self.snapshotGeneration == generation else { return }
+      self.pinHeldOffset(generation: generation)
       self.isRestoring = false
       self.isHoldingSection = false
-      self.holdCommitsShortDocument = false
     }
+  }
+
+  /// 把点击前的偏移留住：直接滚到目标；如果被新的滚动范围挡住（滚不到那么远），
+  /// 记下差多少，下一拍把等量的底部留白补上再试，直到真的落在原位。
+  private func pinHeldOffset(generation: Int) {
+    guard snapshotGeneration == generation, let scrollView else { return }
+    let clip = scrollView.contentView
+    if abs(clip.bounds.origin.y - lastOffset) > 0.5 {
+      clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: lastOffset))
+      scrollView.reflectScrolledClipView(clip)
+    }
+    let reached = clip.bounds.origin.y
+    let shortfall = lastOffset - reached
+    if shortfall > 0.5 {
+      sectionSlack += shortfall
+    }
+  }
+
+  /// 用户自己滚动后，把不再需要的底部留白收回。只收到「当前偏移刚好还能站住」为止，
+  /// 收的过程不会让偏移改变。
+  private func shrinkSlackIfSafe() {
+    guard sectionSlack > 0.5, let scrollView else { return }
+    let clip = scrollView.contentView
+    let documentHeight = scrollView.documentView?.frame.height ?? 0
+    // 当前偏移之外还剩多少可滚动的余量（含我们补的留白）。
+    let spare = documentHeight + scrollView.contentInsets.bottom - clip.bounds.height - lastOffset
+    guard spare > 0.5 else { return }
+    let reduce = min(sectionSlack, spare)
+    sectionSlack -= reduce
   }
 
   /// 点分组标题时调用。`expanding`：这次是展开（新内容出现在标题下方）。
@@ -138,6 +163,7 @@ final class SidebarScrollMemory {
     guard newScrollView !== scrollView else { return }
     if let observer { NotificationCenter.default.removeObserver(observer) }
     scrollView = newScrollView
+    if sectionSlack != 0 { sectionSlack = 0 }
     let clip = newScrollView.contentView
     clip.postsBoundsChangedNotifications = true
     observer = NotificationCenter.default.addObserver(
@@ -150,6 +176,7 @@ final class SidebarScrollMemory {
           return
         }
         self.lastOffset = clip.bounds.origin.y
+        self.shrinkSlackIfSafe()
       }
     }
     // 启动时第一张侧栏不还原：那时还没有「上次的位置」，启动另有露出选中平台的逻辑。
@@ -204,28 +231,16 @@ final class SidebarScrollMemory {
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.holdPinQueued = false
-      guard self.isHoldingSection, let scrollView = self.scrollView else { return }
-      self.scroll(scrollView, to: self.lastOffset)
+      guard self.isHoldingSection else { return }
+      self.pinHeldOffset(generation: self.snapshotGeneration)
     }
   }
 
   private func scroll(_ scrollView: NSScrollView, to offset: CGFloat) {
     let clip = scrollView.contentView
     let documentHeight = scrollView.documentView?.frame.height ?? 0
-    if isHoldingSection, !holdCommitsShortDocument,
-       SidebarScrollRestore.shouldWaitForSectionLayout(
-         previousOffset: lastOffset,
-         documentHeight: documentHeight,
-         viewportHeight: clip.bounds.height,
-         previousDocumentHeight: heldDocumentHeight
-       ) {
-      return
-    }
-    let target = SidebarScrollRestore.offsetAfterSectionToggle(
-      previous: offset,
-      documentHeight: documentHeight,
-      viewportHeight: clip.bounds.height
-    )
+    let maxOffset = max(0, documentHeight + sectionSlack - clip.bounds.height)
+    let target = min(max(0, offset), maxOffset)
     clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: target))
     scrollView.reflectScrolledClipView(clip)
   }

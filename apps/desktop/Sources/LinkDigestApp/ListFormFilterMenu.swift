@@ -44,9 +44,10 @@ struct ListFormFilterMenu: View {
       .pickerStyle(.inline)
       .labelsHidden()
     } label: {
-      // 没选形式时写「全部形式」，不写「全部」：侧栏「全部」那一行常常正亮着，同一个词不说两遍。
+      // 没选形式时写「形式」（原来「全部形式」）：列表列 260pt 宽时标题+三个按钮已挤，少两个字
+      // 给按钮腾位置；不写「全部」也避开和侧栏「全部」重复。读屏仍读完整含义（见 accessibilityValue）。
       // 文字和小箭头拼成一个 Text：分成两个视图时，读屏把它当成两个同名的菜单按钮各念一遍。
-      Text("\(current?.rawValue ?? "全部形式") \(Image(systemName: "chevron.down"))")
+      Text("\(current?.rawValue ?? "形式") \(Image(systemName: "chevron.down"))")
         .lineLimit(1)
         .imageScale(.small)
       .themedFont(.subheadline, weight: active ? .semibold : .medium)
