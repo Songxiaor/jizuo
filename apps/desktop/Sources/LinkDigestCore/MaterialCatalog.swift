@@ -49,6 +49,36 @@ public enum MaterialCatalog {
 
   public static var typeTagNames: [String] { MaterialType.allCases.map(\.tagName) }
 
+  /// 「真人口播」：视频里有真人在出镜或口播表达。由素材卡的判定贴上，用户可手动摘掉；
+  /// 摘掉后再次生成素材卡不会自动贴回（见 `MaterialCardLedger`）。
+  /// 它是保留标签：不合并、不改名、不删除，也不算「讲什么」的主题标签。
+  public static let liveSpeakerTagName = "真人口播"
+
+  public static var liveSpeakerTagNormalizedName: String {
+    HistoryTagNormalizer.normalized(liveSpeakerTagName)?.normalizedName ?? liveSpeakerTagName
+  }
+
+  /// 受保护的标签（规范化名）：系统标记 + 六个素材类型 + 「真人口播」。
+  /// 这些名字不能被合并、改名、删除，也不进常用标签表、AI 整理方案和建议候选。
+  public static var protectedTagNormalizedNames: Set<String> {
+    var names = systemTagNormalizedNames
+    for type in MaterialType.allCases {
+      names.insert(HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName)
+    }
+    names.insert(liveSpeakerTagNormalizedName)
+    return names
+  }
+
+  /// 模型打标签（总结、脑图、单独的标签调用）永远不能写入的名字：系统标记（自有/外部/已使用/已归档）
+  /// 和「真人口播」。素材类型（灵感/观点…）不在此列，保持现有行为。
+  /// 「真人口播」只能由素材卡路径按规则贴；不论常用表空不空都一样。
+  public static var modelForbiddenTagNormalizedNames: Set<String> {
+    systemTagNormalizedNames.union([liveSpeakerTagNormalizedName])
+  }
+
+  /// 同 `protectedTagNormalizedNames`，给常用标签表和整理方案用的名字。
+  public static var reservedTagNormalizedNames: Set<String> { protectedTagNormalizedNames }
+
   /// 系统用的标记，不是「讲什么」的主题标签：归属的两个保留标签、MCP 的「已使用」、
   /// 旧版「已归档」。界面上不当作标签胶囊显示（2026-09-24），数据照留、MCP 照常读写。
   public static var systemTagNormalizedNames: Set<String> {

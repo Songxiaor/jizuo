@@ -95,6 +95,18 @@ final class CaptureOutcomeStore: @unchecked Sendable {
     return counts
   }
 
+  /// 链接 → 平台名。只返回固定的几个名字，不会把域名或路径写进计数文件。
+  static func platformToken(forURLString raw: String) -> String {
+    guard let host = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased() else { return "unknown" }
+    // 和成功统计同一张表（写入的 document.platform 来自 CapturePlatformDetection），
+    // 同一平台不会拆成两个桶；没认出的网站统一是 "generic"。
+    if host == "xhslink.cn" || host.hasSuffix(".xhslink.cn") { return "xiaohongshu" }
+    if let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+      return CapturePlatformDetection.platform(from: url)
+    }
+    return "unknown"
+  }
+
   /// 平台名和错误码都来自内部枚举，但仍然过一次白名单：万一哪天有人把
   /// 用户输入接到这里，也不会把一段正文写进计数文件的键里。
   static func safeToken(_ raw: String, fallback: String) -> String {

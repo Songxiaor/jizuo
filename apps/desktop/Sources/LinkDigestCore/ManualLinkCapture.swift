@@ -1,7 +1,10 @@
 import Foundation
 
 public enum ManualLinkError: Error, Sendable, Equatable {
-  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubFileUnavailable, githubRateLimited, xStatusIdentityMismatch, cancelled, network
+  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, shareLinkMissingToken, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubFileUnavailable, githubRateLimited, xStatusIdentityMismatch, cancelled, network
+
+  /// 同一条链接再试一次不会有不同结果，要用户换一条链接（访问码缺失或已过期）。
+  public var needsDifferentLink: Bool { self == .shareLinkExpired || self == .shareLinkMissingToken }
 
   public var userMessage: String {
     switch self {
@@ -20,7 +23,8 @@ public enum ManualLinkError: Error, Sendable, Equatable {
     case .timedOut: "读取网页超时，请稍后重试或用浏览器扩展保存。"
     case .emptyContent: "没读到能总结的正文，请在浏览器里打开它，用浏览器扩展保存。"
     case .loginRequired: "这个页面要登录后才能看，请在浏览器里登录后用浏览器扩展保存。"
-    case .shareLinkExpired: "这条分享链接已失效（小红书的分享链接有时效），请在小红书 App 里重新复制分享链接。"
+    case .shareLinkExpired: "打不开这条笔记：分享链接可能已失效（小红书的分享链接有时效），也可能笔记已被删除。请在小红书 App 里重新复制分享链接试试。"
+    case .shareLinkMissingToken: "打不开这条笔记：链接可能缺少访问码或已失效，也可能笔记已被删除。这不是登录问题，原样重试也不会好。请回到小红书 App 或网页重新复制完整的分享链接再保存；或打开博主主页，用批量保存。"
     case .verificationRequired: "该页面需要登录或人机验证，请使用浏览器扩展保存。"
     case .extensionCaptureRequired: "请在浏览器里打开它，再用浏览器扩展保存。"
     case .githubRepositoryUnavailable: "仓库不存在或不是公开仓库。请确认链接，或在浏览器登录后用浏览器扩展保存。"

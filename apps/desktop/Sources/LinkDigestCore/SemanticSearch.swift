@@ -87,7 +87,24 @@ public struct SemanticIndex: Sendable, Equatable {
   /// 相似度从高到低。只留 `minimumScore` 以上、且离第一名不超过 `relativeWindow` 的：
   /// 实测相关内容集中在 0.5–0.7，无关的在 0.45 以下，第一名很低时整组都不可靠。
   public func ranked(query: [Float], limit: Int, minimumScore: Float, relativeWindow: Float) -> [(taskID: String, score: Float)] {
-    guard query.count == dimension, limit > 0 else { return [] }
+    guard limit > 0 else { return [] }
+    let scored = scoredEntries(query: query, minimumScore: minimumScore)
+    guard let top = scored.first?.score else { return [] }
+    return Array(scored.prefix { $0.score >= top - relativeWindow }.prefix(limit))
+  }
+
+  /// 只按门槛和条数取，不套「离第一名 X 以内」的窗口。
+  ///
+  /// 「相关内容」用这个：候选里混着大量外部内容，全局第一名常常明显高于用户自己的
+  /// 备忘录/录音，按全局第一名卡 0.05 会把 0.70 这种够相关的自有内容整组滤掉
+  /// （2026-11-11 复核）。搜索界面的相对窗口行为不受影响。
+  public func ranked(query: [Float], limit: Int, minimumScore: Float) -> [(taskID: String, score: Float)] {
+    guard limit > 0 else { return [] }
+    return Array(scoredEntries(query: query, minimumScore: minimumScore).prefix(limit))
+  }
+
+  private func scoredEntries(query: [Float], minimumScore: Float) -> [(taskID: String, score: Float)] {
+    guard query.count == dimension else { return [] }
     var scored: [(taskID: String, score: Float)] = []
     scored.reserveCapacity(entries.count)
     for (taskID, entry) in entries {
@@ -96,8 +113,7 @@ public struct SemanticIndex: Sendable, Equatable {
       if dot >= minimumScore { scored.append((taskID, dot)) }
     }
     scored.sort { $0.score == $1.score ? $0.taskID < $1.taskID : $0.score > $1.score }
-    guard let top = scored.first?.score else { return [] }
-    return Array(scored.prefix { $0.score >= top - relativeWindow }.prefix(limit))
+    return scored
   }
 
   /// 文件格式：`LDSI` + 版本 + 维度 + 模型名长度与内容 + 条数，然后每条 36 字节 id + 8 字节时间 + 向量。

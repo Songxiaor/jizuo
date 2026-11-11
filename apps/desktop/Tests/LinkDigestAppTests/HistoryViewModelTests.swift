@@ -1722,6 +1722,81 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { fixture.model.transcriptionState == .cancelled }
   }
 
+  // MARK: 素材卡自动触发：令牌随转写请求走，不残留
+
+  private static let longTranscript = String(repeating: "把复杂的事情讲清楚，比把简单的事情讲复杂难得多。", count: 5)
+
+  private func materialCardFixture(scripts: [TranscriptionScript]) throws -> (TranscriptionFixture, FakeMaterialCardExtractor, () -> Void) {
+    let transcriber = ScriptedVideoTranscriber(modelStates: [.ready], scripts: scripts)
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    let extractor = FakeMaterialCardExtractor()
+    fixture.model.installMaterialCards(extractor: extractor, gate: .alwaysAllowed)
+    let controller = try XCTUnwrap(fixture.model.materialCards)
+    let previous = controller.autoAfterTranscript
+    controller.autoAfterTranscript = true
+    return (fixture, extractor, { controller.autoAfterTranscript = previous })
+  }
+
+  func testManualTranscriptionCancelledThenQueueTranscribesSameTaskNeverCallsMaterialCardModel() async throws {
+    let (fixture, extractor, restore) = try materialCardFixture(scripts: [.suspended, .events([.final(Self.longTranscript)])])
+    defer { restore(); fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionText == "A partial" }
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+
+    let outcome = await fixture.model.transcribeImportedMedia(taskID: fixture.taskID, automatic: true)
+    XCTAssertEqual(outcome, .completed)
+    try await Task.sleep(nanoseconds: 300_000_000)
+    XCTAssertEqual(extractor.calls, 0, "取消的手动转写不能把「手动」留给之后的队列转写")
+    XCTAssertEqual(fixture.model.materialCards?.generationAttempts, 0)
+  }
+
+  func testManualTranscriptionFailedThenQueueTranscribesSameTaskNeverCallsMaterialCardModel() async throws {
+    let (fixture, extractor, restore) = try materialCardFixture(scripts: [.failure(.recognitionFailed), .events([.final(Self.longTranscript)])])
+    defer { restore(); fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { if case .failed = fixture.model.transcriptionState { true } else { false } }
+
+    let outcome = await fixture.model.transcribeImportedMedia(taskID: fixture.taskID, automatic: true)
+    XCTAssertEqual(outcome, .completed)
+    try await Task.sleep(nanoseconds: 300_000_000)
+    XCTAssertEqual(extractor.calls, 0)
+  }
+
+  func testMCPTranscriptionNeverCallsMaterialCardModel() async throws {
+    let (fixture, extractor, restore) = try materialCardFixture(scripts: [.events([.final(Self.longTranscript)])])
+    defer { restore(); fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded }
+    try fixture.model.startMCPTranscription(taskID: fixture.taskID)
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    try await Task.sleep(nanoseconds: 300_000_000)
+    XCTAssertEqual(extractor.calls, 0)
+  }
+
+  func testManualSingleTranscriptionSuccessStillTriggersMaterialCardWhenSwitchIsOn() async throws {
+    let (fixture, extractor, restore) = try materialCardFixture(scripts: [.events([.final(Self.longTranscript)])])
+    defer { restore(); fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    await waitUntil { extractor.calls == 1 }
+    XCTAssertEqual(extractor.calls, 1)
+  }
+
+  func testManualSingleTranscriptionDoesNotTriggerWhenSwitchIsOff() async throws {
+    let (fixture, extractor, restore) = try materialCardFixture(scripts: [.events([.final(Self.longTranscript)])])
+    defer { restore(); fixture.close() }
+    fixture.model.materialCards?.autoAfterTranscript = false
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    try await Task.sleep(nanoseconds: 300_000_000)
+    XCTAssertEqual(extractor.calls, 0)
+  }
+
   /// 转写 partial 拍点写进叶子模型（liveTranscriptionText），存储属性
   /// 保持最新；取消等清空路径要把叶子一并清掉，不留残影。
   func testTranscriptionPartialsSyncLeafModelAndCancellationClearsIt() async throws {
@@ -4615,3 +4690,16 @@ private func capturedDocument(title: String, url: String) -> CapturedDocument {
 private func cursor(for row: HistoryRowProjection) -> HistoryPageCursor { .init(updatedAtMilliseconds: row.updatedAtMilliseconds, taskID: row.taskID) }
 private func makeDetail(for row: HistoryRowProjection) -> HistoryDetailProjection { let snapshot = ContentSnapshot(id: ContentSnapshotID(), taskID: row.taskID, sequence: 1, envelopeCreatedAtMilliseconds: 1, capturedAtMilliseconds: 1, sourceKind: "web", sourceURL: row.canonicalURL, title: row.title, platform: "fixture", captureMethod: "page", completeness: "complete", bodyText: "fixture body", characterCount: 12, bodySHA256: String(repeating: "a", count: 64), sourceLabel: "网页", usedCookie: false); return .init(task: .init(id: row.taskID, canonicalURL: row.canonicalURL, canonicalizationVersion: 1, createdAtMilliseconds: 1, updatedAtMilliseconds: row.updatedAtMilliseconds), snapshots: [snapshot], runs: []) }
 private func tag(_ value: String) -> HistoryTag { HistoryTag(rawValue: value)! }
+
+private final class FakeMaterialCardExtractor: MaterialCardExtracting, @unchecked Sendable {
+  private let lock = NSLock()
+  private var _calls = 0
+  var calls: Int { lock.withLock { _calls } }
+  func extractCard(transcript: String, title: String?) async throws -> MaterialCardOutcome {
+    lock.withLock { _calls += 1 }
+    return MaterialCardOutcome(
+      card: MaterialCard(speaker: "a", viewpoints: ["观点"], hook: "钩子", quotes: [], isLiveSpeaker: false, liveSpeakerReason: "r"),
+      promptTokens: 10, completionTokens: 5, totalTokens: 15
+    )
+  }
+}

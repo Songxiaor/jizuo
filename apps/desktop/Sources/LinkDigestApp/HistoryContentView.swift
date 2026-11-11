@@ -672,7 +672,8 @@ struct HistoryContentView: View {
             Button("取消", role: .cancel) { model.cancelTranscriptTidyConfirmation() }
             Button("同意并校对") { model.confirmTranscriptTidy() }
           } message: {
-            Text("App 会发送转写文字，以及标题和配文作为上下文，用来还原听写错误、补标点和分段。不发送视频、音频或链接。看不懂的句子会原样保留。校对稿保存为最新原文，原始转写稿保留在历史中。")
+            Text("App 会发送转写文字，以及标题和配文作为上下文，用来还原听写错误、补标点和分段。不发送视频、音频或链接。看不懂的句子会原样保留，并列出来让你逐处决定。校对稿保存为最新原文，原始转写稿保留在历史中。"
+              + (model.pendingTidyKnownNameCount > 0 ? "会多发一份常用名字表（\(model.pendingTidyKnownNameCount) 个名字，只有名字，不含资料内容）。" : ""))
           }
           .alert("将正文发送给聊天模型整理版面？", isPresented: $model.isReformatConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelReformatConfirmation() }
@@ -6065,6 +6066,7 @@ private struct HistoryDetailView: View, Equatable {
           MindMapSectionView(taskID: detail.task.id, model: model)
             .padding(.top, DesignTokens.Space.xl)
             .id(ReadingAnchor.module("mindmap"))
+          MaterialCardSectionView(detail: detail, model: model)
         }
 
         // 导入的图片在落库时已经识别过：不再挂识别卡，改成一条收起的文字小节。
@@ -6111,6 +6113,20 @@ private struct HistoryDetailView: View, Equatable {
           // 落款「丙午年九月初八日」很多人看不懂（2026-10-01 走查）：样式不动，悬停给公历日期。
           // 只挂在落款文字上、立刻出（2026-10-03）：原来 `.help` 挂在整块上，要停一秒多才出来。
         }
+
+        // 「相关内容」：把外面看到的和自己写过的、录过的接上。只在本机算；没有结果时整块不挂。
+        RelatedContentSection(
+          taskID: detail.task.id,
+          title: title,
+          summary: summaryArtifact?.bodyText,
+          // 正文只在这条没有总结时才会被取；有总结时不碰正文。
+          bodyProvider: { latestSourceSnapshot.map { LayeredSourceDocument.body(of: $0) } },
+          sourceToken: detail.snapshots.count,
+          search: model.semanticSearch,
+          history: model.historyService,
+          // 和相关内容里那条可能是被当前筛选滤掉的：先清筛选再打开，不落在空列表上。
+          onOpen: { taskID in model.revealFromExternalLink(taskID: taskID) }
+        )
       }
       // 常规列表保留较宽上限；专注阅读收窄到约 760pt 并居中。
       .frame(
@@ -9817,6 +9833,15 @@ private struct HistoryDetailView: View, Equatable {
     }()
     let shown = mode == .original ? (machineBody ?? body) : body
     VStack(alignment: .leading, spacing: 18) {
+      // 折叠预览里不画；没校对过的转写稿也要有（改名后的「记住这个名字」在这里）。
+      if previewLimit == nil {
+        ProofreadDoubtCard(
+          model: model, taskID: detail.task.id,
+          isTidiedTranscript: snapshot.captureMethod == Self.tidyCaptureMethod,
+          showsMachineOriginal: mode == .original,
+          primaryText: theme.primaryText, secondaryText: theme.secondaryText, highlight: theme.seal
+        )
+      }
       TranscriptManuscriptView(
         paragraphs: TranscriptManuscript.paragraphs(of: shown, revision: mode == .marked ? revision : nil)
           .filter { previewLimit == nil || $0.offset < previewLimit! },

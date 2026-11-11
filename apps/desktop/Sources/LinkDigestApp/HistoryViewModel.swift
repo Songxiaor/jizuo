@@ -248,8 +248,15 @@ private actor HistoryRepositoryWorker {
     )
   }
 
-  func purgeTrash(_ history: HistoryApplicationService, olderThanDays: Int) -> (Int?, StorageErrorCode?) {
-    do { return (try history.purgeTrash(olderThanDays: olderThanDays), nil) }
+  func purgeTrash(
+    _ history: HistoryApplicationService, olderThanDays: Int, doubtStore: TranscriptDoubtStore? = nil
+  ) -> (Int?, StorageErrorCode?) {
+    do {
+      let purged = try history.purgeTrash(olderThanDays: olderThanDays)
+      // 回收站里清掉的记录，存疑清单里也不该再留着它们的原文片段。
+      if purged > 0 { _ = doubtStore?.prune(using: history) }
+      return (purged, nil)
+    }
     catch { return (nil, HistoryViewModel.storageCode(for: error, context: .write)) }
   }
 
@@ -828,6 +835,9 @@ private struct TranscriptionContext {
   /// 本机导入的录音转写时顺带在本机分说话人。批量转写关掉：没人打开那条时，
   /// 分出来的结果接不上（要等详情载入才合并），只会和下一条转写抢神经网络引擎。
   var autoDiarize = true
+  /// 这一次转写请求的发起方。只有 `.manualSingle`（阅读页手动单条）完成后可能带出自动素材卡；
+  /// 它随请求一路带到完成回调，取消、失败、被顶掉都不会遗留到别的转写上。
+  var origin: TranscriptionOrigin = .batchOrQueue
 }
 
 private struct RemoteTranscriptionContext {
@@ -971,6 +981,7 @@ final class HistoryViewModel {
           isReadingCreatorWorkInDirectory = true
         }
         remoteMediaFavoriteState = .idle
+        clearProofreadHints()
         selectionLoadsImmediately = selectionPace.loadsImmediately(
           displayedTaskID: detail?.task.id,
           previousSelection: previous
@@ -1370,6 +1381,47 @@ final class HistoryViewModel {
   /// 起草用的 Agent。没有就是没装 CLI,那一步的入口会说清楚缺什么。
   private let draftAgent: ClaudeCLIAgent?
   private let mindMapExtractor: (any MindMapExtracting)?
+  /// 常用标签表（第二批）。由 LinkDigestApp 在启动时挂上；nil 或表为空时行为和以前一样。
+  var frequentTagStore: FrequentTagStore?
+  /// 常用名字表（第二批「录音校对变轻松」）：校对时把名字和词附进提示词，nil 或空表时和以前一样。
+  var knownNameStore: KnownNameStore?
+  /// 校对时拿不准的地方（存在数据目录的 JSON 里，见 `TranscriptDoubtStore`）。
+  var transcriptDoubtStore: TranscriptDoubtStore?
+  /// 存疑清单或名字表变了就加一，让界面重读（两个 store 本身不可观察）。
+  var proofreadRevision = 0
+  /// 这条提示或建议属于哪一条记录：只在同一条记录上显示，切走、关掉详情就清掉。
+  struct ProofreadHint: Equatable {
+    let taskID: TaskID
+    let text: String
+  }
+  /// 采纳存疑、记名字时的说明（例如「这一处已经找不到了」「没能保存名字表」）。
+  private(set) var proofreadHint: ProofreadHint?
+  /// 改名后「记住这个名字」的轻提示（带着是哪一条记录改的名）；nil 表示没有。
+  private(set) var nameSuggestion: ProofreadHint?
+  /// 采纳结果正在写入、详情还没刷新到新稿子的那条记录：这段时间界面禁用采纳按钮。
+  private(set) var doubtSaveTaskID: TaskID?
+
+  func proofreadNotice(for taskID: TaskID) -> String? {
+    proofreadHint?.taskID == taskID ? proofreadHint?.text : nil
+  }
+
+  func nameToRemember(for taskID: TaskID) -> String? {
+    nameSuggestion?.taskID == taskID ? nameSuggestion?.text : nil
+  }
+
+  func isSavingDoubts(for taskID: TaskID) -> Bool { doubtSaveTaskID == taskID }
+
+  private func clearProofreadHints() {
+    proofreadHint = nil
+    nameSuggestion = nil
+    doubtSaveTaskID = nil
+  }
+  /// 标签管理里的「AI 整理标签」与常用表界面模型（第二批，由 `installTagTidy` 挂上）。
+  private(set) var tagTidy: TagTidyController?
+  /// 素材卡（第二批，由 `installMaterialCards` 挂上）。
+  private(set) var materialCards: MaterialCardController?
+  private var materialCardDependencies: (extractor: any MaterialCardExtracting, gate: ModelCallGate)?
+  private(set) var frequentTagsModel: FrequentTagsModel?
   private let transcriptionTempStore: TranscriptionTempStore?
   /// 转写专用音轨解析（platform, pageURL) -> 音轨地址。整段 progressive 没有
   /// 独立音轨时用它单独问一次 playurl，避免为了声音下载整段视频。
@@ -1761,6 +1813,7 @@ final class HistoryViewModel {
       let paragraphs = SpeakerTranscript.renaming(old, to: new, in: transcriptParagraphs(snapshotID: transcript.id))
       try history.transcriptParagraphStore?.saveTranscriptParagraphs(paragraphs, snapshotID: transcript.id.rawValue)
       refreshDetailAfterTranscription(taskID: detail.task.id)
+      offerToRememberName(new, taskID: detail.task.id)
     } catch {
       speakerDiarizationTaskID = detail.task.id
       speakerDiarizationState = .failed("没能保存新名字，请重试。")
@@ -2234,6 +2287,7 @@ final class HistoryViewModel {
     pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; browserDeclaredFaviconTasks = [:]; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
     imageBackfillAttemptedSnapshotIDs = []
     self.history = history; self.isReadOnly = isReadOnly
+    rebuildMaterialCards()
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
     historyReadOnlyRecoveryHint = isReadOnly ? readOnlyRecoveryHint : nil
     blockingErrorCode = unavailableCode
@@ -2761,7 +2815,8 @@ final class HistoryViewModel {
     let lease = try mediaStore.resolve(media)
     // Keep the security-scoped lease alive throughout the asynchronous transcription.
     mcpTranscriptionLease = lease
-    guard beginLocalTranscription(detail: value, fileURL: lease.url) else {
+    automaticallyTranscribedTaskIDs.remove(value.task.id)
+    guard beginLocalTranscription(detail: value, fileURL: lease.url, origin: .agent) else {
       mcpTranscriptionLease = nil
       throw MCPFailure("transcription_unavailable", "转写未启动，请在汲作检查模型和视频状态")
     }
@@ -2773,10 +2828,18 @@ final class HistoryViewModel {
       transcriptionState = .failed("找不到可转写的本机视频。")
       return
     }
-    _ = beginLocalTranscription(detail: detail, fileURL: fileURL)
+    automaticallyTranscribedTaskIDs.remove(detail.task.id)
+    beginLocalTranscription(detail: detail, fileURL: fileURL, origin: .manualSingle)
   }
 
   // MARK: 本机导入后批量转写
+
+  /// 自动转写被别的转写顶掉时的说法；队列按这句识别「被打断」，不当作确定失败。
+  static let transcriptionInterruptedMessage = "被另一次转写打断了，可以在条目里重新转写。"
+
+  /// 由「自动转写」队列转写的任务：转完不进自动校对（校对要花钱，批量路径不自动触发）。
+  /// 判断留在这一层，不靠界面层的 onChange 去猜。
+  private(set) var automaticallyTranscribedTaskIDs: Set<TaskID> = []
 
   enum ImportedMediaTranscriptionOutcome: Equatable {
     case completed
@@ -2792,7 +2855,9 @@ final class HistoryViewModel {
   /// 转写通道同一时刻只有一条：通道忙（用户正在手动转写别的）就等它空出来。
   /// 等「下载听写模型」确认时一直等用户选，不替用户做决定。调用方取消（点「停止」）时，
   /// 只停自己这一条，不碰别人发起的转写。
-  func transcribeImportedMedia(taskID: TaskID) async -> ImportedMediaTranscriptionOutcome {
+  func transcribeImportedMedia(taskID: TaskID, automatic: Bool = false) async -> ImportedMediaTranscriptionOutcome {
+    // 自动队列转出来的稿子不接着调用付费的「自动校对」；换成手动转写再清掉这个记号。
+    if automatic { automaticallyTranscribedTaskIDs.insert(taskID) } else { automaticallyTranscribedTaskIDs.remove(taskID) }
     guard history != nil, let mediaStore, videoTranscriber != nil else {
       return .failed("本机转写现在用不了（需要 macOS 26 的本机听写）。")
     }
@@ -2819,6 +2884,12 @@ final class HistoryViewModel {
     defer { withExtendedLifetime(lease) {} }
     _ = await waitFor(timeoutSeconds: 24 * 60 * 60) {
       self.transcriptionTaskID != taskID || !self.transcriptionState.isActive
+        || (automatic && self.transcriptionState == .awaitingModelDownload)
+    }
+    if automatic, transcriptionTaskID == taskID, transcriptionState == .awaitingModelDownload {
+      // 自动转写不替用户确认下载，也不能在后台干等 24 小时：收起确认框、留下原因，直接判失败。
+      noteAutomaticModelDownloadNeeded()
+      return .failed(Self.automaticModelDownloadNeededMessage)
     }
     if Task.isCancelled, transcriptionTaskID == taskID, transcriptionState.isActive {
       if transcriptionState == .awaitingModelDownload {
@@ -2828,7 +2899,7 @@ final class HistoryViewModel {
       }
       return .cancelled
     }
-    guard transcriptionTaskID == taskID else { return .failed("被另一次转写打断了，可以在条目里重新转写。") }
+    guard transcriptionTaskID == taskID else { return .failed(Self.transcriptionInterruptedMessage) }
     switch transcriptionState {
     case .completed: return .completed
     case let .failed(message): return .failed(message)
@@ -2875,7 +2946,8 @@ final class HistoryViewModel {
   private func beginLocalTranscription(
     detail: HistoryDetailProjection,
     fileURL: URL,
-    autoDiarize: Bool = true
+    autoDiarize: Bool = true,
+    origin: TranscriptionOrigin = .batchOrQueue
   ) -> Bool {
     transcriptionUsesOnlineService = false
     guard let history, let videoTranscriber else {
@@ -2938,6 +3010,7 @@ final class HistoryViewModel {
         localeIdentifier: localeIdentifier
       )
       context.autoDiarize = autoDiarize
+      context.origin = origin
       guard !Task.isCancelled, self?.transcriptionRequestID == requestID else {
         _ = await worker.updateTranscriptionStatus(
           history,
@@ -3727,6 +3800,9 @@ final class HistoryViewModel {
           channelAvailable = await waitFor(timeoutSeconds: 1_800) {
             !self.transcriptionState.isActive
           }
+        }
+        if channelAvailable {
+          automaticallyTranscribedTaskIDs.remove(storedDetail.task.id)
         }
         if channelAvailable,
            beginLocalTranscription(detail: storedDetail, fileURL: lease.url) {
@@ -4710,9 +4786,12 @@ final class HistoryViewModel {
     mindMapGenerationTask = Task { [weak self] in
       guard let self else { return }
       do {
-        let existingTagNames = await Task.detached(priority: .userInitiated) {
-          HistoryTagVocabulary.topNames(from: (try? history.navigationCounts().tags) ?? [])
-        }.value
+        let frequentList = self.frequentTagStore?.allowedNames ?? []
+        let existingTagNames = frequentList.isEmpty
+          ? await Task.detached(priority: .userInitiated) {
+            HistoryTagVocabulary.topNames(from: (try? history.navigationCounts().tags) ?? [])
+          }.value
+          : frequentList
         let outcome = try await mindMapExtractor.extractOutline(
           text: text, model: nil, existingTags: existingTagNames
         )
@@ -4757,11 +4836,24 @@ final class HistoryViewModel {
         // 只写模型给出的跨文章主题标签；分支标题是章节结构，永不进标签系统。
         // 和总结的自动标签同一条规矩：已有的照库里的写法用，新标签最多一个。
         let proposedTags = outcome.outline.tags ?? []
+        let frequentStore = self.frequentTagStore
         let tagged = await Task.detached(priority: .utility) { () -> Bool in
           guard !proposedTags.isEmpty else { return false }
-          let topicTags = HistoryTagVocabulary.limitingNewTagNames(proposedTags, existing: existingTagNames)
-          guard !topicTags.isEmpty else { return false }
-          return (try? history.addTags(topicTags, to: taskID)) != nil
+          let topicTags: [String]
+          if !frequentList.isEmpty, let frequentStore {
+            // 常用标签表非空：只写表里的，表外的进「建议加入」。
+            let split = FrequentTagPolicy.filter(
+              proposedTags.compactMap(HistoryTag.init(rawValue:)), allowed: frequentStore.allowedNames
+            )
+            frequentStore.recordSuggestions(split.rejected)
+            topicTags = split.accepted.map(\.name)
+          } else {
+            topicTags = HistoryTagVocabulary.limitingNewTagNames(proposedTags, existing: existingTagNames)
+          }
+          // 模型不得写系统标记和「真人口播」，不论常用表空不空。
+          let safeTags = FrequentTagPolicy.strippingModelForbidden(names: topicTags)
+          guard !safeTags.isEmpty else { return false }
+          return (try? history.addTags(safeTags, to: taskID)) != nil
         }.value
         guard self.selectedTaskID == taskID else { return }
         self.mindMapRecord = record
@@ -5090,7 +5182,7 @@ final class HistoryViewModel {
       text: text,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
       model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text),
+      tidyContext: tidyContextWithKnownNames(for: detail, transcript: text, style: style),
       style: style,
       targetSnapshotID: style == .subtitles
         ? LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)?.id
@@ -5120,7 +5212,9 @@ final class HistoryViewModel {
   /// 还在自动流程里的条目不管：那边转写完会自己校对，这里再来一次就是重复调用模型。
   /// 从库里重读这条，不用当前详情：转写完成那一刻详情未必已刷新，用户也可能切走了。
   func continueWithTidyAfterTranscription(taskID: TaskID, autoTidyEnabled: Bool, model: String?) {
-    guard autoTidyEnabled, !autoPipelineQueuedTaskIDs.contains(taskID) else { return }
+    // 自动队列转的稿子：用掉这个记号就算数，不校对（不调用付费模型）。
+    let wasAutomaticQueue = automaticallyTranscribedTaskIDs.remove(taskID) != nil
+    guard autoTidyEnabled, !wasAutomaticQueue, !autoPipelineQueuedTaskIDs.contains(taskID) else { return }
     Task { [weak self] in
       guard let self, let stored = await self.loadStoredDetail(taskID: taskID) else { return }
       self.startTranscriptTidyAuto(detail: stored, model: model)
@@ -5144,7 +5238,7 @@ final class HistoryViewModel {
       text: text,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
       model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text),
+      tidyContext: tidyContextWithKnownNames(for: detail, transcript: text, style: .transcript),
       style: .transcript,
       targetSnapshotID: nil
     )
@@ -5152,6 +5246,189 @@ final class HistoryViewModel {
     beginTranscriptTidy(context)
     return true
   }
+
+  // MARK: - 校对存疑与常用名字（第二批「录音校对变轻松」）
+
+  /// 听写校对带上名字表；字幕校对不带（名字表是给听写里的人名、术语用的）。
+  private func tidyContextWithKnownNames(
+    for detail: HistoryDetailProjection, transcript: String, style: TidyStyle
+  ) -> TranscriptTidyContext {
+    var context = Self.transcriptTidyContext(for: detail, transcript: transcript)
+    if style == .transcript, let store = knownNameStore {
+      context.knownNames = Array(store.names.prefix(KnownNamePolicy.maximumNames))
+    }
+    return context
+  }
+
+  /// 校对成功保存后：记下存疑清单和「改了几处」。没有存疑也要清掉上一次的旧清单。
+  private func recordProofreadResult(
+    taskID: TaskID, original: String, outcome: TranscriptTidyOutcome, style: TidyStyle
+  ) async {
+    guard style == .transcript, let store = transcriptDoubtStore else { return }
+    let revised = outcome.text
+    let doubts = outcome.doubts
+    let history = self.history
+    await Task.detached(priority: .utility) {
+      let changeCount = TranscriptDoubtParser.changeCount(original: original, revised: revised)
+      store.replace(taskID: taskID.rawValue, doubts: doubts, changeCount: changeCount) {
+        // 只有存疑清单超过上限时才会走到这里：查一下哪些记录已经不在库里，优先淘汰它们。
+        history.flatMap { try? $0.existingTaskIDs(in: store.taskIDs) }
+      }
+    }.value
+    proofreadRevision += 1
+  }
+
+  func doubtEntry(taskID: TaskID) -> TranscriptDoubtEntry? {
+    _ = proofreadRevision
+    return transcriptDoubtStore?.entry(taskID: taskID.rawValue)
+  }
+
+  /// 校对稿（不是机器原稿）那条快照。存疑的采纳只改它，原稿永远不动。
+  private func tidiedSnapshot(in detail: HistoryDetailProjection) -> ContentSnapshot? {
+    detail.snapshots.last(where: {
+      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+        && $0.captureMethod == ProcessStepRecord.tidyCaptureMethod
+    })
+  }
+
+  /// 采纳一处：把校对稿里的原文片段换成建议。片段已经找不到（用户手改过）就只提示，不乱改。
+  @discardableResult
+  func adoptDoubt(taskID: TaskID, doubtID: String) -> Bool {
+    adoptDoubts(taskID: taskID, doubtIDs: [doubtID])
+  }
+
+  @discardableResult
+  func adoptDoubts(taskID: TaskID, doubtIDs: [String]) -> Bool {
+    guard let history, !isReadOnly, let detail, detail.task.id == taskID,
+          let store = transcriptDoubtStore, let entry = store.entry(taskID: taskID.rawValue) else { return false }
+    // 以库里此刻最新的校对稿为底，不用界面上缓存的 `detail`：连点两次「采纳」时，
+    // 第二次的 `detail` 还是第一次采纳之前的稿子，直接在它上面改会把第一次的改动盖掉。
+    guard let latest = try? history.detail(taskID: taskID), let snapshot = tidiedSnapshot(in: latest) else { return false }
+    var body = snapshot.bodyText
+    var adopted: [String] = []
+    var missing = 0
+    for id in doubtIDs {
+      guard let doubt = entry.doubts.first(where: { $0.id == id }), doubt.status == .pending else { continue }
+      if let next = TranscriptDoubtParser.applying(doubt, to: body) {
+        body = next
+        adopted.append(id)
+      } else {
+        missing += 1
+      }
+    }
+    if !adopted.isEmpty {
+      do {
+        try history.updateSnapshotBodyText(
+          taskID: taskID, snapshotID: snapshot.id, bodyText: body,
+          updatedAtMilliseconds: nowMilliseconds()
+        )
+      } catch {
+        proofreadHint = .init(taskID: taskID, text: "没能保存采纳结果，请重试。")
+        return false
+      }
+      store.setStatus(taskID: taskID.rawValue, doubtIDs: adopted, status: .adopted)
+      doubtSaveTaskID = taskID
+    }
+    proofreadHint = missing > 0
+      ? .init(taskID: taskID, text: "有 \(missing) 处在稿子里已经找不到、或出现了不止一处（可能被你改过），没有动它。")
+      : nil
+    proofreadRevision += 1
+    refreshDetailAfterTranscription(taskID: taskID)
+    // 详情没有重读（这条已不是当前选中）：不会有「刷新完成」来解除，直接解除。
+    if selectedTaskID != taskID { doubtSaveTaskID = nil }
+    return !adopted.isEmpty
+  }
+
+  func keepDoubt(taskID: TaskID, doubtID: String) {
+    transcriptDoubtStore?.setStatus(taskID: taskID.rawValue, doubtID: doubtID, status: .kept)
+    proofreadHint = nil
+    proofreadRevision += 1
+  }
+
+  func adoptAllDoubts(taskID: TaskID) {
+    guard let entry = transcriptDoubtStore?.entry(taskID: taskID.rawValue) else { return }
+    adoptDoubts(taskID: taskID, doubtIDs: entry.pending.map(\.id))
+  }
+
+  func keepAllDoubts(taskID: TaskID) {
+    guard let store = transcriptDoubtStore, let entry = store.entry(taskID: taskID.rawValue) else { return }
+    store.setStatus(taskID: taskID.rawValue, doubtIDs: entry.pending.map(\.id), status: .kept)
+    proofreadHint = nil
+    proofreadRevision += 1
+  }
+
+  // 名字表
+
+  var knownNameList: [KnownName] {
+    _ = proofreadRevision
+    return knownNameStore?.load().names ?? []
+  }
+
+  @discardableResult
+  func addKnownName(_ raw: String, source: KnownName.Source) -> KnownNameStore.AddResult {
+    guard let store = knownNameStore else { return .writeFailed }
+    let result = store.add(raw, source: source)
+    proofreadRevision += 1
+    return result
+  }
+
+  func isKnownName(_ raw: String) -> Bool { knownNameStore?.contains(raw) ?? false }
+
+  func removeKnownName(_ raw: String) {
+    _ = knownNameStore?.remove(raw)
+    proofreadRevision += 1
+  }
+
+  /// 改名后只在名字不在表里时轻轻问一句；不改改名本身的逻辑。提示记着是哪一条记录改的名。
+  private func offerToRememberName(_ name: String, taskID: TaskID) {
+    guard let store = knownNameStore, KnownNamePolicy.cleaned(name) != nil, !store.contains(name) else { return }
+    nameSuggestion = .init(taskID: taskID, text: name)
+  }
+
+  func rememberOfferedName() {
+    guard let suggestion = nameSuggestion else { return }
+    switch addKnownName(suggestion.text, source: .speakerRename) {
+    case .added, .alreadyListed:
+      nameSuggestion = nil
+    case .writeFailed:
+      nameSuggestion = nil
+      proofreadHint = .init(taskID: suggestion.taskID, text: KnownNameMessage.writeFailed)
+    case .full:
+      nameSuggestion = nil
+      proofreadHint = .init(taskID: suggestion.taskID, text: KnownNameMessage.full)
+    case .invalid:
+      nameSuggestion = nil
+    }
+  }
+
+  func dismissNameSuggestion() { nameSuggestion = nil }
+
+  /// 采纳后「记入名字表」：失败要说出来，而不是点了没反应。
+  func rememberAdoptedName(_ name: String, taskID: TaskID) {
+    switch addKnownName(name, source: .adoptedDoubt) {
+    case .writeFailed: proofreadHint = .init(taskID: taskID, text: KnownNameMessage.writeFailed)
+    case .full: proofreadHint = .init(taskID: taskID, text: KnownNameMessage.full)
+    case .added, .alreadyListed, .invalid: break
+    }
+  }
+
+  // 清理存疑清单里已删记录的原文片段
+
+  /// 删除资料后：按 taskID 把对应存疑项删掉。
+  func removeDoubts(taskIDs: [TaskID]) {
+    guard let store = transcriptDoubtStore, !taskIDs.isEmpty else { return }
+    taskIDs.forEach { store.remove(taskID: $0.rawValue) }
+    proofreadRevision += 1
+  }
+
+  /// 清空回收站后、App 启动时：只保留库里还在的记录的存疑项。查不到库时什么都不删。
+  func pruneProofreadDoubtsInBackground() {
+    guard let store = transcriptDoubtStore, let history else { return }
+    Task.detached(priority: .background) { _ = store.prune(using: history) }
+  }
+
+  /// 确认框里要不要写「会多发一份名字表」：当前待发的校对会带几个名字。
+  var pendingTidyKnownNameCount: Int { pendingTranscriptTidyContext?.tidyContext.knownNames.count ?? 0 }
 
   func cancelTranscriptTidyConfirmation() {
     isTranscriptTidyConfirmationPresented = false
@@ -5296,6 +5573,7 @@ final class HistoryViewModel {
         case .applied:
           self.transcriptTidyState = Self.tidyStateAfterSaving(outcome, style: context.style)
           self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
+          await self.recordProofreadResult(taskID: context.taskID, original: context.text, outcome: outcome, style: context.style)
           await self.recordTokenUsage(
             taskID: context.taskID, operation: "transcript_tidy",
             promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
@@ -6056,6 +6334,9 @@ final class HistoryViewModel {
       refreshDetailAfterTranscription(taskID: context.taskID)
       markRowTranscribed(taskID: context.taskID)
       requestTranscribedVideoCleanup()
+      if context.origin == .manualSingle {
+        materialCards?.transcriptionCompleted(taskID: context.taskID, origin: context.origin)
+      }
     } catch is CancellationError {
       guard transcriptionRequestID == requestID else { return }
       _ = await worker.updateTranscriptionStatus(history, taskID: context.taskID, attempt: context.attempt, status: .none)
@@ -6476,6 +6757,11 @@ final class HistoryViewModel {
     MaterialCatalog.systemTagNormalizedNames.contains(normalizedName)
   }
 
+  /// 受保护的名字（系统标记 + 素材类型 + 「真人口播」）：不能合并、改名、删除，标签管理里不列。
+  static func isProtectedTagName(_ normalizedName: String) -> Bool {
+    MaterialCatalog.protectedTagNormalizedNames.contains(normalizedName)
+  }
+
   /// 行内加标签：右键菜单要能给任意一行贴标签，而不是先打开它再贴。
   ///
   /// 写入走和 `addTag(_:)` 完全相同的 worker 调用；差别只在成功之后——
@@ -6685,7 +6971,7 @@ final class HistoryViewModel {
 
   /// 标签管理里列出的标签：带条数，系统标记不列（它们不是「讲什么」）。
   var manageableTags: [HistoryNavigationTag] {
-    navigationCounts.tags.filter { !Self.isReservedTagName($0.tag.normalizedName) }
+    navigationCounts.tags.filter { !Self.isProtectedTagName($0.tag.normalizedName) }
   }
 
   func renameTag(_ tag: HistoryTag, to rawName: String) {
@@ -6693,7 +6979,7 @@ final class HistoryViewModel {
       tagManagementMessage = "标签名需要 1–\(HistoryTagNormalizer.maximumCharacterCount) 个字，且不能只有符号。"
       return
     }
-    guard !Self.isReservedTagName(target.normalizedName) else {
+    guard !Self.isProtectedTagName(target.normalizedName) else {
       tagManagementMessage = "「\(target.name)」是系统保留的名字，换一个吧。"
       return
     }
@@ -6711,7 +6997,7 @@ final class HistoryViewModel {
       tagManagementMessage = "至少选两个标签再合并。"
       return
     }
-    guard let target = HistoryTagNormalizer.normalized(rawTarget), !Self.isReservedTagName(target.normalizedName) else {
+    guard let target = HistoryTagNormalizer.normalized(rawTarget), !Self.isProtectedTagName(target.normalizedName) else {
       tagManagementMessage = "合并后的名字不可用，换一个吧。"
       return
     }
@@ -6724,6 +7010,36 @@ final class HistoryViewModel {
   }
 
   func clearTagManagementMessage() { tagManagementMessage = nil }
+
+  /// 启动时挂上「AI 整理标签」。合并只走 `HistoryApplicationService.mergeTags`；
+  /// 备份由调用方提供，失败即不执行（见 `TagTidyController`）。
+  func installTagTidy(
+    tidier: any TagTidying,
+    gate: ModelCallGate,
+    store: FrequentTagStore,
+    backup: @escaping @Sendable () async throws -> Void
+  ) {
+    frequentTagStore = store
+    frequentTagsModel = FrequentTagsModel(store: store)
+    tagTidy = TagTidyController(
+      tidier: tidier, gate: gate, store: store,
+      tags: { [weak self] in self?.manageableTags ?? [] },
+      isReadOnly: { [weak self] in self?.isReadOnly ?? true },
+      backup: backup,
+      merge: { [weak self] sources, target in
+        guard let history = await self?.history else { throw RepositoryFailure.unavailable }
+        _ = try await Task.detached { try history.mergeTags(sources, into: target) }.value
+      },
+      didApply: { [weak self] in
+        guard let self else { return }
+        self.frequentTagsModel?.reload()
+        self.selectedTagNormalizedNames = []
+        self.reloadAvailableTags()
+        self.reloadNavigationCounts()
+        self.reload()
+      }
+    )
+  }
 
   private enum TagManagementOperation: Sendable {
     case rename(String, String)
@@ -7039,8 +7355,9 @@ final class HistoryViewModel {
   func purgeTrash(olderThanDays: Int) {
     guard let history, !isReadOnly, !isDeleting else { return }
     let generation = configurationGeneration
+    let doubtStore = transcriptDoubtStore
     Task { [weak self, worker] in
-      let result = await worker.purgeTrash(history, olderThanDays: olderThanDays)
+      let result = await worker.purgeTrash(history, olderThanDays: olderThanDays, doubtStore: doubtStore)
       guard generation == self?.configurationGeneration else { return }
       if let code = result.1 {
         self?.deleteErrorCode = code
@@ -8734,6 +9051,7 @@ final class HistoryViewModel {
         generation: generation,
         requestID: requestID
       )
+      if self?.doubtSaveTaskID == taskID { self?.doubtSaveTaskID = nil }
     }
   }
 
@@ -8902,6 +9220,8 @@ final class HistoryViewModel {
       let deleted = Set(batch.deletedTaskIDs)
       if removedPermanently {
         batch.deletedTaskIDs.forEach { imageCache?.delete(taskID: $0) }
+        // 永久删除：存疑清单里这几条的原文片段也一并清掉（移到回收站可以恢复，不动）。
+        removeDoubts(taskIDs: batch.deletedTaskIDs)
       }
       // 删完接住相邻那条，而不是把右侧清成「未选中」：连删几条不用反复回去点（2026-10-01 体检）。
       let firstRemovedIndex = rows.firstIndex { deleted.contains($0.taskID) }
@@ -9669,4 +9989,52 @@ final class HistoryViewModel {
   }
 }
 
+// MARK: 素材卡（第二批）
 
+extension HistoryViewModel {
+  /// 启动时挂上素材卡。全部模型调用都经 `gate`（数据去向确认）；只读时不生成。
+  func installMaterialCards(extractor: any MaterialCardExtracting, gate: ModelCallGate) {
+    materialCardDependencies = (extractor, gate)
+    rebuildMaterialCards()
+  }
+
+  /// 历史库在启动后才挂上（也可能换库），所以每次 `configure` 后按当前库重建。
+  func rebuildMaterialCards() {
+    guard let (extractor, gate) = materialCardDependencies,
+          let history, let store = history.materialCardStore else { materialCards = nil; return }
+    let service = MaterialCardService(
+      store: store, extractor: extractor,
+      loadSource: { taskID in
+        guard let detail = try? await Task.detached(operation: { try history.detail(taskID: taskID) }).value,
+              let snapshot = detail.snapshots.last(where: { $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue })
+        else { return nil }
+        return MaterialCardService.Source(text: snapshot.bodyText, title: detail.snapshots.last?.title)
+      },
+      currentTagNames: { taskID in
+        guard let detail = try? await Task.detached(operation: { try history.detail(taskID: taskID) }).value else { return [] }
+        return Set(detail.tags.map(\.normalizedName))
+      },
+      attachLiveSpeakerTag: { taskID in
+        (try? await Task.detached(operation: { try history.addTags([MaterialCatalog.liveSpeakerTagName], to: taskID) }).value) != nil
+      },
+      recordTokens: { taskID, outcome in
+        guard let ledger = history.tokenUsageStore else { return }
+        let usage = TaskTokenUsage(
+          taskID: taskID, operation: "material_card",
+          promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens, totalTokens: outcome.totalTokens,
+          createdAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        try? await Task.detached(priority: .utility) { try ledger.appendTokenUsage(usage) }.value
+      },
+      now: { Int64(Date().timeIntervalSince1970 * 1000) }
+    )
+    materialCards = MaterialCardController(
+      service: service, gate: gate,
+      isReadOnly: { [weak self] in self?.isReadOnly ?? true },
+      didChange: { [weak self] _ in
+        self?.reloadAvailableTags()
+        self?.reloadNavigationCounts()
+      }
+    )
+  }
+}

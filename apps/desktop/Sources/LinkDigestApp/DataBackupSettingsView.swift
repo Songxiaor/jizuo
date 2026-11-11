@@ -22,11 +22,33 @@ final class DataBackupViewModel: ObservableObject {
   @Published var pendingRestore: DatabaseBackupFile?
   /// 恢复完成，等用户重启 App。
   @Published private(set) var needsRestart = false
+  /// 每日自动备份的开关与上次结果。跟着数据目录走（见 `DailyBackupPreferences`），
+  /// 不再从 UserDefaults 读——隔离数据目录的调试版不能改写真实 App 的备份状态。
+  @Published private(set) var dailyBackupEnabled = true
+  @Published private(set) var dailyLastSuccessAt: Date?
+  @Published private(set) var dailyFailureReason: String?
 
   private var resolvedLocation: LocalDatabaseLocation?
 
   var backupsDirectoryURL: URL? {
     location().map { DatabaseBackupStore(location: $0).directoryURL }
+  }
+
+  private var preferences: DailyBackupPreferences? {
+    location().map { DailyBackupPreferences(directoryURL: $0.directoryURL) }
+  }
+
+  func refreshDailyBackupStatus() {
+    guard let preferences else { return }
+    dailyBackupEnabled = preferences.isEnabled
+    dailyLastSuccessAt = preferences.lastSuccessAt
+    dailyFailureReason = preferences.lastFailureReason
+  }
+
+  func setDailyBackupEnabled(_ enabled: Bool) {
+    guard let preferences else { return }
+    preferences.isEnabled = enabled
+    refreshDailyBackupStatus()
   }
 
   private func location() -> LocalDatabaseLocation? {
@@ -86,6 +108,11 @@ final class DataBackupViewModel: ObservableObject {
     // 备份要整库读一遍，大库上是秒级的；放后台，别把设置窗口冻住。
     Task {
       let outcome: Result<String, Error> = await Task.detached(priority: .userInitiated) {
+        // 和每日自动备份互斥：整库读写同时跑两份没有好处。
+        guard DatabaseBackupActivity.tryBegin() else {
+          return .failure(DatabaseBackupBusyError())
+        }
+        defer { DatabaseBackupActivity.end() }
         do {
           let database = try LocalDatabase.open(at: location)
           defer { try? database.close() }
@@ -112,6 +139,9 @@ final class DataBackupViewModel: ObservableObject {
   }
 
   private static func message(for error: Error) -> String {
+    if error is DatabaseBackupBusyError {
+      return "正在自动备份，稍等一下再试。"
+    }
     guard let failure = error as? RepositoryFailure else { return "操作没能完成，请稍后再试。" }
     switch failure {
     case .invalidInput: return "这个文件用不了：可能被移走了，或者已有同名文件。"
@@ -133,6 +163,13 @@ final class DataBackupViewModel: ObservableObject {
     formatter.timeStyle = .short
     return formatter.string(from: date)
   }
+
+  nonisolated static func kindText(_ file: DatabaseBackupFile) -> String {
+    if file.isDaily { return "每日自动备份" }
+    if file.isBeforeRestore { return "恢复前备份" }
+    if file.isAutomatic { return "升级前自动备份" }
+    return "手动备份"
+  }
 }
 
 /// 数据与备份。
@@ -144,6 +181,22 @@ struct DataBackupSettingsView: View {
   @Environment(\.appTheme) private var appTheme
   @StateObject private var model = DataBackupViewModel()
 
+  private var dailyStatusText: String {
+    var lines: [String] = []
+    if let date = model.dailyLastSuccessAt {
+      lines.append("上次自动备份：\(DataBackupViewModel.dateText(date))")
+    } else {
+      lines.append("还没有自动备份过；汲作开满几分钟后会存第一份。")
+    }
+    if let reason = model.dailyFailureReason {
+      lines.append("最近一次没成功：\(reason)")
+    }
+    if !model.dailyBackupEnabled {
+      lines.append("现在是关闭状态，不会自动备份。")
+    }
+    return lines.joined(separator: "\n")
+  }
+
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
@@ -154,10 +207,37 @@ struct DataBackupSettingsView: View {
       )
 
       SettingsCard(
+        title: "每日自动备份",
+        summary: "汲作开着时，每天替你存一份",
+        details: """
+        离上次成功备份满 24 小时才存一份；汲作没开着不备份，下次打开会补上。
+        只留最近 7 份；手动备份、升级前备份和恢复前备份不受这个上限影响，一份都不会被删。
+        备份只有资料库，不含视频等大文件。
+        """,
+        summaryPlacement: .aboveControl,
+        controlWidth: .full,
+        control: {
+          VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+            Toggle("开启每日自动备份", isOn: Binding(
+              get: { model.dailyBackupEnabled },
+              set: { model.setDailyBackupEnabled($0) }
+            ))
+              .toggleStyle(.switch)
+              .accessibilityIdentifier("data-backup-daily-enabled")
+            Text(dailyStatusText)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("data-backup-daily-status")
+          }
+        }
+      )
+
+      SettingsCard(
         title: "立即备份",
         summary: "把全部资料存成一个文件",
         details: """
-        升级汲作前会自动存一份，自动的只留最近 3 份；你手动存的都不删。
+        你手动存的备份都不会自动删；升级汲作前 App 也会另存一份，那种自动备份只留最近 3 份。
         备份含历史、笔记、标签、总结和阅读进度；视频等大文件不在里面，它们单独存在媒体文件夹。
         备份文件可以直接拷到移动硬盘或别的电脑。
         """,
@@ -195,7 +275,7 @@ struct DataBackupSettingsView: View {
             ForEach(model.backups) { file in
               SettingsRow(
                 title: DataBackupViewModel.dateText(file.createdAt),
-                caption: "\(DataBackupViewModel.sizeText(file.byteCount)) · \(file.isAutomatic ? "自动备份" : "手动备份")"
+                caption: "\(DataBackupViewModel.sizeText(file.byteCount)) · \(DataBackupViewModel.kindText(file))"
               ) {
                 Button("恢复") { model.pendingRestore = file }
                   .buttonStyle(.appNormal)
@@ -206,7 +286,14 @@ struct DataBackupSettingsView: View {
         }
       }
     }
-    .onAppear { model.reload() }
+    .onAppear {
+      model.reload()
+      model.refreshDailyBackupStatus()
+    }
+    .onReceive(NotificationCenter.default.publisher(for: .dailyBackupDidFinish)) { _ in
+      model.reload()
+      model.refreshDailyBackupStatus()
+    }
     .confirmationDialog(
       "换回这份备份？",
       isPresented: Binding(

@@ -11,6 +11,7 @@ public struct HistoryApplicationService: Sendable {
   var repositoryAsReformatStore: (any ReformatStoring)? { repository as? ReformatStoring }
   var repositoryAsTranscriptParagraphStore: (any TranscriptParagraphStoring)? { repository as? TranscriptParagraphStoring }
   var repositoryAsMindMapStore: (any MindMapStoring)? { repository as? MindMapStoring }
+  var repositoryAsMaterialCardStore: (any MaterialCardStoring)? { repository as? MaterialCardStoring }
   var repositoryAsTokenUsageStore: (any TokenUsageRecording)? { repository as? TokenUsageRecording }
   var repositoryAsAnnotationStore: (any AnnotationStoring)? { repository as? AnnotationStoring }
   var repositoryAsReadingProgressStore: (any ReadingProgressStoring)? { repository as? ReadingProgressStoring }
@@ -32,6 +33,10 @@ public struct HistoryApplicationService: Sendable {
   public func taskID(forCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID? {
     try repository.taskID(forCanonicalURL: canonicalURL)
   }
+  public func existingTaskIDs(in taskIDs: Set<String>) throws -> Set<String> {
+    try repository.existingTaskIDs(in: taskIDs)
+  }
+
   public func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {
     try repository.existingXTweetIDs(in: tweetIDs)
   }

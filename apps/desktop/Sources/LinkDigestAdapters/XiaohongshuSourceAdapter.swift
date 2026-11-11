@@ -6,7 +6,7 @@ import LinkDigestCore
 /// 手机分享链接（`xhslink` 短链 → 主站 `/explore/{id}?xsec_token=...`）在未登录时
 /// 也能拿到公开笔记页。先无 Cookie 抓一次；失败且用户在设置里登录过，再带
 /// App 自有会话重试。两次都拿不到笔记时，带 `xsec_token` 的失效页走
-/// `shareLinkExpired`，其余仍引导登录。
+/// `shareLinkExpired`；不带访问码的裸链接被跳到失效页时走 `shareLinkMissingToken`，其余仍引导登录。
 ///
 /// 无 fetcher 的 `init()` 保持旧行为：不发请求，直接 `loginRequired`。
 public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
@@ -100,6 +100,15 @@ public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
        XiaohongshuPageParser.looksLikeExpiredShare(html: page.html, url: page.url) {
       throw ManualLinkError.shareLinkExpired
     }
+    // 不带访问码的 /explore/{id} 裸链接，未登录时会被跳到 404（error_code 300031）。
+    // 这不是「要登录」：登录态下裸链接能不能抓没有验证过，所以只在页面确实是 404/失效页时
+    // 才断定缺访问码，其余（验证码、空壳页）仍按登录/验证处理。
+    if noteID != nil,
+       !XiaohongshuURL.hasXsecToken(targetURL),
+       let page = lastPage,
+       XiaohongshuPageParser.looksLikeExpiredShare(html: page.html, url: page.url) {
+      throw ManualLinkError.shareLinkMissingToken
+    }
     if lastPage == nil, let publicFetchError {
       throw publicFetchError
     }
@@ -151,7 +160,17 @@ public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
         text: text,
         completeness: "full_article",
         capturedAt: timestamp,
-        sourceLabel: "手动链接（小红书笔记）"
+        sourceLabel: "手动链接（小红书笔记）",
+        media: detail.video.map { video in
+          CaptureMedia(
+            platform: "xiaohongshu",
+            videoURL: video.url.absoluteString,
+            coverURL: detail.imageURLs.first?.absoluteString,
+            durationSeconds: video.durationSeconds,
+            author: detail.author,
+            fallbackVideoURLs: video.fallbackURLs.map(\.absoluteString)
+          )
+        }
       )
     }
     if XiaohongshuPageParser.looksLikeExpiredShare(html: page.html, url: page.url) {
@@ -219,6 +238,11 @@ public enum XiaohongshuURL {
       .contains(where: { $0.name == "xsec_token" && !($0.value ?? "").isEmpty }) == true
   }
 
+  /// 主站笔记裸链接：有笔记编号、没有 `xsec_token`（短链不算，它跳转时会带上）。
+  public static func isBareNoteLink(_ url: URL) -> Bool {
+    matches(url) && !isShortLink(url) && noteID(from: url) != nil && !hasXsecToken(url)
+  }
+
   /// `/explore/{id}` 或 `/discovery/item/{id}`，id 为 24 位十六进制。
   public static func noteID(from url: URL) -> String? {
     let parts = url.pathComponents.filter { $0 != "/" }
@@ -272,6 +296,15 @@ public enum XiaohongshuPageParser {
     public let tags: [String]
     public let isVideo: Bool
     public let noteID: String
+    /// 视频笔记的直链（带限时签名，只在这次保存里下载，不落库）。
+    public let video: VideoStream?
+  }
+
+  public struct VideoStream: Sendable, Equatable {
+    public let url: URL
+    /// 同一条视频较低档的直链，按页面给的顺序。
+    public let fallbackURLs: [URL]
+    public let durationSeconds: Double?
   }
 
   private static let initialStateByteLimit = 4 * 1_024 * 1_024
@@ -350,8 +383,37 @@ public enum XiaohongshuPageParser {
       imageURLs: images,
       tags: tags,
       isVideo: type == "video",
-      noteID: resolvedID
+      noteID: resolvedID,
+      video: type == "video" ? videoStream(from: note) : nil
     )
+  }
+
+  /// 页面状态里的视频流：h264 优先（本机播放和转写最稳），h265、av1 兜底。
+  /// 直链只认小红书自家 CDN，和扩展 `readXiaohongshuVideoStreamInMainWorld` 同一规则。
+  private static func videoStream(from note: [String: Any]) -> VideoStream? {
+    let video = note["video"] as? [String: Any]
+    let media = video?["media"] as? [String: Any]
+    guard let stream = media?["stream"] as? [String: Any] else { return nil }
+    let capaDuration = jsonInt64((video?["capa"] as? [String: Any])?["duration"]).map(Double.init)
+    for codec in ["h264", "h265", "av1"] {
+      guard let entries = stream[codec] as? [Any] else { continue }
+      // 每档取第一个可用地址（主地址优先，备用地址兜底）；后面的档位当作较低画质的备选。
+      var urls: [URL] = []
+      var entryDuration: Double?
+      for raw in entries.prefix(4) {
+        guard let entry = raw as? [String: Any] else { continue }
+        let candidates = [jsonString(entry["masterUrl"])]
+          + (entry["backupUrls"] as? [Any] ?? []).prefix(8).map(jsonString)
+        if let url = candidates.lazy.compactMap({ $0.flatMap(acceptedImageURL) }).first, !urls.contains(url) {
+          urls.append(url)
+        }
+        if entryDuration == nil, let ms = jsonInt64(entry["duration"]), ms > 0 { entryDuration = Double(ms) / 1_000 }
+      }
+      guard let primary = urls.first else { continue }
+      let duration = [capaDuration, entryDuration].compactMap { $0 }.first { $0 > 0 }
+      return VideoStream(url: primary, fallbackURLs: Array(urls.dropFirst()), durationSeconds: duration)
+    }
+    return nil
   }
 
   /// 站点自称。标题去掉分隔符后缀后若正好是其中之一，说明拿到的是外壳。

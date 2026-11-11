@@ -228,8 +228,14 @@ struct PendingCaptureRow: View {
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Spacer(minLength: 4)
       if case .failed = pending.phase {
-        Button("重试") { model.retryPendingCapture(pending.id) }
-          .controlSize(.mini)
+        if pending.needsNewLink {
+          // 同一条链接再试结果不会变，直接让用户换一条完整的。
+          Button("换链接") { model.replacePendingCaptureLink(pending.id) }
+            .controlSize(.mini)
+        } else {
+          Button("重试") { model.retryPendingCapture(pending.id) }
+            .controlSize(.mini)
+        }
       }
       Button {
         model.removePendingCapture(pending.id)

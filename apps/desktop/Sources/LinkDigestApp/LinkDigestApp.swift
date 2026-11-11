@@ -1295,6 +1295,7 @@ struct MainWindowLaunchGuard: ViewModifier {
   /// 启动后按「转写后清理视频」规则扫一次用。
   private let mediaStore: LocalMediaStore?
   private let composition: AppComposition
+  private let dailyBackupScheduler: DailyBackupScheduler
   private let appUpdateController: AppUpdateController
   private let socketServerLifecycle: UnixSocketServerLifecycle
   private let applicationTerminationObserver: NSObjectProtocol
@@ -1324,6 +1325,12 @@ struct MainWindowLaunchGuard: ViewModifier {
       imageCache = nil
       cacheRoot = nil
     }
+    // 每日自动备份：真正开始跑要等 bootstrap 完成后（见主窗口的 .task），
+    // 那时数据库结构升级已经做完，不会和迁移抢同一份库。
+    let dailyBackupScheduler = DailyBackupScheduler(locationProvider: {
+      LocalDatabaseLocation(applicationSupportRoot: try applicationSupportRoot())
+    })
+    self.dailyBackupScheduler = dailyBackupScheduler
     let configurationService: ProviderConfigurationService
     let provider: any ModelProvider
     let consentStore: any DataDestinationConsentStore
@@ -1516,6 +1523,23 @@ struct MainWindowLaunchGuard: ViewModifier {
         .appendingPathComponent("LinkDigest/Models/SpeakerDiarization", isDirectory: true)
     )
     historyModel.onlineSpeakerDiarizer = OnlineSpeakerDiarizer(configurationService: configurationService)
+    // 常用标签表 + AI 整理标签（第二批）：表是数据目录里的小 JSON；整理前先整库备份，失败不执行。
+    if let supportRoot = try? applicationSupportRoot() {
+      let tagLocation = LocalDatabaseLocation(applicationSupportRoot: supportRoot)
+      historyModel.installTagTidy(
+        tidier: OpenAICompatibleTagTidier(configurationService: configurationService, provider: sharedTextProvider),
+        gate: .live(configurationService: configurationService, consentStore: consentStore),
+        store: FrequentTagStore(directoryURL: tagLocation.directoryURL),
+        backup: { try await PreChangeBackup.perform(location: tagLocation) }
+      )
+      // 常用名字表与校对存疑清单：同在数据目录里的小 JSON，没有数据库迁移。
+      historyModel.knownNameStore = KnownNameStore(directoryURL: tagLocation.directoryURL)
+      historyModel.transcriptDoubtStore = TranscriptDoubtStore(directoryURL: tagLocation.directoryURL)
+    }
+    historyModel.installMaterialCards(
+      extractor: OpenAICompatibleMaterialCardExtractor(configurationService: configurationService, provider: sharedTextProvider),
+      gate: .live(configurationService: configurationService, consentStore: consentStore)
+    )
     var manualAdapters: [any SourceAdapting] = [douyinAdapter, xiaohongshuAdapter, bilibiliAdapter, githubAdapter]
     #if DEBUG
     if let fixtureRoot = ProfileImportBatchPipelineFixture.root {
@@ -1719,12 +1743,16 @@ struct MainWindowLaunchGuard: ViewModifier {
     ) { _ in
       socketServerLifecycle.stop()
       try? transcriptionTempStore?.cleanupAll()
+      // 退出时停掉每日备份：正在写的那一份会被取消并删掉半成品，不记成功时间。
+      // willTerminate 在主线程投递，所以这里可以安全地按主 actor 执行。
+      MainActor.assumeIsolated { dailyBackupScheduler.stop() }
     }
     let terminationSignalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     Darwin.signal(SIGTERM, SIG_IGN)
     terminationSignalSource.setEventHandler {
       socketServerLifecycle.stop()
       try? transcriptionTempStore?.cleanupAll()
+      MainActor.assumeIsolated { dailyBackupScheduler.stop() }
       Darwin.signal(SIGTERM, SIG_DFL)
       _ = Darwin.kill(getpid(), SIGTERM)
     }
@@ -1747,7 +1775,9 @@ struct MainWindowLaunchGuard: ViewModifier {
       }
     }
     _manualLink = StateObject(wrappedValue: manualLink)
-    _localImport = StateObject(wrappedValue: LocalImportController(mediaStore: mediaStore, imageCache: imageCache))
+    let localImportController = LocalImportController(mediaStore: mediaStore, imageCache: imageCache)
+    localImportController.autoTranscriptionJournal = cacheRoot.map { AutoTranscriptionJournal(applicationSupportRoot: $0) }
+    _localImport = StateObject(wrappedValue: localImportController)
     let providerSettings = ProviderSettingsViewModel(
       configurationService: configurationService,
       provider: provider,
@@ -1819,6 +1849,11 @@ struct MainWindowLaunchGuard: ViewModifier {
             readOnlyRecoveryHint: result.historyReadOnlyRecoveryHint
           )
           didConfigureHistory = true
+          // 每日自动备份从这一刻开始计时：数据库结构升级（如果有）已经完成，
+          // 首屏也接上了库；它只会在后台按 24 小时节奏补一份。
+          if result.availability.isWriteReady, result.history != nil {
+            dailyBackupScheduler.start()
+          }
           historyModel.semanticSearch?.configure(history: result.history)
           await settingsLoad.value
           knowledgeVaultSettings.configure(history: result.history)
@@ -1851,6 +1886,8 @@ struct MainWindowLaunchGuard: ViewModifier {
             Task.detached(priority: .background) {
               try? history.purgeTrash(olderThanDays: HistoryTrashPolicy.retentionDays)
             }
+            // 校对存疑清单里已删记录的原文片段也在这时扫一遍。
+            historyModel.pruneProofreadDoubtsInBackground()
           }
           // 「转写后清理视频」按天数的规则也是以天计：每次启动扫一次。规则是「保留」时什么都不删。
           if result.availability.isWriteReady, result.history != nil, let mediaStore {
@@ -1903,6 +1940,17 @@ struct MainWindowLaunchGuard: ViewModifier {
               )
             }
             quickCapture.configure(history: history, manualLink: manualLink, historyModel: historyModel)
+            // 批量/AI 保存的视频下载完成后：「自动转写」开着就排进本机转写队列（只听写，不触发总结等付费步骤）。
+            // 没下载视频的条目没有本地文件，转不了；这里不额外加下载。
+            manualLink.onBatchVideoDownloaded = { [weak localImport] taskID in
+              guard providerSettings.autoTranscribeNewCaptures else { return }
+              localImport?.enqueueAutomaticTranscription(taskID: taskID, name: "批量保存的视频")
+            }
+            localImport.isAutomaticTranscriptionEnabled = { providerSettings.autoTranscribeNewCaptures }
+            providerSettings.onAutoTranscribeNewCapturesTurnedOff = { [weak localImport] in
+              localImport?.automaticTranscriptionTurnedOff()
+            }
+            localImport.resumeAutomaticTranscriptions()
           }
           #if DEBUG
           if result.availability.isWriteReady {
@@ -1921,7 +1969,8 @@ struct MainWindowLaunchGuard: ViewModifier {
               onRunMetadataChanged: { taskID in
                 await historyModel.historyMetadataChanged(taskID: taskID)
               },
-              storageWriteGate: result.storageWriteGate
+              storageWriteGate: result.storageWriteGate,
+              frequentTags: historyModel.frequentTagStore
             )
             model.installModelRunOrchestrator(orchestrator)
           }

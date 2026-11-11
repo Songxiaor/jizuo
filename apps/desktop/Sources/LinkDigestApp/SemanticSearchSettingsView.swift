@@ -24,6 +24,7 @@ struct SemanticSearchSettingsView: View {
         然后给全部内容建一次索引，一千多条约半分钟；之后新存的内容搜索时自动补上。
         索引单独存一个文件，不动你的资料；关掉后回到只按关键词搜。
         AI 助手搜索时也会用上。
+        打开一条资料时，页尾还会带出你自己备忘录和录音里意思相近的几条。
         """,
         summaryPlacement: .aboveControl,
         controlWidth: .full,

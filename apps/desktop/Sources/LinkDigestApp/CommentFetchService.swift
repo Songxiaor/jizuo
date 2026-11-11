@@ -40,7 +40,7 @@ final class CommentFetchService: NSObject, WKNavigationDelegate {
     if on("x.com") || on("twitter.com") { return SiteSessionController.x.dataStore }
     if on("bilibili.com") { return SiteSessionController.bilibili.dataStore }
     if on("douyin.com") { return SiteSessionController.douyin.dataStore }
-    if on("xiaohongshu.com") { return SiteSessionController.xiaohongshu.dataStore }
+    if on("xiaohongshu.com") || on("xhslink.com") || on("xhslink.cn") { return SiteSessionController.xiaohongshu.dataStore }
     if on("zhihu.com") { return SiteSessionController.zhihu.dataStore }
     return .default()
   }

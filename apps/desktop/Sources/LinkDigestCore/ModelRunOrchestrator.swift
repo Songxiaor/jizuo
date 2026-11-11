@@ -142,6 +142,10 @@ public actor ModelRunOrchestrator {
   private var currentTaskID: TaskID?
   /// 本次总结开始时读到的常用标签（按使用次数取前 100），供总结尾行和补打标签复用。
   private var currentExistingTagNames: [String] = []
+  /// 常用标签表（可选）。非空时新内容的标签只能从表里选，表外的进「建议加入」。
+  private let frequentTags: FrequentTagStore?
+  /// 这次运行是否按常用标签表约束（开跑时定下，运行中用户改表不影响这一次）。
+  private var currentTagsRestricted = false
   private var currentStateHandler: StateHandler?
 
   public init(
@@ -152,6 +156,7 @@ public actor ModelRunOrchestrator {
     onHistoryMetadataChanged: HistoryMetadataChangedHandler? = nil,
     onRunMetadataChanged: HistoryMetadataChangedHandler? = nil,
     storageWriteGate: StorageWriteGate? = nil,
+    frequentTags: FrequentTagStore? = nil,
     streamingUIPublishInterval: Duration = .milliseconds(80),
     partialArtifactSaveInterval: Duration = .seconds(1),
     nowMilliseconds: @escaping @Sendable () -> Int64 = {
@@ -165,6 +170,7 @@ public actor ModelRunOrchestrator {
     self.onHistoryMetadataChanged = onHistoryMetadataChanged
     self.onRunMetadataChanged = onRunMetadataChanged
     self.storageWriteGate = storageWriteGate
+    self.frequentTags = frequentTags
     self.streamingUIPublishInterval = streamingUIPublishInterval
     self.partialArtifactSaveInterval = partialArtifactSaveInterval
     self.nowMilliseconds = nowMilliseconds
@@ -469,14 +475,19 @@ public actor ModelRunOrchestrator {
     let translationText = strippedBody.isEmpty ? text : strippedBody
 
     // 读不到标签表不影响总结本身：当作标签库为空，提示词保持原样。
+    let frequentList = intentKind == .summarize ? (frequentTags?.allowedNames ?? []) : []
+    currentTagsRestricted = !frequentList.isEmpty
     currentExistingTagNames = intentKind == .summarize
-      ? HistoryTagVocabulary.topNames(from: (try? history.navigationCounts().tags) ?? [])
+      ? (frequentList.isEmpty
+        ? HistoryTagVocabulary.topNames(from: (try? history.navigationCounts().tags) ?? [])
+        : frequentList)
       : []
     let summaryTemplate = SummaryTemplate.select(origin: capture.origin, url: capture.url, text: text)
     let resolvedSummaryPrompt = ModelPreferences.summaryPrompt(
       configuredPrompt: summaryPrompt ?? ModelPreferences.defaultSummaryPrompt,
       outputLanguage: targetLanguage ?? ModelPreferences.defaultTargetLanguage,
       existingTags: currentExistingTagNames,
+      restrictToExistingTags: currentTagsRestricted,
       template: summaryTemplate,
       includesCommentAnalysis: SummaryTemplate.appendsCommentAnalysis(summaryTemplate, text: text)
     )
@@ -764,6 +775,7 @@ public actor ModelRunOrchestrator {
     guard await flushSecretHoldback(runID: runID, intent: intent) else { return }
     let rawText = currentCommittedPartialText
     let existingTagNames = currentExistingTagNames
+    let tagsRestricted = currentTagsRestricted
     let split = intent == .summarize ? SummaryTagTrailer.split(rawText) : (body: rawText, tags: [])
     let text = split.body
     currentCommittedPartialText = text
@@ -793,6 +805,7 @@ public actor ModelRunOrchestrator {
       generatedText: text,
       embeddedTags: split.tags,
       existingTagNames: existingTagNames,
+      restrictedToList: tagsRestricted,
       profile: profile,
       apiKey: apiKey
     )
@@ -912,10 +925,17 @@ public actor ModelRunOrchestrator {
     generatedText: String,
     embeddedTags: [HistoryTag] = [],
     existingTagNames: [String] = [],
+    restrictedToList: Bool = false,
     profile: ProviderProfile,
     apiKey: String
   ) async {
-    var tags = HistoryTagVocabulary.limitingNewTags(embeddedTags, existing: existingTagNames)
+    // 表非空时：只许从表里选，所以不再走「最多新建 1 个」那条放行新名字的规则。
+    func limit(_ candidates: [HistoryTag]) -> [HistoryTag] {
+      restrictedToList
+        ? candidates
+        : HistoryTagVocabulary.limitingNewTags(candidates, existing: existingTagNames)
+    }
+    var tags = limit(embeddedTags)
     if tags.isEmpty, let summaryTagGenerator {
       do {
         let response = try await summaryTagGenerator.generateSummaryTags(
@@ -924,10 +944,7 @@ public actor ModelRunOrchestrator {
           summary: generatedText,
           existingTags: existingTagNames
         )
-        tags = HistoryTagVocabulary.limitingNewTags(
-          HistoryTagNormalizer.automaticTags(from: response),
-          existing: existingTagNames
-        )
+        tags = limit(HistoryTagNormalizer.automaticTags(from: response))
       } catch {
         // Fail-open by design: tagging must not change a completed run, its
         // visible state, or the data-destination confirmation contract.
@@ -936,6 +953,15 @@ public actor ModelRunOrchestrator {
     if tags.isEmpty {
       tags = HistoryTagNormalizer.fallbackTags(from: generatedText)
     }
+    // 常用标签表的最后一道闸：无论标签从哪条路来（总结行尾、单独的标签调用、本地兜底），
+    // 表外的都不写到资料上，只记进「建议加入」。表为空时 `allowed` 为空，原样放行。
+    if restrictedToList, let frequentTags {
+      let split = FrequentTagPolicy.filter(tags, allowed: frequentTags.allowedNames)
+      frequentTags.recordSuggestions(split.rejected)
+      tags = split.accepted
+    }
+    // 无论表空不空：模型不得写系统标记和「真人口播」（后者只由素材卡路径按规则贴）。
+    tags = FrequentTagPolicy.strippingModelForbidden(tags)
     guard !tags.isEmpty else { return }
     do {
       _ = try history.addTags(tags.map(\.name), to: taskID)
@@ -979,6 +1005,7 @@ public actor ModelRunOrchestrator {
     currentRunID = nil
     currentIntent = nil
     currentExistingTagNames = []
+    currentTagsRestricted = false
     currentCommittedPartialText = ""
     currentPersistedPartialText = ""
     currentPublishedPartialText = ""

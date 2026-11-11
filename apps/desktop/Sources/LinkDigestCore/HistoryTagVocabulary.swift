@@ -14,7 +14,7 @@ public enum HistoryTagVocabulary {
   /// 按使用次数从多到少取前 `limit` 个显示名；系统标记（自有/外部/已使用/已归档）不算主题标签。
   public static func topNames(from tags: [HistoryNavigationTag], limit: Int = defaultLimit) -> [String] {
     let topical = tags.filter {
-      $0.count > 0 && !MaterialCatalog.systemTagNormalizedNames.contains($0.tag.normalizedName)
+      $0.count > 0 && !MaterialCatalog.protectedTagNormalizedNames.contains($0.tag.normalizedName)
     }
     let ranked = topical.sorted { (lhs: HistoryNavigationTag, rhs: HistoryNavigationTag) -> Bool in
       if lhs.count != rhs.count { return lhs.count > rhs.count }

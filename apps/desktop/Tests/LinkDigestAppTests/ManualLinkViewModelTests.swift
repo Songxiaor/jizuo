@@ -170,6 +170,13 @@ private final class ManualVMTrackingFetcher: WebPageFetcher, @unchecked Sendable
   var fetchedURLs: [URL] { lock.withLock { values } }
 }
 
+private struct ManualVMXhsMissingTokenAdapter: SourceAdapting {
+  func takesOwnership(of url: URL) -> Bool { XiaohongshuURL.matches(url) }
+  func capture(url _: URL) async throws -> CapturedDocument {
+    throw ManualLinkError.shareLinkMissingToken
+  }
+}
+
 private struct ManualVMDouyinShellAdapter: SourceAdapting {
   func takesOwnership(of url: URL) -> Bool { DouyinURL.matches(url) }
   func capture(url _: URL) async throws -> CapturedDocument {
@@ -1591,6 +1598,55 @@ final class ManualLinkViewModelTests: XCTestCase {
     )
   }
 
+  func testMissingTokenFailureIsRecordedAndRetryBlockedUntilNewLink() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = CaptureOutcomeStore(applicationSupportRoot: root)
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher(), sourceAdapters: [ManualVMXhsMissingTokenAdapter()]),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.outcomeStore = store
+    model.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    let bare = "https://www.xiaohongshu.com/explore/65f0000000000000000000a1"
+    let queued = try model.enqueueMCPLinks([bare], downloadsVideo: false)
+    XCTAssertEqual(queued.first?["warning"], "missing_access_token")
+
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(3)
+    while model.pendingCaptures.first.map({ if case .failed = $0.phase { true } else { false } }) != true,
+          clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    let item = try XCTUnwrap(model.pendingCaptures.first)
+    guard case .failed = item.phase else { return XCTFail("应当失败") }
+    XCTAssertTrue(item.needsNewLink)
+    XCTAssertEqual(item.failureCode, "shareLinkMissingToken")
+
+    // 失败统计真的累加，且只存平台名与错误码，不存链接。
+    let snap = store.snapshot()
+    XCTAssertEqual(snap.platforms["xiaohongshu"]?.failed["shareLinkMissingToken"], 1)
+    let text = String(decoding: try Data(contentsOf: store.fileURL), as: UTF8.self)
+    XCTAssertFalse(text.contains("65f0000000000000000000a1"))
+
+    // 原样重试没用：保持失败，不重新排队。
+    model.retryPendingCapture(item.id)
+    guard case .failed = model.pendingCaptures.first?.phase else { return XCTFail("needsNewLink 时重试应被拦住") }
+
+    // 「换链接」：窗口能打开才移除条目，并带上原链接。
+    // （添加窗口现在不会停在 fetching/saving，遇忙保留条目的分支只做防御，测试里造不出来。）
+    model.replacePendingCaptureLink(item.id)
+    XCTAssertFalse(model.pendingCaptures.contains { $0.id == item.id }, "能打开时才移除")
+    XCTAssertEqual(model.input, bare)
+    XCTAssertTrue(model.isPresented)
+  }
+
   private func makeModel(clipboard: ManualVMClipboard, repository: ManualVMRepository = ManualVMRepository(), sink: ManualVMSink = ManualVMSink()) -> ManualLinkViewModel {
     let suite = "manual-link-tests.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
@@ -1826,3 +1882,5 @@ final class ExplicitWebLinkCJKAdjacencyTests: XCTestCase {
     XCTAssertEqual(url("https://example.com/a（说明） 见此"), "https://example.com/a")
   }
 }
+
+

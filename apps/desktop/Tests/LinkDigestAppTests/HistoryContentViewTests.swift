@@ -3788,7 +3788,7 @@ final class AutoPipelineTidyHintTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(viewModel.contains("if request.tidy, Self.latestTranscriptText(in: storedDetail) != nil"))
-    XCTAssertTrue(viewModel.contains("guard autoTidyEnabled, !autoPipelineQueuedTaskIDs.contains(taskID)"))
+    XCTAssertTrue(viewModel.contains("guard autoTidyEnabled, !wasAutomaticQueue, !autoPipelineQueuedTaskIDs.contains(taskID)"))
   }
 }
 

@@ -267,7 +267,7 @@ private struct ProfileImportReservedWorkCard: View {
       .buttonStyle(.plain)
       .help("取消这条")
       .accessibilityLabel("取消这条")
-    } else if item.phase.canRetry {
+    } else if item.phase.canRetry, !manualLink.profileImportItemNeedsNewLink(item.id) {
       Button {
         manualLink.retryProfileImportItem(batchID: batchID, itemID: item.id)
       } label: {

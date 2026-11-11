@@ -81,6 +81,8 @@ public enum CommentCapture {
        path.range(of: #"/(explore|discovery/item)/[0-9a-fA-F]+"#, options: .regularExpression) != nil {
       return "xiaohongshu"
     }
+    // 手机分享的短链：笔记要靠它跳转时带上的访问码才打得开，所以评论得从短链进。
+    if on("xhslink.com") || on("xhslink.cn") { return "xiaohongshu" }
     return nil
   }
 

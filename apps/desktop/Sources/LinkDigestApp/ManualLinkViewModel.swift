@@ -257,6 +257,10 @@ final class ManualLinkViewModel: ObservableObject {
     /// 保存后按设置条数读评论写进正文（博主批量保存的「同时抓取评论」）。
     /// 不进批次持久化：App 中途重启后续抓的条目只保存正文。
     var includesComments: Bool = false
+    /// 失败时的错误码（只用于诊断计数和 MCP 返回，不含链接）。
+    var failureCode: String?
+    /// 原样重试不会有不同结果（缺访问码、分享链接已失效）：界面不给「重试」，给「换链接」。
+    var needsNewLink = false
 
     init(
       id: UUID,
@@ -286,6 +290,11 @@ final class ManualLinkViewModel: ObservableObject {
 
   private(set) var captureDownloadStatuses: [String: String] = [:]
   private(set) var completedCaptureIDs: [String: TaskID] = [:]
+
+  /// 抓取成败计数。生产用 `.shared`；测试里它是 nil，需要验证时自己传临时目录的实例。
+  var outcomeStore: CaptureOutcomeStore? = .shared
+  /// 批量/AI 加入的视频下载落地后调用（只传任务编号）。是否自动转写由接收方按用户设置决定。
+  var onBatchVideoDownloaded: (@MainActor (TaskID) -> Void)?
 
   private var allowsDuplicateSubmit = false
   private var queueWorker: Task<Void, Never>?
@@ -756,7 +765,14 @@ final class ManualLinkViewModel: ObservableObject {
       }
       pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued,
         requestedAction: .save, downloadsVideo: downloadsVideo, suppressesAutomaticEnrichment: true))
-      results.append(["url": value, "status": "queued"])
+      var entry = ["url": value, "status": "queued"]
+      // 小红书裸链接（没有 xsec_token）未登录时多半打不开。登录态下能不能抓没验证过，
+      // 所以照常排队，但提前告诉调用方：失败时不要原样重试，改用博主页发现 + 保存。
+      if let url = URL(string: value), XiaohongshuURL.isBareNoteLink(url) {
+        entry["warning"] = "missing_access_token"
+        entry["hint"] = "这个小红书链接没有访问码（xsec_token），很可能保存失败。请改用 jizuo_discover_creator 找到博主主页作品再 jizuo_save_works，或让用户复制 App 里的完整分享链接。"
+      }
+      results.append(entry)
     }
     kickCaptureQueue()
     return results
@@ -1157,9 +1173,23 @@ final class ManualLinkViewModel: ObservableObject {
       return
     }
     guard let index = pendingCaptures.firstIndex(where: { $0.id == id }),
-          case .failed = pendingCaptures[index].phase else { return }
+          case .failed = pendingCaptures[index].phase,
+          !pendingCaptures[index].needsNewLink else { return }
     pendingCaptures[index].phase = .queued
     kickCaptureQueue()
+  }
+
+  /// 「换链接」：把失败的这条移出队列，打开添加窗口并带上原链接，让用户直接改成完整链接再保存。
+  func replacePendingCaptureLink(_ id: UUID) {
+    guard let pending = pendingCaptures.first(where: { $0.id == id }),
+          pending.needsNewLink, pending.profileImportBatchID == nil else { return }
+    // 添加窗口打不开（正忙、资料库没就绪、链接读不出来）就保留这一条，不能先删后失败。
+    guard !isBusy, ingestor != nil, ExplicitWebLinkInput.singleURL(from: pending.urlString) != nil else {
+      captureNotice = "添加窗口正忙，暂时打不开。这条先留着，稍后再点「换链接」。"
+      return
+    }
+    pendingCaptures.removeAll { $0.id == id }
+    openForRecapture(pending.urlString)
   }
 
   func removePendingCapture(_ id: UUID) {
@@ -1188,7 +1218,16 @@ final class ManualLinkViewModel: ObservableObject {
     persistProfileImportBatches()
   }
 
+  /// 博主批次里「缺访问码/已失效」的失败项：原样重试结果不会变，行上不给「重试」。
+  /// 只在本次运行里记着（失败原因本身仍写在行上）；重启后按已存的失败状态照旧显示。
+  private(set) var profileImportItemsNeedingNewLink: Set<UUID> = []
+
+  func profileImportItemNeedsNewLink(_ itemID: UUID) -> Bool {
+    profileImportItemsNeedingNewLink.contains(itemID)
+  }
+
   func retryProfileImportItem(batchID: UUID, itemID: UUID) {
+    guard !profileImportItemsNeedingNewLink.contains(itemID) else { return }
     guard let location = profileImportItemLocation(batchID: batchID, itemID: itemID),
           profileImportBatches[location.batch].items[location.item].phase.canRetry
     else { return }
@@ -1292,9 +1331,17 @@ final class ManualLinkViewModel: ObservableObject {
           }
           self.pendingCaptures.removeAll { $0.id == next.id }
         } catch let error as ManualLinkError {
+          if error != .cancelled { self.recordCaptureFailure(urlString: next.urlString, code: String(describing: error)) }
           self.updatePendingPhase(next.id, .failed(
             CaptureRouteGuidance.failureMessage(for: error, url: URL(string: next.urlString))
           ))
+          if let index = self.pendingCaptures.firstIndex(where: { $0.id == next.id }) {
+            self.pendingCaptures[index].failureCode = String(describing: error)
+            self.pendingCaptures[index].needsNewLink = error.needsDifferentLink
+          }
+          if next.profileImportBatchID != nil, error.needsDifferentLink {
+            self.profileImportItemsNeedingNewLink.insert(next.id)
+          }
         } catch is CancellationError {
           if let batchID = next.profileImportBatchID,
              let location = self.profileImportItemLocation(batchID: batchID, itemID: next.id),
@@ -1304,12 +1351,19 @@ final class ManualLinkViewModel: ObservableObject {
           }
           self.pendingCaptures.removeAll { $0.id == next.id }
         } catch {
+          // 入库阶段的失败（写库被拒）已由 CaptureIngestService 记过，这里不重复记。
+          if !(error is StorageWriteGateFailure) { self.recordCaptureFailure(urlString: next.urlString, code: "unexpected") }
           self.updatePendingPhase(next.id, .failed("这条链接没能保存，资料库没有任何改动，可以再试一次。"))
         }
         self.activeCaptureID = nil
         self.activeCaptureTask = nil
       }
     }
+  }
+
+  /// 抓取阶段的失败（还没走到入库）计入诊断计数：平台和错误码，不含链接。
+  private func recordCaptureFailure(urlString: String, code: String) {
+    outcomeStore?.recordFailure(platform: CaptureOutcomeStore.platformToken(forURLString: urlString), code: code)
   }
 
   /// 单条链接的完整捕获流程；由队列 worker 串行调用。
@@ -1427,6 +1481,11 @@ final class ManualLinkViewModel: ObservableObject {
         await onMediaCaptured(media, accepted.taskID, accepted.snapshotID, document.url)
         let stored = try? history?.detail(taskID: accepted.taskID).media
         captureDownloadStatuses[value] = stored?.snapshotID == accepted.snapshotID ? "completed" : "failed"
+        // 批量/AI 加入的条目不走「新内容自动处理」，这里单独把落地的视频交给本机转写队列。
+        if suppressesAutomaticEnrichment || requestedAction == .save,
+           captureDownloadStatuses[value] == "completed" {
+          onBatchVideoDownloaded?(accepted.taskID)
+        }
       }
       // 短链（v.douyin.com）认不出平台，换成抓到的页面地址再认。
       if let pageURL = [value, document.url].lazy.compactMap(URL.init(string:)).first(where: { CommentCapture.platform(for: $0) != nil }),

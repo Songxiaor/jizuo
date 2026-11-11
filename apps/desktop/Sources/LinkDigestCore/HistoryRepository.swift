@@ -226,6 +226,8 @@ public protocol HistoryRepository: Sendable {
   func taskID(forCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID?
   /// 这批推文 id 里哪些已经在本地历史。`/i/status/id` 与 `/user/status/id` 算同一条。
   func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String>
+  /// 这批任务 id 里哪些还在库里（回收站里的也算在）。校对存疑清单据此清理已删记录。
+  func existingTaskIDs(in taskIDs: Set<String>) throws -> Set<String>
   func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage
   func navigationCounts() throws -> HistoryNavigationCounts
@@ -416,6 +418,8 @@ public extension HistoryRepository {
   func taskID(matchingCanonicalURL _: CanonicalURL) throws -> TaskID? { nil }
 
   func taskID(forCanonicalURL _: CanonicalURL) throws -> TaskID? { throw RepositoryFailure.unavailable }
+
+  func existingTaskIDs(in _: Set<String>) throws -> Set<String> { throw RepositoryFailure.unavailable }
 
   /// 测试替身默认只认入队用的 `/i/status/id`。生产仓库覆盖为按推文 id 相交。
   func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {

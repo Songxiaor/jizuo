@@ -93,6 +93,32 @@ final class SemanticSearchService {
     return ranked.compactMap { item in TaskID(item.taskID).map { ($0, item.score) } }
   }
 
+  /// 「相关内容」一次取多深的候选：用户自己的备忘录和录音要和外部内容一起排名，
+  /// 只取搜索界面那 40 条很可能一条自有内容都不剩。
+  nonisolated static let relatedCandidateLimit = 200
+
+  /// 索引的版本（条数 + 最新更新时间）。索引一变，「相关内容」的缓存就该失效。
+  private(set) var indexFingerprint = ""
+
+  /// 「相关内容」专用检索（2026-11-11）：
+  /// - 不套相对窗口：窗口按全局第一名算，自有备忘录/录音常被外部强相关内容挤到窗口外；
+  /// - 不触发补索引：打开一条资料时只读现有索引，不因为翻页顺手扫一遍全库；
+  /// - 没就绪时返回空，也不顺手下载模型。搜索界面走上面的 `search(_:)`，行为不变。
+  func relatedCandidates(_ query: String) async -> RelatedContentCandidates {
+    let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard isReady, !text.isEmpty else {
+      return RelatedContentCandidates(indexFingerprint: indexFingerprint, ranked: [])
+    }
+    let result = await engine.queryWithoutWindow(
+      SemanticDocumentText.queryInstruction + text,
+      limit: Self.relatedCandidateLimit, minimumScore: Self.minimumScore
+    )
+    return RelatedContentCandidates(
+      indexFingerprint: result.indexFingerprint,
+      ranked: result.ranked.compactMap { item in TaskID(item.taskID).map { ($0, item.score) } }
+    )
+  }
+
   /// 距上次核对超过一分钟才补一遍，避免每敲一个字都扫全库。
   func reconcileIfStale() {
     guard isReady, workTask == nil else { return }
@@ -134,6 +160,7 @@ final class SemanticSearchService {
     state = .loading
     do {
       let count = try await engine.load(modelDirectory: modelDirectory, indexURL: indexURL)
+      indexFingerprint = await engine.fingerprint
       state = .ready(count: count)
     } catch {
       state = .failed("模型文件读不出来，点「重试」会重新下载。")
@@ -153,6 +180,7 @@ final class SemanticSearchService {
     }
     guard isEnabled, !Task.isCancelled else { return }
     lastReconciledAt = Date()
+    indexFingerprint = await engine.fingerprint
     if let count { state = .ready(count: count) } else if case .ready = before { state = before }
   }
 
@@ -230,6 +258,23 @@ actor SemanticSearchEngine {
   func query(_ text: String, limit: Int, minimumScore: Float, relativeWindow: Float) -> [(taskID: String, score: Float)] {
     guard let embedder, !index.entries.isEmpty else { return [] }
     return index.ranked(query: embedder.embed(text), limit: limit, minimumScore: minimumScore, relativeWindow: relativeWindow)
+  }
+
+  /// 索引版本：条数 + 最新一条的更新时间。索引有增删改都会变，用来给缓存判新。
+  var fingerprint: String {
+    let newest = index.entries.values.map(\.updatedAtMilliseconds).max() ?? 0
+    return "\(index.entries.count)-\(newest)"
+  }
+
+  /// 「相关内容」用：不套相对窗口，并带回这次结果对应的索引版本。
+  func queryWithoutWindow(
+    _ text: String,
+    limit: Int,
+    minimumScore: Float
+  ) -> (indexFingerprint: String, ranked: [(taskID: String, score: Float)]) {
+    guard let embedder, !index.entries.isEmpty else { return (fingerprint, []) }
+    let ranked = index.ranked(query: embedder.embed(text), limit: limit, minimumScore: minimumScore)
+    return (fingerprint, ranked)
   }
 
   private func save(to url: URL) {

@@ -2518,7 +2518,7 @@ struct ProviderSettingsView: View {
   /// 转写：本机 / 在线转写、图片识别（原在「模型服务」页顶上，改不了的一行），加上视频存储。
   private var recordTab: some View {
     SettingsPlainPage {
-      stepHeader(.record, caption: "视频录音转成文字，本机免费")
+      stepHeader(.record, caption: "视频录音转成文字，本机免费。批量或 AI 保存的视频，下载到本机后也会在后台自动转写；没下载视频的不会转，也不会额外下载。")
       SettingsRowGroup {
         localTranscriptionRow
         onlineTranscriptionRow
@@ -2553,7 +2553,9 @@ struct ProviderSettingsView: View {
         SettingsRowGroup {
           tidyAssignmentRow
         }
+        if let historyModel { KnownNamesSettingsSection(model: historyModel) }
       }
+      if let historyModel { MaterialCardSettingsSection(model: historyModel) }
       processingSection(.summary) {
         stepHeader(.summary, caption: "给每条写一份总结，读原文、不读译文", compact: true)
         advancedCard(title: "高级：总结要求") { summaryPromptSection }

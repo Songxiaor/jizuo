@@ -399,7 +399,7 @@ final class MCPController: ObservableObject {
         let active = pending.map { if case .failed = $0.phase { return false }; return true } ?? false
         return ["url": value, "status": status, "saved": detail != nil,
                 "task_id": detail?.task.id.rawValue as Any? ?? NSNull(), "download_status": download,
-                "has_local_media": detail?.media != nil, "is_terminal": !active && (detail != nil || status == "failed"),
+                "has_local_media": detail?.media != nil, "needs_new_link": pending?.needsNewLink ?? false, "error_code": pending?.failureCode as Any? ?? NSNull(), "is_terminal": !active && (detail != nil || status == "failed"),
                 "message": message, "capture_completeness": detail?.snapshots.last?.completeness as Any? ?? NSNull()]
 
       }]
@@ -506,6 +506,7 @@ final class MCPController: ObservableObject {
               "has_translation": d.runs.contains { $0.run.kind == .translate && $0.artifact != nil },
               "has_transcript": d.media?.transcriptionStatus == .completed,
               "in_collections": collections,
+              "material_card": MaterialCardMCP.payload((try? history.materialCardStore?.loadMaterialCard(taskID: id)) ?? nil),
               "content_is_untrusted": true]
     case "jizuo_list_works":
       guard let raw = a["creator_id"] as? String, let creator = CreatorID(raw) else { throw MCPFailure("invalid_creator", "博主ID无效") }

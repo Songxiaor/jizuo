@@ -817,6 +817,113 @@ final class ModelRunOrchestratorTests: XCTestCase {
     XCTAssertFalse(states.contains { $0.outputText.contains("旧结果") })
   }
 
+  // MARK: 常用标签表（第二批）
+
+  /// 表非空：模型给的表外标签不写到资料上，进「建议加入」；表内的照写。
+  func testFrequentTagListKeepsOffListTagsOffTheItemAndRecordsThemAsSuggestions() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("freq-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FrequentTagStore(directoryURL: directory)
+    try store.replaceTags(["人工智能"])
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("本地总结文本\nTAGS: 人工智能, Swift, 灵感")), .event(.completed)])
+    ])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      history: HistoryApplicationService(repository: repository),
+      frequentTags: store
+    )
+    let recorder = RunStateRecorder()
+    let request = PersistentRunRequest(runID: RunID(), taskID: TaskID(), snapshotID: ContentSnapshotID(), intent: .summarize)
+    await orchestrator.start(request: request, capture: capture(text: "原文")) { runID, state in
+      await recorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "本地总结文本") }
+    await waitUntil { repository.tagAssignments.count == 1 }
+
+    let written = repository.tagAssignments.first?.1.map(\.name) ?? []
+    XCTAssertTrue(written.contains("人工智能"))
+    XCTAssertFalse(written.contains("Swift"), "表外标签不能写到资料上")
+    XCTAssertEqual(store.load().suggestions.map(\.name), ["Swift"], "表外标签进建议；素材类型这类保留标签既不写入受限也不进建议")
+    XCTAssertEqual(store.allowedNames, ["人工智能"])
+  }
+
+  /// 表为空：行为和没有这个功能时完全一样。
+  func testEmptyFrequentTagListKeepsLegacyTaggingBehavior() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("freq-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FrequentTagStore(directoryURL: directory)
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("本地总结文本\nTAGS: 人工智能, Swift")), .event(.completed)])
+    ])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      history: HistoryApplicationService(repository: repository),
+      frequentTags: store
+    )
+    let recorder = RunStateRecorder()
+    let request = PersistentRunRequest(runID: RunID(), taskID: TaskID(), snapshotID: ContentSnapshotID(), intent: .summarize)
+    await orchestrator.start(request: request, capture: capture(text: "原文")) { runID, state in
+      await recorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "本地总结文本") }
+    await waitUntil { repository.tagAssignments.count == 1 }
+    XCTAssertEqual(repository.tagAssignments.first?.1.map(\.name), ["人工智能", "Swift"])
+    XCTAssertTrue(store.load().suggestions.isEmpty)
+  }
+
+  /// 模型输出的 TAGS 里带系统标记和「真人口播」：不论常用表空不空都不能写到资料上。
+  private func writtenTags(reply: String, frequent: [String]) async throws -> [String] {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("freq-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FrequentTagStore(directoryURL: directory)
+    if !frequent.isEmpty { try store.replaceTags(frequent) }
+    let provider = ScriptedModelProvider(scripts: [.init(steps: [.event(.delta(reply)), .event(.completed)])])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service, provider: provider,
+      history: HistoryApplicationService(repository: repository), frequentTags: store
+    )
+    let recorder = RunStateRecorder()
+    let request = PersistentRunRequest(runID: RunID(), taskID: TaskID(), snapshotID: ContentSnapshotID(), intent: .summarize)
+    await orchestrator.start(request: request, capture: capture(text: "原文")) { runID, state in
+      await recorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await recorder.lastState != nil && repository.tagAssignments.count == 1 }
+    return repository.tagAssignments.first?.1.map(\.name) ?? []
+  }
+
+  func testModelNeverWritesSystemTagsOrLiveSpeakerWithEmptyFrequentList() async throws {
+    // TAGS 行最多取 5 个，分两次覆盖全部五种。
+    let first = try await writtenTags(reply: "文本\nTAGS: AI, 自有, 外部, 已使用, 真人口播", frequent: [])
+    XCTAssertEqual(first, ["AI"])
+    let second = try await writtenTags(reply: "文本\nTAGS: AI, 已归档", frequent: [])
+    XCTAssertEqual(second, ["AI"])
+  }
+
+  func testModelNeverWritesSystemTagsOrLiveSpeakerWithNonEmptyFrequentList() async throws {
+    let first = try await writtenTags(reply: "文本\nTAGS: AI, 自有, 外部, 已使用, 真人口播", frequent: ["AI", "自有", "真人口播"])
+    XCTAssertEqual(first, ["AI"], "就算常用表里有这些名字，模型路径也不写")
+    let second = try await writtenTags(reply: "文本\nTAGS: AI, 已归档", frequent: ["AI", "已归档"])
+    XCTAssertEqual(second, ["AI"])
+  }
+
   private func makeOrchestrator(
     provider: ScriptedModelProvider,
     profile: ProviderProfile?,

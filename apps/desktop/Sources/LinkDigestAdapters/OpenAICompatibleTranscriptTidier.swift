@@ -189,6 +189,20 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
           systemPrompt: style.requestPrompt
         )
         let elapsed = Int(Date().timeIntervalSince(started) * 1_000)
+        // 听写稿：把「存疑清单」从正文里切开。切完正文才去核对「是不是这一段」，
+        // 清单里的 JSON 绝不能进稿子；清单随这一段的结果带到最后统一核对。
+        if style == .transcript {
+          let split = TranscriptDoubtParser.split(outcome.text)
+          outcome = TranscriptTidyOutcome(
+            text: split.text,
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            totalTokens: outcome.totalTokens,
+            reasoningTokens: outcome.reasoningTokens,
+            requestNote: outcome.requestNote,
+            doubts: split.doubts
+          )
+        }
         // 清单模式：模型回的是修改清单，这里套进原文，后面的核对与拼接照旧按整段走。
         var editNote = ""
         if style.usesEditList {
@@ -356,6 +370,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     if Task.isCancelled { throw TranscriptTidyError.cancelled }
 
     var outputs: [String] = []
+    var chunkDoubts: [TranscriptDoubt] = []
     var failedChunkCount = 0
     var firstFailure: Error?
     var promptTokens: Int?
@@ -398,6 +413,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
           : outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
               .trimmingCharacters(in: .whitespacesAndNewlines)
         outputs.append(cleaned.isEmpty ? chunk : cleaned)
+        chunkDoubts += outcome.doubts
         promptTokens = Self.summed(promptTokens, outcome.promptTokens)
         completionTokens = Self.summed(completionTokens, outcome.completionTokens)
         totalTokens = Self.summed(totalTokens, outcome.totalTokens)
@@ -417,14 +433,17 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     if failedChunkCount == chunks.count, let firstFailure {
       throw Self.mapped(firstFailure)
     }
+    let finalText = outputs.joined(separator: "\n\n")
     return TranscriptTidyOutcome(
-      text: outputs.joined(separator: "\n\n"),
+      text: finalText,
       promptTokens: promptTokens,
       completionTokens: completionTokens,
       totalTokens: totalTokens,
       failedChunkCount: failedChunkCount,
       chunkCount: chunks.count,
-      failureReason: failedChunkCount > 0 ? (firstFailure.map(Self.failureReason) ?? "部分段没有返回结果") : nil
+      failureReason: failedChunkCount > 0 ? (firstFailure.map(Self.failureReason) ?? "部分段没有返回结果") : nil,
+      // 原文片段在最终稿里找不到的，丢掉。
+      doubts: TranscriptDoubtParser.verified(chunkDoubts, in: finalText)
     )
   }
 

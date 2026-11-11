@@ -87,7 +87,7 @@ final class TranscriptTidyTests: XCTestCase {
   func testTidyPromptOnlyFixesNamesThatAppearInTitleOrCaption() {
     let prompt = TranscriptTidyPrompt.system
     XCTAssertTrue(prompt.contains("人名"))
-    XCTAssertTrue(prompt.contains("标题和配文里没有出现的，一律保留听写稿原样"))
+    XCTAssertTrue(prompt.contains("这几处都没有出现的，一律保留听写稿原样"), "标题、配文、常用名字都没出现的人名一律不猜")
     XCTAssertFalse(prompt.contains("专有名词和术语听写错误"), "不能再笼统地让模型纠正专有名词")
   }
 

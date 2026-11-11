@@ -97,8 +97,13 @@ final class ProviderSettingsViewModel {
   var autoLocalizeTitleNewCaptures = true {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoLocalizeTitleNewCaptures) }
   }
+  /// 关掉「新内容自动转写」时通知转写队列：排着的自动项立刻清掉。
+  @ObservationIgnored var onAutoTranscribeNewCapturesTurnedOff: (() -> Void)?
   var autoTranscribeNewCaptures = false {
-    didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTranscribeNewCaptures) }
+    didSet {
+      persistPipelinePreferenceIfChanged(from: oldValue, to: autoTranscribeNewCaptures)
+      if oldValue, !autoTranscribeNewCaptures { onAutoTranscribeNewCapturesTurnedOff?() }
+    }
   }
   var autoSummarizeNewCaptures = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoSummarizeNewCaptures) }

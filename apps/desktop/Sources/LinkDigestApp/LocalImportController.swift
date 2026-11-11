@@ -80,6 +80,11 @@ final class LocalImportController: ObservableObject {
   @Published private(set) var transcriptionQueue: TranscriptionQueueStatus?
   private var transcriptionBacklog: [(taskID: TaskID, name: String)] = []
   private var transcriptionQueueTask: Task<Void, Never>?
+  /// 批量/AI 保存视频的自动转写日志（App 退出后接着排）。nil = 不持久化（测试、存储不可用）。
+  var autoTranscriptionJournal: AutoTranscriptionJournal?
+  private var automaticTaskIDs: Set<TaskID> = []
+  /// 设置里「新内容自动转写」现在是不是开着。入队、启动恢复、队列每轮取条目前都要问一次。
+  var isAutomaticTranscriptionEnabled: @MainActor () -> Bool = { true }
 
   @Published private(set) var phase: Phase = .idle
   var isPresented: Bool {
@@ -543,6 +548,42 @@ final class LocalImportController: ObservableObject {
 
   var isTranscriptionQueueRunning: Bool { transcriptionQueue?.isRunning == true }
 
+  /// 批量/AI 保存的视频下载完成后自动排进本机转写（只本机听写，不碰总结/整理/思维导图等付费步骤）。
+  /// 已在排的不重复；登记进日志，App 中途退出后下次启动接着转。
+  func enqueueAutomaticTranscription(taskID: TaskID, name: String) {
+    guard isAutomaticTranscriptionEnabled() else { return }
+    guard !automaticTaskIDs.contains(taskID), !transcriptionBacklog.contains(where: { $0.taskID == taskID }) else { return }
+    automaticTaskIDs.insert(taskID)
+    autoTranscriptionJournal?.register(taskID)
+    enqueueTranscription([(taskID, name)])
+  }
+
+  /// 启动后调用：把日志里没转完（且没超过自动尝试上限）的接着排上。
+  func resumeAutomaticTranscriptions() {
+    guard let journal = autoTranscriptionJournal else { return }
+    guard isAutomaticTranscriptionEnabled() else {
+      // 开关关着：上次留下的也不再转，日志清空。
+      journal.removeAll()
+      return
+    }
+    for taskID in journal.resumableTaskIDs() where !automaticTaskIDs.contains(taskID) {
+      automaticTaskIDs.insert(taskID)
+      enqueueTranscription([(taskID, "未转完的视频")])
+    }
+  }
+
+  /// 用户关掉「自动转写」：队列里还没开始的自动项和日志一并清掉，手动发起的不动。
+  /// 已经在转的那一条让它转完（它占着唯一的本机转写通道，中途掐断只会白费）。
+  func automaticTranscriptionTurnedOff() {
+    autoTranscriptionJournal?.removeAll()
+    let dropped = transcriptionBacklog.filter { automaticTaskIDs.contains($0.taskID) }
+    transcriptionBacklog.removeAll { automaticTaskIDs.contains($0.taskID) }
+    automaticTaskIDs.removeAll()
+    guard !dropped.isEmpty, var status = transcriptionQueue else { return }
+    status.total = max(status.finished, status.total - dropped.count)
+    transcriptionQueue = status
+  }
+
   /// 排进本机转写队列。队列在跑就接到后面，总数跟着涨。
   private func enqueueTranscription(_ items: [(taskID: TaskID, name: String)]) {
     guard !items.isEmpty else { return }
@@ -560,26 +601,53 @@ final class LocalImportController: ObservableObject {
   private func runTranscriptionQueue() async {
     while !Task.isCancelled, !transcriptionBacklog.isEmpty, let historyModel {
       let item = transcriptionBacklog.removeFirst()
+      let isAutomatic = automaticTaskIDs.contains(item.taskID)
+      if isAutomatic, !isAutomaticTranscriptionEnabled() {
+        // 取条目前再问一次开关：关了就把这条放掉，不转。
+        autoTranscriptionJournal?.remove(item.taskID)
+        automaticTaskIDs.remove(item.taskID)
+        transcriptionQueue?.total -= 1
+        continue
+      }
       transcriptionQueue?.currentName = item.name
-      let outcome = await historyModel.transcribeImportedMedia(taskID: item.taskID)
+      if isAutomatic { autoTranscriptionJournal?.noteAttempt(item.taskID) }
+      let outcome = await historyModel.transcribeImportedMedia(taskID: item.taskID, automatic: isAutomatic)
+      // 有确定结果或用户点了停止：出日志。其余被打断的留着，下次启动再试（受次数上限约束）。
+      // 被另一次转写打断的算「被打断」：留在日志里，下次按次数上限再试，不算确定失败。
+      let interrupted = isAutomatic && outcome == .failed(HistoryViewModel.transcriptionInterruptedMessage)
+      if interrupted {
+        automaticTaskIDs.remove(item.taskID)
+      } else if isAutomatic, outcome != .cancelled || Task.isCancelled {
+        autoTranscriptionJournal?.remove(item.taskID)
+        automaticTaskIDs.remove(item.taskID)
+      }
       switch outcome {
       case .completed:
         transcriptionQueue?.succeeded += 1
         // 正看着「待转写」时，转好一条就从列表里拿掉、侧栏数字跟着减。
         historyModel.refreshAfterBacklogTranscription()
       case .alreadyTranscribed: transcriptionQueue?.alreadyTranscribed += 1
-      case let .failed(message): transcriptionQueue?.failures.append("\(item.name)：\(message)")
+      case let .failed(message):
+        if !interrupted { transcriptionQueue?.failures.append("\(item.name)：\(message)") }
       case .cancelled:
         if !Task.isCancelled { transcriptionQueue?.failures.append("\(item.name)：转写被取消了。") }
       }
       if !(Task.isCancelled && outcome == .cancelled) { transcriptionQueue?.finished += 1 }
     }
     let stopped = Task.isCancelled
-    if stopped { transcriptionBacklog.removeAll() }
+    if stopped {
+      // 用户点停止：排着的自动项一并放弃，不留在日志里。
+      for item in transcriptionBacklog where automaticTaskIDs.contains(item.taskID) {
+        autoTranscriptionJournal?.remove(item.taskID)
+      }
+      transcriptionBacklog.removeAll()
+      automaticTaskIDs.removeAll()
+    }
     transcriptionQueue?.isRunning = false
     transcriptionQueue?.wasStopped = stopped
     transcriptionQueue?.currentName = nil
     transcriptionQueueTask = nil
+    if transcriptionQueue?.total == 0 { transcriptionQueue = nil }
     historyModel?.reload()
     // 全部成功就自己收起（2026-10-04）：原来要手动点 ×，四条转完以后「转写完成 4/4」一直挂在右下角。
     // 有失败或中途停止时留着，让人看到原因；新开一轮时这个计时作废。

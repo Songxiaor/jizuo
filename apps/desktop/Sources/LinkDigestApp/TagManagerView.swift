@@ -78,6 +78,9 @@ struct TagManagerView: View {
         }
         .accessibilityIdentifier("tag-manager-source-duplicate-\(tag.tag.normalizedName)")
       }
+      if let tidy = model.tagTidy, let frequent = model.frequentTagsModel {
+        TagTidySection(controller: tidy, frequent: frequent, isReadOnly: model.isReadOnly)
+      }
       if !similarGroups.isEmpty { similarSection }
       HStack(spacing: 8) {
         TextField("搜索标签", text: $search)

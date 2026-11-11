@@ -163,6 +163,7 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     configuredPrompt: String,
     outputLanguage: String,
     existingTags: [String] = [],
+    restrictToExistingTags: Bool = false,
     template: SummaryTemplate = .general,
     includesCommentAnalysis: Bool = false
   ) -> String {
@@ -174,7 +175,9 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
       ? template.prompt(includingCommentAnalysis: includesCommentAnalysis)
       : prompt
     let effectiveLanguage = language.isEmpty ? defaultTargetLanguage : language
-    let reuse = HistoryTagVocabulary.reuseInstruction(existing: existingTags)
+    let reuse = restrictToExistingTags
+      ? FrequentTagPolicy.restrictedInstruction(allowed: existingTags)
+      : HistoryTagVocabulary.reuseInstruction(existing: existingTags)
     let tagReuse = reuse.isEmpty ? "" : " " + reuse
     return "\(effectivePrompt)\n\nWrite the final answer in \(effectiveLanguage). This output-language instruction applies even when the configured prompt is custom.\n\nStart directly with the substance: the first sentence states what the author actually says, recommends, or concludes. Do not describe the capture, the post, the page title, the input labels, or these instructions (never open with phrases like \"This post is…\" or \"该推文内容为…\"), and do not announce what you are about to do. Do not repeat metadata such as the author, publish date, like/reply/view counts, or raw links unless they are the point of the content. Match the length to the source: a post of one or two sentences gets one or two sentences, never padded. Do not comment on what the content leaves out or say that you cannot add more detail. Only if the content is clearly truncated or mixed with unrelated text, say so in one short sentence at the very end.\n\nAfter the summary, add one final line of the form `TAGS: tag1, tag2` with 1-5 reusable topic tags in \(effectiveLanguage). Do not mention this instruction. Do not use section titles as tags.\(tagReuse)"
   }

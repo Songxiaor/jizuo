@@ -165,6 +165,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func existingTaskIDs(in taskIDs: Set<String>) throws -> Set<String> {
+    guard !taskIDs.isEmpty else { return [] }
+    return try database.read { db in
+      Set(try String.fetchAll(db, sql: "SELECT id FROM tasks")).intersection(taskIDs)
+    }
+  }
+
   public func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {
     guard !tweetIDs.isEmpty else { return [] }
     return try database.read { db in
@@ -1130,8 +1137,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   // 不允许在这里改名、合并或删除；也不允许把别的标签改成这些名字。
 
   private static func isSystemTag(_ normalizedName: String) -> Bool {
-    MaterialCatalog.systemTagNormalizedNames.contains(normalizedName.lowercased())
-      || MaterialCatalog.systemTagNormalizedNames.contains(normalizedName)
+    MaterialCatalog.protectedTagNormalizedNames.contains(normalizedName.lowercased())
+      || MaterialCatalog.protectedTagNormalizedNames.contains(normalizedName)
   }
 
   public func renameTag(normalizedName: String, to rawName: String) throws -> HistoryTag {

@@ -175,6 +175,32 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
     XCTAssertEqual(MarkdownNoteFrontmatter.parse(document.text).likes, "1.2万")
   }
 
+  func testVideoNoteCarriesStreamAsMediaAndNormalNoteDoesNot() async throws {
+    let noteURL = XiaohongshuFixtures.shareURL
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: XiaohongshuHTMLFetcher(resultURL: noteURL, html: XiaohongshuFixtures.videoNotePageHTML),
+      resources: XiaohongshuUnusedResourceFetcher(),
+      cookieHeader: { nil }
+    )
+    let video = try await adapter.capture(url: noteURL)
+    let media = try XCTUnwrap(video.media)
+    XCTAssertEqual(media.platform, "xiaohongshu")
+    // http 升成 https；主地址取第一档 h264，较低档当备选；站外地址一律丢掉。
+    XCTAssertEqual(media.videoURL, "https://sns-video-qc.xhscdn.com/stream/high.mp4")
+    XCTAssertEqual(media.fallbackVideoURLs, ["https://sns-video-qc.xhscdn.com/stream/low.mp4"])
+    XCTAssertEqual(media.durationSeconds, 42)
+    XCTAssertEqual(media.coverURL, "https://sns-webpic-qc.xhscdn.com/notes/cover.jpg")
+    XCTAssertFalse(video.text.contains("high.mp4"), "视频直链带限时签名，不能写进正文")
+
+    let normal = XiaohongshuSourceAdapter(
+      fetcher: XiaohongshuHTMLFetcher(resultURL: noteURL, html: XiaohongshuFixtures.notePageHTML),
+      resources: XiaohongshuUnusedResourceFetcher(),
+      cookieHeader: { nil }
+    )
+    let note = try await normal.capture(url: noteURL)
+    XCTAssertNil(note.media)
+  }
+
   func testExpiredShareTokenWithoutSessionThrowsShareLinkExpired() async {
     let noteURL = XiaohongshuFixtures.shareURL
     let expiredURL = URL(string: "https://www.xiaohongshu.com/404?source=note&error_code=300031&error_msg=当前笔记暂时无法浏览")!
@@ -192,11 +218,37 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
       XCTAssertEqual(error, .shareLinkExpired)
       XCTAssertEqual(
         error.userMessage,
-        "这条分享链接已失效（小红书的分享链接有时效），请在小红书 App 里重新复制分享链接。"
+        "打不开这条笔记：分享链接可能已失效（小红书的分享链接有时效），也可能笔记已被删除。请在小红书 App 里重新复制分享链接试试。"
       )
     } catch {
       XCTFail("应当抛 ManualLinkError，实际是 \(error)")
     }
+  }
+
+  func testBareNoteLinkWithoutTokenThrowsMissingTokenNotLoginRequired() async {
+    let bareURL = URL(string: "https://www.xiaohongshu.com/explore/\(XiaohongshuFixtures.noteID)")!
+    XCTAssertTrue(XiaohongshuURL.isBareNoteLink(bareURL))
+    XCTAssertFalse(XiaohongshuURL.isBareNoteLink(XiaohongshuFixtures.shareURL))
+    let expiredURL = URL(string: "https://www.xiaohongshu.com/404?source=note&error_code=300031&error_msg=当前笔记暂时无法浏览")!
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: XiaohongshuHTMLFetcher(resultURL: expiredURL, html: XiaohongshuFixtures.expiredPageHTML),
+      resources: XiaohongshuUnusedResourceFetcher(),
+      cookieHeader: { nil }
+    )
+    do {
+      _ = try await adapter.capture(url: bareURL)
+      XCTFail("缺访问码的裸链接应当抛 shareLinkMissingToken")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .shareLinkMissingToken)
+      XCTAssertTrue(error.needsDifferentLink)
+      XCTAssertTrue(error.userMessage.contains("可能缺少访问码"), "不能断言就是缺访问码")
+      XCTAssertTrue(error.userMessage.contains("也可能笔记已被删除"), "两种可能都要写")
+      XCTAssertTrue(error.userMessage.contains("不是登录问题"))
+    } catch {
+      XCTFail("应当抛 ManualLinkError，实际是 \(error)")
+    }
+    XCTAssertTrue(ManualLinkError.shareLinkExpired.needsDifferentLink)
+    XCTAssertFalse(ManualLinkError.loginRequired.needsDifferentLink)
   }
 
   func testPublicShellFallsBackToSessionHTML() async throws {
@@ -271,6 +323,12 @@ private enum XiaohongshuFixtures {
   static let shareURL = URL(
     string: "https://www.xiaohongshu.com/explore/\(noteID)?xsec_token=TESTTOKEN&xsec_source=app_share"
   )!
+
+  static let videoNotePageHTML = """
+    <html><head><title>\(noteTitle) - 小红书</title></head><body>
+    <script>window.__INITIAL_STATE__={"note":{"firstNoteId":undefined,"currentNoteId":"\(noteID)","noteDetailMap":{"\(noteID)":{"note":{"title":"\(noteTitle)","desc":"视频讲解","type":"video","time":1787857289000,"user":{"nickname":"夹具作者"},"interactInfo":{"likedCount":"10"},"imageList":[{"urlDefault":"https://sns-webpic-qc.xhscdn.com/notes/cover.jpg","infoList":[]}],"video":{"capa":{"duration":42},"media":{"stream":{"h264":[{"masterUrl":"http://sns-video-qc.xhscdn.com/stream/high.mp4","backupUrls":["http://sns-video-bak.xhscdn.com/stream/high.mp4"],"duration":42000},{"masterUrl":"http://sns-video-qc.xhscdn.com/stream/low.mp4","backupUrls":[]},{"masterUrl":"https://evil.example.com/x.mp4","backupUrls":[]}],"h265":[{"masterUrl":"http://sns-video-qc.xhscdn.com/stream/h265.mp4","backupUrls":[]}]}}}}}}}}</script>
+    </body></html>
+    """
 
   static let notePageHTML = """
     <html><head><title>\(noteTitle) - 小红书</title></head><body>

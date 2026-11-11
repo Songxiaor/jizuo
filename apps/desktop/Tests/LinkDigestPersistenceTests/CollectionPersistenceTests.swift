@@ -120,7 +120,7 @@ final class CollectionPersistenceTests: XCTestCase {
       let elapsed = Date().timeIntervalSince(started)
 
       try repository.database.read { db in
-        XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA user_version"), 24)
+        XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA user_version"), LocalDatabase.latestSchemaVersion)
         let tables = try Set(String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'"))
         XCTAssertTrue(tables.isSuperset(of: ["collections", "collection_items"]))
         XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collections"), 0)

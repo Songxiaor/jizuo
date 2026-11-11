@@ -17,7 +17,7 @@ public enum HistoryTagSimilarity {
   /// 写法相近的标签组：每组至少两个，组内按条数从多到少（第一个就是建议保留的名字），
   /// 组与组之间按总条数从多到少。系统标记不参与。
   public static func groups(_ tags: [HistoryNavigationTag]) -> [[HistoryNavigationTag]] {
-    let candidates = tags.filter { !MaterialCatalog.systemTagNormalizedNames.contains($0.tag.normalizedName) }
+    let candidates = tags.filter { !MaterialCatalog.protectedTagNormalizedNames.contains($0.tag.normalizedName) }
     let grouped: [String: [HistoryNavigationTag]] = Dictionary(grouping: candidates) { key($0.tag.name) }
     var result: [[HistoryNavigationTag]] = []
     for (groupKey, members) in grouped where members.count > 1 && !groupKey.isEmpty {

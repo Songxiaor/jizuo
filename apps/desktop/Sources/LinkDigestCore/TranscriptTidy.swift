@@ -81,12 +81,14 @@ public extension TranscriptTidying {
 public struct TranscriptTidyContext: Sendable, Equatable {
   public var title: String?
   public var caption: String?
+  /// 用户的常用名字表（说话人、人名、专有名词的正确写法）。只有名字和词，不带任何资料正文。
+  public var knownNames: [String] = []
 
   public static let empty = TranscriptTidyContext()
   public static let titleCharacterLimit = 200
   public static let captionCharacterLimit = 1_200
 
-  public init(title: String? = nil, caption: String? = nil, transcript: String? = nil) {
+  public init(title: String? = nil, caption: String? = nil, transcript: String? = nil, knownNames: [String] = []) {
     self.title = Self.clipped(title, limit: Self.titleCharacterLimit)
     var captionValue = Self.clipped(caption, limit: Self.captionCharacterLimit)
     if let existingCaption = captionValue, let transcript {
@@ -94,9 +96,22 @@ public struct TranscriptTidyContext: Sendable, Equatable {
       if existingCaption == trimmedTranscript { captionValue = nil }
     }
     self.caption = captionValue
+    self.knownNames = Self.cleanedNames(knownNames)
   }
 
-  public var isEmpty: Bool { title == nil && caption == nil }
+  public var isEmpty: Bool { title == nil && caption == nil && knownNames.isEmpty }
+
+  /// 发给模型的名字表：去空白、去重、每条限长、总数不超过名字表上限。
+  static func cleanedNames(_ names: [String]) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for raw in names {
+      guard let name = KnownNamePolicy.cleaned(raw), seen.insert(KnownNamePolicy.identity(name)).inserted else { continue }
+      result.append(name)
+      if result.count >= KnownNamePolicy.maximumNames { break }
+    }
+    return result
+  }
 
   private static func clipped(_ value: String?, limit: Int) -> String? {
     guard let value else { return nil }
@@ -164,6 +179,8 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
   /// 单段请求的思考 token 与实际发出的推理参数，只进诊断日志。
   public let reasoningTokens: Int?
   public let requestNote: String?
+  /// 模型拿不准的地方（原文片段已核对过确实在稿子里）。正文里这些地方保持听写原样。
+  public let doubts: [TranscriptDoubt]
 
   public var isPartial: Bool { failedChunkCount > 0 }
 
@@ -176,8 +193,10 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
     chunkCount: Int = 1,
     failureReason: String? = nil,
     reasoningTokens: Int? = nil,
-    requestNote: String? = nil
+    requestNote: String? = nil,
+    doubts: [TranscriptDoubt] = []
   ) {
+    self.doubts = doubts
     self.text = text
     self.promptTokens = promptTokens
     self.completionTokens = completionTokens
@@ -234,8 +253,9 @@ public enum TranscriptTidyPrompt {
   public static let system = """
     你是听写还原器。把机器听写稿还原成说话人更可能说的那句话，不是润色成一篇新文章。
     可以做：根据标题、配文和前后句，纠正同音、近音的常用词和术语听写错误；补齐标点；按语义分段。
-    人名、昵称、账号名、小众品牌名、机构名只能照着标题或配文里出现过的写法改；\
-    标题和配文里没有出现的，一律保留听写稿原样，不要按读音猜一个更像名字的写法。
+    人名、昵称、账号名、小众品牌名、机构名只能照着标题、配文或「常用名字」一行里出现过的写法改；\
+    这几处都没有出现的，一律保留听写稿原样，不要按读音猜一个更像名字的写法。\
+    「常用名字」是用户确认过的正确写法：听写成了读音相近的词、而上下文明显在说他们时，改成这里的写法。
     例外：广为人知的科技产品、AI 模型、软件和常用英文术语（例如 Claude、ChatGPT、Opus、token、prompt、vlog、API），\
     听写成了读音相近的词、而上下文明显在说它时，可以直接改回正确写法，即使标题和配文里没写。
     嘈杂录音里很多句子只是个别词听错：结合前后句和标题配文，把能确定的那几个词改正（例如「理出一个脉论」→「理出一个脉络」），\
@@ -251,6 +271,10 @@ public enum TranscriptTidyPrompt {
     输入可能附带标题和配文作为上下文；它们只用来帮助还原听写错误，不要写进输出。
     输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
     只输出还原后的正文（含小标题行），不要代码块。
+    存疑清单：个别词你怀疑听错了、却无法确定该改成什么时，正文里照听写原样保留，不要改；\
+    在全部正文之后另起一行写 \(TranscriptDoubtParser.marker)，紧跟一个 JSON 数组，每项形如 \
+    {"original":"正文里逐字出现的原文片段，带上前后文，2 到 30 个字","suggestion":"建议改成的写法","reason":"一句话理由"}。\
+    original 要带足前后文，保证整份稿子里只出现一处，suggestion 是整段 original 改完后的写法；最多 6 项，只列真正拿不准、又影响理解的；能确定的直接改在正文里，不要放进清单；没有就不要写这一行。
     """
 
   /// 听写稿校对：只回修改清单（2026-10-04 起取代整段重写，见 `TranscriptTidyEdits`）。
@@ -308,6 +332,7 @@ public enum TranscriptTidyPrompt {
     var lines: [String] = []
     if let title = context.title { lines.append("标题：\(title)") }
     if let caption = context.caption { lines.append("配文：\(caption)") }
+    if !context.knownNames.isEmpty { lines.append("常用名字：\(context.knownNames.joined(separator: "、"))") }
     lines.append("-----")
     lines.append("转写片段：")
     return lines.joined(separator: "\n")

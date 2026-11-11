@@ -38,5 +38,6 @@ enum MigrationFixture {
     if version >= 22 { try Migration022.apply(to: db) }
     if version >= 23 { try Migration023.apply(to: db) }
     if version >= 24 { try Migration024.apply(to: db) }
+    if version >= 25 { try Migration025.apply(to: db) }
   }
 }

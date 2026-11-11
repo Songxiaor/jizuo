@@ -336,6 +336,23 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     return (completion.content, completion.promptTokens, completion.completionTokens, completion.totalTokens)
   }
 
+  /// 通用的「一问一答」调用：给标签整理、素材卡用。和脑图走同一条非流式路径，
+  /// 所以 `reasoning_effort` 降级链、关思考开关、取消和错误分类都和脑图一致
+  /// （`lowReasoningEffort` 仍是 "low"）。解析由调用方负责。
+  public func completeStructured(
+    profile: ProviderProfile,
+    apiKey: String,
+    model: String,
+    systemPrompt: String,
+    userContent: String
+  ) async throws -> (content: String, promptTokens: Int?, completionTokens: Int?, totalTokens: Int?) {
+    let completion = try await nonStreamingChatCompletion(
+      profile: profile, apiKey: apiKey, model: model,
+      systemPrompt: systemPrompt, userContent: userContent
+    )
+    return (completion.content, completion.promptTokens, completion.completionTokens, completion.totalTokens)
+  }
+
   private struct NonStreamingChatResult {
     let content: String
     let promptTokens: Int?
