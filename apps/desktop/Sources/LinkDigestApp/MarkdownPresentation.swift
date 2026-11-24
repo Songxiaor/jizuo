@@ -2844,7 +2844,7 @@ struct MarkdownContentView: View {
         guard let target else { return }
         // 章节在整篇文字视图里：滚到它的字符位置。模块锚点（标签、脑图…）在详情页，照旧。
         if case let .block(index) = target, let offset = articleCache.current?.anchors[index] {
-          articleScrollRequest = ReadingScrollRequest(characterOffset: offset, token: UUID())
+          articleScrollRequest = ReadingScrollRequest(characterOffset: offset, token: UUID(), anchorBlock: index)
           scrollTarget = nil
           return
         }
@@ -2883,7 +2883,8 @@ struct MarkdownContentView: View {
       onOpenLink: { url in _ = openValidated(url) },
       revealText: revealText,
       onRequestEdit: onRequestEdit,
-      scrollRequest: articleScrollRequest
+      scrollRequest: articleScrollRequest,
+      anchorOffsets: document.anchors
     )
     // 往左多伸出一段页边：正文、卡片都用段落缩进退回原位，折叠小三角放在这段页边里。
     // 不用负 padding（2026-10-07）：它让外层以为这块比可用宽度多 20pt，整组内容被重新居中、
@@ -3207,7 +3208,8 @@ struct MarkdownContentView: View {
           AnyView(ReadingCalloutCard(
             kind: kind, title: title, fold: fold,
             accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor,
-            foldMemory: self.calloutFolds, foldKey: "\(self.anchorScope)|\(segmentIndex)|\(anchor)|\(calloutKey)"
+            foldMemory: self.calloutFolds,
+            foldKey: "\(self.anchorScope)|\(segmentIndex)|\(anchor)|callout|\(String(describing: kind))|\(title)"
           ) {
             if !text.isEmpty {
               AnyView(self.structuredMarkdown(
@@ -3380,7 +3382,7 @@ struct MarkdownContentView: View {
         accentColor: accentColor,
         secondaryTextColor: secondaryTextColor,
         foldMemory: calloutFolds,
-        foldKey: "\(anchorScope)|\(slot)|callout|\(kind)|\(title)|\(text)"
+        foldKey: "\(anchorScope)|\(slot)|callout|\(kind)|\(title)"
       ) {
         if !text.isEmpty {
           // 按完整正文排：提示框 / 折叠块里常有代码、表格，只用文字视图会把它们丢掉。

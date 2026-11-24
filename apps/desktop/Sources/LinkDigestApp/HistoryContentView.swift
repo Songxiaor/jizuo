@@ -4716,6 +4716,9 @@ struct LiveRecordingIconDot: View {
 /// The detail header needs a recognizable source, not a wire-format URL.
 /// Opening and copying still use the untouched value; this is display-only.
 
+/// 详情滚动区的滚动状态（引用盒，读写都不触发重绘）。
+@MainActor private final class DetailScrollState { var isScrolling = false }
+
 private struct HistoryDetailView: View, Equatable {
   @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
   /// 切侧栏范围那一小段空档里的替身（见 `HistoryViewModel.navigationStandInDetail`）：
@@ -4776,6 +4779,8 @@ private struct HistoryDetailView: View, Equatable {
   /// 「处理」面板收起后延时弹出的动作、标签小窗延时：各存任务，换条目 / 离开时取消。
   @State private var processFollowUpTask: Task<Void, Never>?
   @State private var tagEditorTask: Task<Void, Never>?
+  /// 详情滚动区当前是否在滚（含程序动画滚动）。用引用盒而不是 @State：只读不触发重绘。
+  @State private var detailScrollState = DetailScrollState()
   /// 「处理」面板（2026-09-28 工序印）：原来是系统菜单，只能放单色小图标，放不下印。
   @State private var isProcessPanelPresented = false
   /// 盖章那一刻：记下这一条已经做过哪些工序，新多出来的那道就盖一下。
@@ -6565,6 +6570,9 @@ private struct HistoryDetailView: View, Equatable {
       Button("上传并区分") { model.diarizeSpeakers(detail: detail, mode: .online) }
     } message: {
       Text("会把这段录音上传到你在「设置 → 模型」里配置的在线服务（模型名带 diarize 的那个），按录音时长计费。在线结果会替换当前的转写文字。")
+    }
+    .onScrollPhaseChange { _, phase in
+      detailScrollState.isScrolling = phase.isScrolling
     }
     .onChange(of: moduleScrollTarget) { _, target in
       guard let target else { return }
@@ -9167,7 +9175,13 @@ private struct HistoryDetailView: View, Equatable {
     let taskID = detail.task.id
     tagEditorTask?.cancel()
     tagEditorTask = Task { @MainActor in
-      try? await Task.sleep(nanoseconds: 250_000_000)
+      // 先给滚动一拍起步（目标本来就在视野内时根本不会滚，这一拍后直接弹）；
+      // 再等滚动落定，最多等 1.5s，防止某些滚动不上报结束。
+      try? await Task.sleep(nanoseconds: 80_000_000)
+      let deadline = ContinuousClock.now + .milliseconds(1_500)
+      while !Task.isCancelled, detailScrollState.isScrolling, ContinuousClock.now < deadline {
+        try? await Task.sleep(nanoseconds: 30_000_000)
+      }
       guard !Task.isCancelled, model.selectedTaskID == taskID else { return }
       tagEditorRequest += 1
     }

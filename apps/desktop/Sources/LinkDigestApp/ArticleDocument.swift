@@ -242,6 +242,8 @@ final class ArticleDocumentCache {
 struct ReadingScrollRequest: Equatable {
   let characterOffset: Int
   let token: UUID
+  /// 目标章节的块序号。纠偏时按它在最新排版里重新查字符位置，不用跳转那一刻抓的偏移。
+  var anchorBlock: Int? = nil
 }
 
 /// 往左多伸出一段、但对外只占给定宽度的容器：外层的对齐和居中不受影响。

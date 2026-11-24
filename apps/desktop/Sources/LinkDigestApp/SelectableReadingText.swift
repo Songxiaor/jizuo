@@ -542,6 +542,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
   var horizontalInset: CGFloat = 0
   /// 目录跳转：滚到正文里某个字符位置（整篇文章一个视图时，章节没有各自的 SwiftUI 锚点）。
   var scrollRequest: ReadingScrollRequest? = nil
+  /// 当前排版里「块序号 → 字符位置」。纠偏执行时按锚点从这里重新取，不用跳转时的旧偏移。
+  var anchorOffsets: [Int: Int] = [:]
 
   func makeCoordinator() -> Coordinator { Coordinator(onOpenLink: onOpenLink) }
 
@@ -596,6 +598,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
     }
     view.linkTextAttributes?[.foregroundColor] = accent
     let reduceMotion = context.environment.accessibilityReduceMotion
+    context.coordinator.anchorOffsets = anchorOffsets
     if let scrollRequest, context.coordinator.lastScrollToken != scrollRequest.token {
       context.coordinator.lastScrollToken = scrollRequest.token
       context.coordinator.cancelCorrection()
@@ -604,7 +607,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
       // 校正由 coordinator 持有：新的跳转、正文变化、视图卸载、用户开始滚动都会取消它，
       // 避免 0.45s 后把位置从更新的跳转或用户手里抢回去。减弱动态下直接到位。
       context.coordinator.scheduleCorrection(
-        view: view, characterOffset: scrollRequest.characterOffset, animated: !reduceMotion
+        view: view, characterOffset: scrollRequest.characterOffset, anchorBlock: scrollRequest.anchorBlock,
+        animated: !reduceMotion
       )
     }
     if context.coordinator.lastRevealText != revealText,
@@ -667,6 +671,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
     var lastRevealText: String?
     /// 上次应用到 textStorage 的实例，用于 `===` 快速跳过（见 updateNSView）。
     var lastApplied: NSAttributedString?
+    /// 最新排版的锚点位置表，每次 updateNSView 刷新。
+    var anchorOffsets: [Int: Int] = [:]
     init(onOpenLink: @escaping (URL) -> Void) { self.onOpenLink = onOpenLink }
 
     private var correctionTask: Task<Void, Never>?
@@ -674,7 +680,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
     private var liveScrollObserver: NSObjectProtocol?
 
     @MainActor
-    func scheduleCorrection(view: NSTextView, characterOffset: Int, animated: Bool) {
+    func scheduleCorrection(view: NSTextView, characterOffset: Int, anchorBlock: Int? = nil, animated: Bool) {
       cancelCorrection()
       let token = UUID()
       correctionToken = token
@@ -690,7 +696,9 @@ struct SelectableReadingTextView: NSViewRepresentable {
         try? await Task.sleep(nanoseconds: 450_000_000)
         guard !Task.isCancelled, let self, let view, self.correctionToken == token else { return }
         self.removeLiveScrollObserver()
-        SelectableReadingTextView.scroll(view, toCharacter: characterOffset, animated: animated, duration: 0.16)
+        // 公式、流程图排好后文本偏移会变：执行时按锚点重新解析，找不到才退回跳转时的位置。
+        let offset = anchorBlock.flatMap { self.anchorOffsets[$0] } ?? characterOffset
+        SelectableReadingTextView.scroll(view, toCharacter: offset, animated: animated, duration: 0.16)
       }
     }
 
