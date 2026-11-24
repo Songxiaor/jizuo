@@ -31,7 +31,7 @@ struct LocalImportDropTarget: ViewModifier {
           }
         }
         .animation(
-          DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+          (reduceMotion ? nil : DesignTokens.Motion.standard),
           value: controller.transcriptionQueue != nil
         )
       }
@@ -72,8 +72,34 @@ struct LocalImportDropTarget: ViewModifier {
 struct LocalImportStatusSheet: View {
   @ObservedObject var controller: LocalImportController
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 只认「在哪一阶段」，不认阶段里的进度数字：running 每走一项都会变，不该每次都整块换内容。
+  private var phaseKind: Int {
+    switch controller.phase {
+    case .idle: 0
+    case .running: 1
+    case .confirming: 2
+    case .finished: 3
+    case .failed: 4
+    }
+  }
 
   var body: some View {
+    // 阶段切换只做内容淡入淡出（不位移）；窗口高度由系统随内容调整。
+    ZStack {
+      phaseContent
+        .id(phaseKind)
+        .transition(.opacity)
+    }
+    .animation(
+      (reduceMotion ? nil : DesignTokens.Motion.standard),
+      value: phaseKind)
+    .padding(DesignTokens.Space.xl)
+    .frame(width: 460)
+  }
+
+  private var phaseContent: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
       switch controller.phase {
       case .idle:
@@ -90,6 +116,7 @@ struct LocalImportStatusSheet: View {
           .themedFont(.callout)
           .foregroundStyle(.secondary)
           .lineLimit(2)
+          .motionNumericText(reduceMotion: reduceMotion)
         HStack {
           Spacer()
           Button("停止") { controller.cancel() }
@@ -164,8 +191,6 @@ struct LocalImportStatusSheet: View {
         }
       }
     }
-    .padding(DesignTokens.Space.xl)
-    .frame(width: 460)
   }
 
   private func summaryText(_ summary: LocalImportController.Summary) -> String {

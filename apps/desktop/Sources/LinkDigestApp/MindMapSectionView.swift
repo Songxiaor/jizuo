@@ -9,6 +9,7 @@ struct MindMapSectionView: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let taskID: TaskID
   @Bindable var model: HistoryViewModel
 
@@ -83,6 +84,11 @@ struct MindMapSectionView: View {
       stateText
       Spacer(minLength: 0)
     }
+    // 状态行换字（生成中 → 已保存 / 失败）只做透明度淡变，不改位置。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: model.mindMapState(for: taskID)
+    )
   }
 
   @ViewBuilder private func themePicker(_ record: TaskMindMapRecord) -> some View {
@@ -276,6 +282,7 @@ private struct MindMapCanvasView: View {
   /// 特别高的图再按这个上限整体缩小，细节点开灯箱看。
   private static let maximumHeight: CGFloat = 1_200
   @State private var availableWidth: CGFloat = 0
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// 按可用宽度和高度上限算出的显示尺寸。
   static func displaySize(for imageSize: CGSize, width: CGFloat) -> CGSize {
@@ -304,6 +311,8 @@ private struct MindMapCanvasView: View {
           .frame(maxWidth: .infinity)
           .contentShape(Rectangle())
           .onTapGesture { presentLightbox() }
+          .linkCursor()
+          .transition(.opacity)
           .help("点击放大查看")
           .accessibilityLabel("脑图")
           .accessibilityValue(outlineText)
@@ -311,8 +320,14 @@ private struct MindMapCanvasView: View {
           .accessibilityHint("点击放大查看")
       } else {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+          .transition(.opacity)
       }
     }
+    // 解码完成的成品淡入；只动透明度，高度早已按 SVG 声明定好。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: image != nil
+    )
     .frame(maxWidth: .infinity)
     .frame(height: displayHeight)
     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }

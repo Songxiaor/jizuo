@@ -26,6 +26,8 @@ private struct MaterialCardBody: View {
   @Bindable var controller: MaterialCardController
   let taskID: TaskID
   let hasTranscript: Bool
+  @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -45,7 +47,7 @@ private struct MaterialCardBody: View {
       statusView
     }
     .padding(12)
-    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+    .background(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).fill(Color.secondary.opacity(0.08)))
     .accessibilityIdentifier("material-card-section")
   }
 
@@ -83,7 +85,16 @@ private struct MaterialCardBody: View {
     }
   }
 
-  @ViewBuilder private var statusView: some View {
+  private var statusView: some View {
+    statusContent
+      // 生成中 / 授权 / 失败换行只做透明度淡变。
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: controller.state(for: taskID)
+      )
+  }
+
+  @ViewBuilder private var statusContent: some View {
     switch controller.state(for: taskID) {
     case .idle:
       EmptyView()
@@ -104,7 +115,7 @@ private struct MaterialCardBody: View {
       }
       .accessibilityIdentifier("material-card-consent")
     case let .failed(message):
-      Text(message).themedFont(.caption).foregroundStyle(.red)
+      Text(message).themedFont(.caption).foregroundStyle(appTheme.danger)
         .accessibilityIdentifier("material-card-error")
     }
   }
@@ -135,6 +146,7 @@ struct MaterialCardSettingsSection: View {
 
 private struct MaterialCardBatchView: View {
   @Bindable var controller: MaterialCardController
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -159,6 +171,7 @@ private struct MaterialCardBatchView: View {
         HStack(spacing: 8) {
           ProgressView(value: Double(done), total: Double(max(total, 1))).frame(width: 160)
           Text("\(done)/\(total)" + (failed > 0 ? "，失败 \(failed)" : "")).themedFont(.caption)
+            .monospacedDigit()
           Button("停止") { controller.stopBatch() }
             .accessibilityIdentifier("material-card-batch-stop")
         }
@@ -167,5 +180,9 @@ private struct MaterialCardBatchView: View {
         Button("好") { controller.dismissBatch() }.controlSize(.small)
       }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: controller.batchState
+    )
   }
 }

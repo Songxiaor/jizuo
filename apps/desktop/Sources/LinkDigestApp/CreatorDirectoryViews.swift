@@ -101,7 +101,8 @@ struct CreatorDirectoryPlatformSection<Content: View>: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Button {
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+        // 展开折叠改的是高度和箭头角度：减弱动态时直接到位。
+        withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) {
           isExpanded.toggle()
         }
       } label: {
@@ -159,6 +160,8 @@ struct CreatorDirectoryCard: View {
   var onCapture: (() -> Void)? = nil
 
   private var captureAction: (() -> Void)? { onCapture ?? onRetryAvatar }
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
 
   private var isEmpty: Bool { creator.savedWorkCount == 0 }
 
@@ -211,14 +214,19 @@ struct CreatorDirectoryCard: View {
     .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
     .opacity(isEmpty ? 0.6 : 1)
     .background(
-      isSelected ? theme.accent.opacity(0.12) : theme.card,
+      isSelected ? theme.accent.opacity(0.12) : (isHovering ? theme.accent.opacity(0.05) : theme.card),
       in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
     )
     .overlay {
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-        .strokeBorder(isSelected ? theme.accent.opacity(0.5) : theme.hairline, lineWidth: 1)
+        .strokeBorder(
+          isSelected ? theme.accent.opacity(0.5) : (isHovering ? theme.accent.opacity(0.25) : theme.hairline),
+          lineWidth: 1
+        )
         .allowsHitTesting(false)
     }
+    .onHover { isHovering = $0 }
+    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: isHovering)
     .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
     .accessibilityElement(children: .combine)
     .accessibilityLabel(creator.directoryDisplayName)
@@ -239,10 +247,13 @@ struct CreatorWorkSelectionControl: View {
   let isSelected: Bool
   let theme: HistoryThemeTokens
   let onToggle: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button(action: onToggle) {
       Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+        .motionSymbolReplace(reduceMotion: reduceMotion)
+        .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), value: isSelected)
         .font(.system(size: 19, weight: .semibold))
         .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
         .frame(width: 28, height: 28)
@@ -284,6 +295,7 @@ struct CreatorSavedWorkCard: View {
   /// 视频取到的都是黑场帧：不退回正文摘录（那会让视频卡长得像文字卡），
   /// 直接用平台图标占位。
   @State private var posterIsBlank = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var capturedTitle: String {
     if row.sourceLabel == "X public article endpoint",
@@ -599,9 +611,19 @@ struct CreatorSavedWorkCard: View {
     }
   }
 
-  @ViewBuilder private var cover: some View {
+  /// 封面到了只做透明度淡入（不动尺寸与位置，卡片高度固定）。
+  private var cover: some View {
+    coverContent
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: coverImage != nil
+      )
+  }
+
+  @ViewBuilder private var coverContent: some View {
     if let coverImage {
       CreatorWorkCardFillImage(image: coverImage)
+        .transition(.opacity)
     } else if coverLoading, hasCoverURL || row.hasMedia == true {
       placeholderCover(showsProgress: true)
     } else if posterIsBlank {

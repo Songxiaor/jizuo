@@ -58,6 +58,7 @@ struct YouTubeEmbedPlayerCard: View {
   var hasCaptions: Bool = true
   @ObservedObject private var cinema = VideoCinemaController.shared
   @ObservedObject private var diagnostics = YouTubeEmbedDiagnostics.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// 封面优先：用户点过播放才创建 WKWebView。
   ///
   /// 以前卡片一渲染就冷启动一个无缓存的 WKWebView，YouTube 播放器整套 JS
@@ -150,8 +151,14 @@ struct YouTubeEmbedPlayerCard: View {
                   }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+                .transition(.opacity)
               }
             }
+            // 加载蒙版淡出（纯透明度）。
+            .animation(
+              DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+              value: diagnostics.status[videoID] == YouTubeEmbedDiagnostics.loadingMessage
+            )
             .onTapGesture(count: 2) { if !cinema.isPresented { cinema.present(videoID: videoID) } }
         }
       }
@@ -213,6 +220,8 @@ private struct YouTubeEmbedPosterView: View {
   let videoID: String
   let onPlay: () -> Void
   @State private var thumbnail: NSImage?
+  @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button(action: onPlay) {
@@ -224,19 +233,27 @@ private struct YouTubeEmbedPosterView: View {
               // hqdefault 是 4:3（自带上下黑边），fill 进 16:9 框正好裁掉黑边；
               // maxresdefault 本身 16:9，fill 等于原样铺满。
               .scaledToFill()
+              .transition(.opacity)
           }
         }
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: thumbnail != nil
+        )
         .overlay {
           // 只放播放键：底下那行「点击加载播放器」压在封面字上，读不清也多余——
           // 卡片标题行已经写了「联网播放」（2026-10-01 走查）。说明留在悬停提示里。
           Image(systemName: "play.circle.fill")
             .font(.system(size: 52))
-            .foregroundStyle(.white.opacity(0.92))
+            .foregroundStyle(.white.opacity(isHovering ? 1 : 0.92))
             .shadow(color: .black.opacity(0.45), radius: 10)
+            .scaleEffect(isHovering && !reduceMotion ? 1.06 : 1)
+            .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: isHovering)
         }
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
     .help("点击加载 YouTube 播放器（需要联网）")
     .accessibilityLabel("播放视频")
     .accessibilityIdentifier("history-youtube-poster")
@@ -422,6 +439,7 @@ struct VideoCinemaOverlay: View {
   private let closeBarHeight: CGFloat = 30
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isCloseHovering = false
 
   /// 放大、关闭都淡入淡出，不再一帧之内整块出现或消失（2026-10-04 走查）。只淡、不缩放：
   /// 缩放让播放器每帧换尺寸，主线程跟着每帧重排（2026-10-04 Instruments）。
@@ -456,9 +474,12 @@ struct VideoCinemaOverlay: View {
               } label: {
                 Image(systemName: "xmark.circle.fill")
                   .font(.system(size: 22))
-                  .foregroundStyle(.white.opacity(0.85))
+                  .foregroundStyle(.white.opacity(isCloseHovering ? 1 : 0.85))
+                  .scaleEffect(isCloseHovering && !reduceMotion ? 1.06 : 1)
+                  .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: isCloseHovering)
               }
               .buttonStyle(.plain)
+              .onHover { isCloseHovering = $0 }
               .keyboardShortcut(.cancelAction)
               .padding(.bottom, 8)
               .accessibilityIdentifier("history-youtube-cinema-close")

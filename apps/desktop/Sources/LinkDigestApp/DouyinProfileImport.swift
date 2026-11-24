@@ -925,6 +925,23 @@ final class DouyinProfileImportViewModel: ObservableObject {
     phase = .stopped(.user)
   }
 
+  /// 贴错链接时退回输入页（保留输入框里的文字），不用关窗重开。
+  func backToInput() {
+    candidates = []
+    selectedIDs = []
+    accessURLs = [:]
+    saveMessage = nil
+    profileName = nil
+    creatorID = nil
+    profileAuthorID = nil
+    resolvedPlatform = nil
+    discoverySource = .embeddedWebKit
+    sourceURL = nil
+    scanRequestID += 1
+    navigationRequestID += 1
+    phase = .input
+  }
+
   func continueLoading() {
     guard sourceURL != nil, profileAuthorID != nil else { return }
     if discoverySource == .browserExtension {
@@ -1607,6 +1624,8 @@ struct DouyinProfileImportSheet: View {
   @State private var showsHomepage = false
   @State private var hostWindowSize: CGSize?
   @State private var workSort: WorkSortOrder = .original
+  /// 刚补全完的作品：「数据已完整」只在这几秒里亮一下，之后收起，不常驻遮挡封面。
+  @State private var completedFlash: Set<String> = []
   @State private var sortReferenceDate = Date()
   @State private var presentedLoginPlatform: ProfileImportPlatform?
   @StateObject private var metricsReader = DouyinProfileMetricsReader()
@@ -1638,9 +1657,12 @@ struct DouyinProfileImportSheet: View {
   var body: some View {
     VStack(spacing: 0) {
       if model.sourceURL == nil {
-        header
-        Divider()
-        inputPanel
+        VStack(spacing: 0) {
+          header
+          Divider()
+          inputPanel
+        }
+        .transition(.opacity)
       } else {
         VStack(spacing: 0) {
           discoveryHeader
@@ -1679,20 +1701,30 @@ struct DouyinProfileImportSheet: View {
             .clipped()
           }
         }
+        .transition(.opacity)
       }
       if !model.candidates.isEmpty {
-        Divider()
-        footer
+        VStack(spacing: 0) {
+          Divider()
+          footer
+        }
+        .transition(.opacity)
       }
     }
     .frame(width: sheetSize.width, height: sheetSize.height, alignment: .top)
     // 只对离散阶段动画；hostWindowSize（拖动缩放主窗口）不进动画，保持跟手。
     // 减弱动态效果时弹窗外框直接换尺寸，不插值。
     .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: sheetStage)
+    // 输入页 ↔ 发现页：只淡入淡出，不动位置；两页同高（320），不涉及尺寸。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: model.sourceURL == nil
+    )
     .background(theme.card)
     .background(SheetHostWindowSizeReader(size: $hostWindowSize))
     .onChange(of: metricsReader.readingID) { previous, current in
       if let previous, current == nil {
+        flashCompleted(previous)
         metricsQueue.finish(previous)
         readNextVisibleMetrics()
       }
@@ -1926,7 +1958,11 @@ struct DouyinProfileImportSheet: View {
       }
       sessionStatusRow
       if case let .failed(message) = model.phase {
-        Label("\(message) 可点击「查看主页」检查后重试。", systemImage: "exclamationmark.triangle.fill")
+        Label(
+          model.discoverySource == .browserExtension
+            ? "\(message) 请在浏览器里刷新该主页后，再点一次汲作扩展。"
+            : "\(message) 可点击「查看主页」检查后重试。",
+          systemImage: "exclamationmark.triangle.fill")
           .themedFont(.caption)
           .foregroundStyle(theme.danger)
           .fixedSize(horizontal: false, vertical: true)
@@ -1989,17 +2025,35 @@ struct DouyinProfileImportSheet: View {
 
   private var discoveryControls: some View {
     HStack(spacing: DesignTokens.Space.sm) {
-      if model.isScanning || model.phase == .loading {
-        ProgressView().controlSize(.small)
-        Text(model.isScanning ? "正在加载…" : "正在打开…")
-          .themedFont(.caption)
-          .foregroundStyle(theme.secondaryText)
-          .lineLimit(1)
+      // 固定占位的小转圈：状态文字只在下方摘要行说一次，这里不再重复，
+      // 也避免加载字增删让 ViewThatFits 在临界宽度来回跳行。
+      ZStack {
+        if model.isScanning || model.phase == .loading {
+          ProgressView().controlSize(.small)
+            .transition(.opacity)
+        }
+      }
+      .frame(width: 16, height: 16)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: model.isScanning || model.phase == .loading
+      )
+      .accessibilityLabel(model.isScanning ? "正在加载更多" : (model.phase == .loading ? "正在打开主页" : ""))
+      .accessibilityHidden(!(model.isScanning || model.phase == .loading))
+      if model.candidates.isEmpty, model.sourceURL != nil, !model.isScanning {
+        Button("换链接") { stopReading(); model.backToInput() }
+          .accessibilityIdentifier("douyin-profile-import-back-to-input")
+          .help("退回上一步，重新贴主页链接")
       }
       if model.discoverySource == .browserExtension {
         Button("在浏览器中打开当前主页", action: model.openCurrentProfileInBrowser)
           .accessibilityIdentifier("douyin-profile-import-open-browser")
-        Button("继续加载", action: model.continueLoading)
+        // 扩展来源的作品由浏览器那边滚动加载，这里没有「继续加载」可点。
+        Text("在浏览器里往下滚加载更多，再点一次汲作扩展")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+          .lineLimit(1)
+          .truncationMode(.tail)
       } else {
         if model.isScanning {
           Button("暂停加载", action: model.stop)
@@ -2041,7 +2095,9 @@ struct DouyinProfileImportSheet: View {
           } else {
             Text("还没找到作品")
               .themedFont(.headline)
-            Text("如需登录或验证，请点击上方「查看主页」。")
+            Text(model.discoverySource == .browserExtension
+                 ? "请在浏览器里打开该主页并往下滚，再点一次汲作扩展。"
+                 : "如需登录或验证，请点击上方「查看主页」。")
               .themedFont(.callout)
           }
         }
@@ -2068,6 +2124,8 @@ struct DouyinProfileImportSheet: View {
               .onDisappear { metricsQueue.setVisible(candidate.id, false) }
           }
         }
+        // 只在切换排序方式时重排动画；流式追加作品、滚动都不带动画。
+        .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: workSort)
         .padding(DesignTokens.Space.md)
       }
     }
@@ -2099,13 +2157,28 @@ struct DouyinProfileImportSheet: View {
       CreatorWorkCardCoverSlot {
         DouyinProfilePreviewImage(url: candidate.coverURL, previewText: candidate.previewText)
           .overlay(alignment: .topTrailing) {
-            Image(systemName: candidate.wasAlreadySaved ? "checkmark.circle.fill" : (selected ? "checkmark.circle.fill" : "circle"))
-              .font(.body)
-              .foregroundStyle(candidate.wasAlreadySaved ? theme.success : theme.accent)
-              .padding(4)
-              .background(theme.card, in: Circle())
-              .padding(8)
-              .accessibilityHidden(true)
+            Group {
+              if candidate.wasAlreadySaved {
+                // 已保存与已选中原先共用同一个勾，只靠绿/蓝分；已保存改成文字小标。
+                Text("已存")
+                  .themedFont(.caption2, weight: .medium)
+                  .foregroundStyle(theme.success)
+                  .padding(.horizontal, 6)
+                  .padding(.vertical, 3)
+                  .background(theme.card, in: Capsule())
+                  .help("这条已经在资料库里了")
+              } else {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                  .motionSymbolReplace(reduceMotion: reduceMotion)
+                  .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), value: selected)
+                  .font(.body)
+                  .foregroundStyle(theme.accent)
+                  .padding(4)
+                  .background(theme.card, in: Circle())
+              }
+            }
+            .padding(8)
+            .accessibilityHidden(true)
           }
       }
     } text: {
@@ -2143,8 +2216,10 @@ struct DouyinProfileImportSheet: View {
 
   @ViewBuilder
   private func candidateMetricsStatusOverlay(_ candidate: DouyinProfileImportCandidate) -> some View {
-    if model.platform == .douyin {
-      let complete = hasCompleteMetrics(candidate)
+    let complete = hasCompleteMetrics(candidate)
+    let isReading = metricsReader.readingID == candidate.id
+    // 补全成功的胶囊只亮一小会儿（completedFlash），之后收起，不常驻遮挡封面左下角。
+    if model.platform == .douyin, !(complete && !isReading && !completedFlash.contains(candidate.id)) {
       let message = metricsReader.messages[candidate.id]
       HStack(spacing: 5) {
         if metricsReader.readingID == candidate.id {
@@ -2154,7 +2229,7 @@ struct DouyinProfileImportSheet: View {
             .buttonStyle(.plain)
             .accessibilityLabel("取消补全数据")
         } else {
-          Text(complete ? "数据已完整" : (message ?? "等待主页列表数据"))
+          Text(complete ? "数据已完整" : (message ?? "排队补全数据…"))
             .lineLimit(1)
             .help(metricsHelp(candidate, complete: complete, message: message))
           if !complete, message != nil {
@@ -2177,6 +2252,7 @@ struct DouyinProfileImportSheet: View {
       .padding(.vertical, 5)
       .background(.ultraThinMaterial, in: Capsule())
       .padding(6)
+      .transition(.opacity)
     }
   }
 
@@ -2217,6 +2293,17 @@ struct DouyinProfileImportSheet: View {
     if metricsReader.readingID == nil {
       metricsQueue.finish(id)
       Task { @MainActor in readNextVisibleMetrics() }
+    }
+  }
+
+  /// 读完一条后，让「数据已完整」亮 1.8 秒再淡出。
+  private func flashCompleted(_ id: String) {
+    completedFlash.insert(id)
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(1_800))
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+        _ = completedFlash.remove(id)
+      }
     }
   }
 

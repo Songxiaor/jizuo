@@ -5,6 +5,8 @@ import SwiftUI
 /// 用户思考的优先级高于分类整理。
 struct AnnotationSectionView: View {
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var hoveredExcerptID: TaskExcerpt.ID?
   @State private var isNoteEditorPresented = false
   @FocusState private var isNoteEditorFocused: Bool
   /// 等待确认删除的摘录。摘录是用户亲手挑的句子，误点小叉号就没了又找不回，
@@ -36,16 +38,29 @@ struct AnnotationSectionView: View {
                 .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
+            // 悬停时才露出删除键（平时不抢摘录文字的注意力）；不可见时也不接收点击。
+            .opacity(hoveredExcerptID == excerpt.id ? 1 : 0)
+            .allowsHitTesting(hoveredExcerptID == excerpt.id)
+            .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: hoveredExcerptID == excerpt.id)
             .help("删除这条摘录")
             .accessibilityLabel("删除这条摘录")
           }
           .padding(10)
           .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+          .onHover { hovering in
+            if hovering {
+              hoveredExcerptID = excerpt.id
+            } else if hoveredExcerptID == excerpt.id {
+              hoveredExcerptID = nil
+            }
+          }
+          .transition(DesignTokens.Transition.reveal(reduceMotion: reduceMotion))
           .accessibilityIdentifier("annotation-excerpt-row")
         }
       }
       if showsNoteEditor, isNoteEditorPresented || !model.taskNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         Text("这篇内容的笔记").themedFont(.headline)
+          .transition(.opacity)
         TextEditor(text: $model.taskNoteDraft)
           .focused($isNoteEditorFocused)
           .accessibilityLabel("这篇内容的笔记")
@@ -62,16 +77,21 @@ struct AnnotationSectionView: View {
             model.scheduleNoteSave(taskID: taskID)
           }
           .accessibilityIdentifier("annotation-note-editor")
+          .transition(DesignTokens.Transition.reveal(reduceMotion: reduceMotion))
         Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
           .themedFont(.footnote)
           .foregroundStyle(.secondary)
+          .transition(.opacity)
       } else if showsNoteEditor {
         Button("为这篇内容添加笔记", systemImage: "square.and.pencil") {
-          isNoteEditorPresented = true
+          withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) {
+            isNoteEditorPresented = true
+          }
           isNoteEditorFocused = true
         }
           .buttonStyle(.borderless)
           .themedFont(.callout)
+          .transition(.opacity)
           .accessibilityIdentifier("annotation-add-note")
       }
       // 「自动保存」这句承诺必须有对应的失败出口，否则存储出问题时用户毫无察觉
@@ -89,9 +109,16 @@ struct AnnotationSectionView: View {
             .buttonStyle(.link)
             .themedFont(.caption2)
         }
+        .transition(.opacity)
         .accessibilityIdentifier("annotation-failure-banner")
       }
     }
+    // 摘录增删（高度会变）：减弱动态时直接到位；失败条只淡变。只在对应值变化时生效。
+    .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: model.taskExcerpts.count)
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: model.annotationFailureMessage != nil
+    )
     // 摘录路由跟随当前详情条目；离开时清空，避免误挂到旧条目。
     .onAppear { ExcerptCaptureRouter.shared.handler = { model.addExcerpt($0, taskID: taskID) } }
     .onChange(of: taskID) { _, newTaskID in

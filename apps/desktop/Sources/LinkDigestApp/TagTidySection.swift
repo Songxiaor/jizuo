@@ -9,6 +9,7 @@ struct TagTidySection: View {
   var isReadOnly: Bool
 
   @State private var isListExpanded = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var newTagName = ""
 
   private var document: FrequentTagsDocument { frequent.document }
@@ -21,7 +22,10 @@ struct TagTidySection: View {
           Text(summaryLine).themedFont(.caption).foregroundStyle(.secondary)
         }
         Spacer()
-        Button(isListExpanded ? "收起" : "查看 / 编辑") { isListExpanded.toggle() }
+        Button(isListExpanded ? "收起" : "查看 / 编辑") {
+          // 展开会改变高度：减弱动态时直接到位。
+          withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) { isListExpanded.toggle() }
+        }
           .accessibilityIdentifier("tag-manager-frequent-toggle")
         Button("AI 整理标签…") { controller.start() }
           .disabled(isReadOnly || controller.isBusy)
@@ -35,7 +39,10 @@ struct TagTidySection: View {
           Button("知道了") { frequent.dismissNotice() }.controlSize(.small)
         }
       }
-      if isListExpanded { listEditor }
+      if isListExpanded {
+        listEditor
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+      }
       if !document.suggestions.isEmpty { suggestionList }
     }
     .padding(8)
@@ -124,8 +131,37 @@ private struct FlowRow<Content: View>: View {
 /// 整理方案的预览与确认。
 struct TagTidySheet: View {
   @Bindable var controller: TagTidyController
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 只认「在哪一态」，不认态里携带的文案。
+  private var stateKind: Int {
+    switch controller.state {
+    case .idle: 0
+    case .needsConsent: 1
+    case .working: 2
+    case .applying: 3
+    case .preview: 4
+    case .finished: 5
+    case .failed: 6
+    }
+  }
 
   var body: some View {
+    // 六态切换只做内容淡入淡出（不位移）。
+    ZStack {
+      stateContent
+        .id(stateKind)
+        .transition(.opacity)
+    }
+    .animation(
+      (reduceMotion ? nil : DesignTokens.Motion.standard),
+      value: stateKind)
+    .padding(DesignTokens.Space.lg)
+    .frame(width: 540)
+    .frame(minHeight: 160)
+  }
+
+  private var stateContent: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
       switch controller.state {
       case .idle:
@@ -151,9 +187,6 @@ struct TagTidySheet: View {
         buttons([("好", .confirm, { controller.dismissResult() })])
       }
     }
-    .padding(DesignTokens.Space.lg)
-    .frame(width: 540)
-    .frame(minHeight: 160)
   }
 
   private enum Role { case cancel, confirm }
@@ -219,5 +252,8 @@ struct TagTidySheet: View {
       }
     }
     .opacity(binding.wrappedValue.isEnabled ? 1 : 0.5)
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: binding.wrappedValue.isEnabled)
   }
 }

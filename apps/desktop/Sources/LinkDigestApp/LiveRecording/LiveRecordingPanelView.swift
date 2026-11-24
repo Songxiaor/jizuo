@@ -22,7 +22,7 @@ struct LiveRecordingPanelView: View {
       directoryRow
       if let warning = probeWarning {
         Text(warning)
-          .font(.system(size: 11))
+          .themedFont(.subheadline)
           .foregroundStyle(appTheme.warning)
       }
       if controller.items.isEmpty {
@@ -53,14 +53,14 @@ struct LiveRecordingPanelView: View {
         .font(.system(size: 20, weight: .semibold))
       if controller.activeCount > 0 {
         Text("\(controller.activeCount) 场进行中")
-          .font(.system(size: 12))
+          .themedFont(.callout)
           .motionNumericText(reduceMotion: reduceMotion)
           .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: controller.activeCount)
           .foregroundStyle(appTheme.secondaryText)
       }
       Spacer()
       Text("在抖音或小红书直播间点扩展里的「开始录制」")
-        .font(.system(size: 11))
+        .themedFont(.subheadline)
         .foregroundStyle(appTheme.secondaryText)
     }
   }
@@ -68,7 +68,7 @@ struct LiveRecordingPanelView: View {
   private var directoryRow: some View {
     HStack(spacing: DesignTokens.Space.sm) {
       Text("存放位置")
-        .font(.system(size: 12))
+        .themedFont(.callout)
         .foregroundStyle(appTheme.secondaryText)
       Text(preferences.displayPath)
         .font(.system(size: 12, design: .monospaced))
@@ -83,7 +83,7 @@ struct LiveRecordingPanelView: View {
           .controlSize(.small)
       }
       Text(freeSpaceText)
-        .font(.system(size: 11))
+        .themedFont(.subheadline)
         .foregroundStyle(appTheme.secondaryText)
     }
   }
@@ -93,7 +93,7 @@ struct LiveRecordingPanelView: View {
       Text("还没有录制")
         .font(.system(size: 15, weight: .medium))
       Text("打开抖音或小红书直播间，点浏览器扩展里的「开始录制」。录制在后台进行，关掉网页不影响。")
-        .font(.system(size: 12))
+        .themedFont(.callout)
         .foregroundStyle(appTheme.secondaryText)
         .multilineTextAlignment(.center)
         .frame(maxWidth: 420)
@@ -118,11 +118,11 @@ struct LiveRecordingPanelView: View {
       }
       HStack(spacing: DesignTokens.Space.sm) {
         Text("\(item.quality.displayName) · \(item.segmentCount) 段 · 还能录\(LiveRecordingDiskSpace.estimatedHoursText(freeBytes: controller.freeBytes, quality: item.quality))")
-          .font(.system(size: 11))
+          .themedFont(.subheadline)
           .foregroundStyle(appTheme.secondaryText)
         if let title = item.title, !title.isEmpty, title != item.displayName {
           Text(title)
-            .font(.system(size: 11))
+            .themedFont(.subheadline)
             .foregroundStyle(appTheme.secondaryText)
             .lineLimit(1)
         }
@@ -133,7 +133,7 @@ struct LiveRecordingPanelView: View {
         }
         if item.phase == .merging {
           Text("正在合成…")
-            .font(.system(size: 11))
+            .themedFont(.subheadline)
             .foregroundStyle(appTheme.secondaryText)
         }
         if item.phase == .completed {
@@ -141,7 +141,7 @@ struct LiveRecordingPanelView: View {
             .controlSize(.small)
           if item.isIngesting {
             Text("正在入库…")
-              .font(.system(size: 11))
+              .themedFont(.subheadline)
               .foregroundStyle(appTheme.secondaryText)
           }
           if Self.showsRemoveButton(phase: item.phase, isIngesting: item.isIngesting) {
@@ -164,17 +164,17 @@ struct LiveRecordingPanelView: View {
       }
       if let failure = item.failureMessage, !failure.isEmpty {
         Text(failure)
-          .font(.system(size: 11))
+          .themedFont(.subheadline)
           .foregroundStyle(appTheme.danger)
       }
       if let note = item.qualityNote, !note.isEmpty {
         Text(note)
-          .font(.system(size: 11))
+          .themedFont(.subheadline)
           .foregroundStyle(appTheme.warning)
       }
       if item.phase == .completed, let reason = item.stopReason {
         Text(Self.stopReasonText(reason, platform: item.platform))
-          .font(.system(size: 11))
+          .themedFont(.subheadline)
           .foregroundStyle(appTheme.secondaryText)
       }
       if let fileURL = item.fileURL, item.phase == .completed {
@@ -191,9 +191,9 @@ struct LiveRecordingPanelView: View {
       }
     }
     .padding(10)
-    .background(appTheme.card, in: RoundedRectangle(cornerRadius: 10))
+    .background(appTheme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
     .overlay(
-      RoundedRectangle(cornerRadius: 10)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg)
         .stroke(appTheme.hairline, lineWidth: 1)
     )
   }
@@ -249,6 +249,10 @@ struct LiveRecordingPanelView: View {
       .padding(.vertical, 2)
       .foregroundStyle(color)
       .background(color.opacity(0.12), in: Capsule())
+      // 状态换了：色块和字 `instant` 淡过去，不位移。
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+        value: text)
   }
 
   private func chooseDirectory() {

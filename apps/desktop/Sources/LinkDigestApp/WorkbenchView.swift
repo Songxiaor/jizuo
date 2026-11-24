@@ -15,6 +15,12 @@ struct PieceStageTrack: View {
   /// 一张卡里再嵌四个可点的小目标，等于让人在两种点击之间猜。
   var onSelect: ((PieceStage?) -> Void)?
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 只动颜色与光晕透明度，没有位移与尺寸，减弱动态下仍可保留短淡变。
+  private var stageAnimation: Animation {
+    DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)
+  }
 
   private var isInteractive: Bool { onSelect != nil }
 
@@ -31,6 +37,7 @@ struct PieceStageTrack: View {
             Rectangle()
               .fill(index <= currentIndex ? appTheme.accent : Color.secondary.opacity(0.25))
               .frame(height: 1.5)
+              .animation(stageAnimation, value: currentIndex)
           }
           dot(index: index, item: item)
         }
@@ -70,6 +77,7 @@ struct PieceStageTrack: View {
           .fill(appTheme.accent.opacity(index == currentIndex ? 0.18 : 0))
           .frame(width: 16, height: 16)
       )
+      .animation(stageAnimation, value: currentIndex)
 
     if isInteractive {
       Button { onSelect?(stage == item ? nil : item) } label: {
@@ -93,6 +101,7 @@ struct PieceStageTrack: View {
     let text = Text(item.displayName)
       .themedFont(.caption, weight: index == currentIndex ? .semibold : .regular)
       .foregroundStyle(index == currentIndex ? appTheme.accent : Color.secondary.opacity(0.6))
+      .animation(stageAnimation, value: currentIndex)
 
     if isInteractive {
       Button { onSelect?(stage == item ? nil : item) } label: {
@@ -113,6 +122,8 @@ struct PieceCard: View {
   @Environment(\.appTheme) private var appTheme
   let piece: PieceSummary
   let isSelected: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
 
   private var stageColor: Color {
     switch piece.stage {
@@ -175,6 +186,10 @@ struct PieceCard: View {
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .fill(isSelected ? appTheme.accent.opacity(0.12) : appTheme.card)
+        .overlay(
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+            .fill(Color.primary.opacity(isHovering && !isSelected ? 0.04 : 0))
+        )
     )
     .overlay(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
@@ -184,6 +199,10 @@ struct PieceCard: View {
         )
     )
     .contentShape(Rectangle())
+    .onHover { isHovering = $0 }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering)
   }
 }
 

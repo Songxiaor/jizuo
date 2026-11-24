@@ -7,6 +7,7 @@ struct KnowledgeVaultSettingsView: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var model: KnowledgeVaultSettingsViewModel
   /// 「清除」不可逆（要重新选一次文件夹并重新授权），先问一句。
   @State private var isClearConfirmationPresented = false
@@ -92,15 +93,19 @@ struct KnowledgeVaultSettingsView: View {
         control: {
         VStack(alignment: .leading, spacing: 12) {
           if case let .running(done, total) = model.state, total > 0 {
-            HStack(spacing: 12) {
-              ProgressView(value: Double(done), total: Double(total))
-                .frame(maxWidth: 180)
-              Text("\(done)/\(total)")
-                .themedFont(.subheadline)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 12) {
+              HStack(spacing: 12) {
+                ProgressView(value: Double(done), total: Double(total))
+                  .frame(maxWidth: 180)
+                // 同步时计数跳得快：只等宽，不滚动。
+                Text("\(done)/\(total)")
+                  .themedFont(.subheadline)
+                  .monospacedDigit()
+                  .foregroundStyle(.secondary)
+              }
+              Divider()
             }
-            Divider()
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           }
 
           // 手排页里默认 Toggle 是勾选框；设置窗口的开关统一用拨杆并靠右，
@@ -128,6 +133,7 @@ struct KnowledgeVaultSettingsView: View {
               .themedFont(.subheadline)
               .foregroundStyle(appTheme.danger)
               .accessibilityIdentifier("knowledge-vault-auto-sync-error")
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           }
 
           if model.isDirectoryMissing {
@@ -135,6 +141,7 @@ struct KnowledgeVaultSettingsView: View {
               .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .accessibilityIdentifier("knowledge-vault-missing-hint")
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           }
 
           if !model.hasDirectory {
@@ -145,8 +152,14 @@ struct KnowledgeVaultSettingsView: View {
 
           if case let .finished(report) = model.state {
             resultView(report)
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           }
         }
+        // 只在这几个条件翻转时动；进度计数换值不触发。
+        .animation(
+          reduceMotion ? nil : DesignTokens.Motion.standard,
+          value: contentStateKey
+        )
         },
         titleAccessory: {
           Button(action: { Task { await model.sync() } }) {
@@ -156,6 +169,11 @@ struct KnowledgeVaultSettingsView: View {
               Text("立即同步")
             }
           }
+          .contentTransition(.opacity)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: model.isRunning
+          )
           .buttonStyle(.appProminent(appTheme.accent))
           .disabled(!model.canSync)
           .accessibilityIdentifier("knowledge-vault-sync")
@@ -172,6 +190,17 @@ struct KnowledgeVaultSettingsView: View {
       }
     }
     .onAppear(perform: model.load)
+  }
+
+  /// 控制「进度条 / 结果 / 提示行」显隐的状态摘要；换进度计数不改它。
+  private var contentStateKey: String {
+    var parts: [String] = []
+    if case let .running(_, total) = model.state, total > 0 { parts.append("running") }
+    if case .finished = model.state { parts.append("finished") }
+    if model.lastAutoSyncFailureMessage != nil { parts.append("autoFail") }
+    if model.isDirectoryMissing { parts.append("missing") }
+    if !model.hasDirectory { parts.append("noDir") }
+    return parts.joined(separator: ",")
   }
 
   @ViewBuilder

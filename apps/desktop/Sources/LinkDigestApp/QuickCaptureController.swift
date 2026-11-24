@@ -143,6 +143,7 @@ private struct QuickCaptureView: View {
   @ObservedObject var controller: QuickCaptureController
   @FocusState private var focused: Bool
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
@@ -156,35 +157,32 @@ private struct QuickCaptureView: View {
           in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         )
         .overlay(alignment: .topLeading) {
-          if controller.text.isEmpty {
-            Text("记下一个灵感、一句金句、一个选题…")
-              .themedFont(.body)
-              .foregroundStyle(.tertiary)
-              .padding(.horizontal, 13).padding(.vertical, 8)
-              .allowsHitTesting(false)
+          // 动画只挂在占位字这块小容器上，不碰输入框本身。
+          ZStack {
+            if controller.text.isEmpty {
+              Text("记下一个灵感、一句金句、一个选题…")
+                .themedFont(.body)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 13).padding(.vertical, 8)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
           }
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+            value: controller.text.isEmpty)
         }
         .accessibilityIdentifier("quick-capture-text")
       HStack(spacing: DesignTokens.Space.sm) {
         ForEach(MaterialCatalog.MaterialType.allCases, id: \.self) { type in
-          Button {
+          QuickCaptureTypePill(type: type, isSelected: controller.type == type) {
             controller.type = type
-          } label: {
-            Label(type.tagName, systemImage: type.systemImage)
-              .themedFont(.caption)
-              .padding(.horizontal, DesignTokens.Space.sm).padding(.vertical, DesignTokens.Space.xs)
-              // 选中用主题强调色；原来是系统 `.tint`，这个窗口没注入主题时就是系统蓝。
-              .background(
-                controller.type == type ? AnyShapeStyle(theme.accent.opacity(0.2)) : AnyShapeStyle(theme.badge),
-                in: Capsule()
-              )
           }
-          .buttonStyle(.plain)
-          .accessibilityIdentifier("quick-capture-type-\(type.tagName)")
         }
       }
       if let error = controller.errorMessage {
         Text(error).themedFont(.caption).foregroundStyle(theme.danger)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
       HStack {
         Text("存到「我的笔记」，全局快捷键 \(QuickCaptureController.shortcutDescription)")
@@ -198,11 +196,48 @@ private struct QuickCaptureView: View {
           .accessibilityIdentifier("quick-capture-save")
       }
     }
+    // 只在报错条出现/消失时触发；减弱动态下高度直接到位。
+    .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: controller.errorMessage != nil)
     .padding(.horizontal, DesignTokens.Space.lg)
     // 顶部让出透明标题栏的高度。
     .padding(.top, DesignTokens.Space.xxl)
     .padding(.bottom, DesignTokens.Space.lg)
     .frame(minWidth: 460, minHeight: 240)
     .onAppear { focused = true }
+  }
+}
+
+/// 类型胶囊：选中底色 `instant` 切换，hover 轻提亮。
+private struct QuickCaptureTypePill: View {
+  let type: MaterialCatalog.MaterialType
+  let isSelected: Bool
+  let action: () -> Void
+  @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Label(type.tagName, systemImage: type.systemImage)
+        .themedFont(.caption)
+        .padding(.horizontal, DesignTokens.Space.sm).padding(.vertical, DesignTokens.Space.xs)
+        // 选中用主题强调色；原来是系统 `.tint`，这个窗口没注入主题时就是系统蓝。
+        .background(
+          isSelected ? AnyShapeStyle(theme.accent.opacity(0.2)) : AnyShapeStyle(theme.badge),
+          in: Capsule()
+        )
+        .overlay(
+          Capsule().fill(Color.primary.opacity(isHovering && !isSelected ? 0.06 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+      value: isSelected)
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering)
+    .accessibilityIdentifier("quick-capture-type-\(type.tagName)")
   }
 }

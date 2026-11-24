@@ -6,6 +6,7 @@ struct MediaStorageSettingsView: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var model: MediaStorageSettingsViewModel
   /// 删除扫出来的那份清单前先问一句：这些是已经落在本机磁盘上的视频文件，删了就没了。
   @State private var isUnusedDeletionConfirmationPresented = false
@@ -109,9 +110,11 @@ struct MediaStorageSettingsView: View {
               // 不是危险动作：用普通按钮、直接执行，不再弹确认框（2026-10-01）。
               Button("恢复默认") { model.restoreDefault() }
                 .buttonStyle(.appNormal)
+                .transition(.opacity)
                 .accessibilityIdentifier("media-storage-default")
               }
             }
+            .animation(quickAnimation, value: model.usesCustomDirectory)
           }
 
           // 「上限」标签和行标题重复，去掉，步进器自己显示当前值就够。
@@ -126,7 +129,8 @@ struct MediaStorageSettingsView: View {
               step: MediaStorageSettingsViewModel.limitStepMegabytes
             ) {
               Text(MediaStorageSettingsViewModel.formattedLimit(megabytes: model.downloadLimitMegabytes))
-                .monospacedDigit()
+                .motionNumericText(reduceMotion: reduceMotion)
+                .animation(quickAnimation, value: model.downloadLimitMegabytes)
                 .accessibilityIdentifier("media-storage-download-limit-value")
             }
             .fixedSize()
@@ -152,7 +156,8 @@ struct MediaStorageSettingsView: View {
                 step: MediaStorageSettingsViewModel.capacityStepGigabytes
               ) {
                 Text("\(model.totalCapacityGigabytes) GB")
-                  .monospacedDigit()
+                  .motionNumericText(reduceMotion: reduceMotion)
+                  .animation(quickAnimation, value: model.totalCapacityGigabytes)
                   .accessibilityIdentifier("media-storage-total-capacity-value")
               }
               .fixedSize()
@@ -178,6 +183,7 @@ struct MediaStorageSettingsView: View {
                 // 数量和体积再报一遍——用户点确认之前要看见自己删的是多少东西。
                 Button("删除这 \(count) 个文件") { isUnusedDeletionConfirmationPresented = true }
                   .buttonStyle(.appDestructive(appTheme.danger))
+                  .transition(.opacity)
                   .accessibilityIdentifier("media-storage-delete-orphans")
                   .confirmationDialog(
                     "删除 \(count) 个多余视频？",
@@ -192,6 +198,7 @@ struct MediaStorageSettingsView: View {
                   }
               }
             }
+            .animation(quickAnimation, value: hasScannedOrphans)
           }
       }
 
@@ -225,14 +232,19 @@ struct MediaStorageSettingsView: View {
             }
             .foregroundStyle(.secondary)
             .padding(.leading, 26)
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           }
           if let status = model.cleanupStatus {
             Text(status)
               .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .accessibilityIdentifier("media-storage-transcribed-cleanup-status")
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           }
         }
+        // 条件行出现时会改高度：减弱动态效果下直接到位。动画只绑这两个条件。
+        .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: model.cleanupMode == .afterDays)
+        .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: model.cleanupStatus != nil)
       }
       .confirmationDialog(
         cleanupConfirmationTitle,
@@ -258,6 +270,15 @@ struct MediaStorageSettingsView: View {
       }
     }
     .onAppear(perform: model.load)
+  }
+
+  private var quickAnimation: Animation {
+    DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)
+  }
+
+  private var hasScannedOrphans: Bool {
+    if case let .scanned(count, _) = model.orphanState { return count > 0 }
+    return false
   }
 
   private var cleanupConfirmationTitle: String {

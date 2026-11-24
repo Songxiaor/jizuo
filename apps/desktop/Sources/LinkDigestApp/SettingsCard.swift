@@ -309,7 +309,8 @@ struct SettingsRow<Control: View>: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
-          .transition(.opacity.combined(with: .move(edge: .top)))
+          .clipped()
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -506,7 +507,8 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
-          .transition(.opacity.combined(with: .move(edge: .top)))
+          .clipped()
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
     .padding(.vertical, DesignTokens.Space.md)
@@ -539,25 +541,62 @@ extension SettingsCard where TitleAccessory == EmptyView {
   }
 }
 
+/// ⓘ 说明开关。展开时换成实心图标 + 强调色，告诉用户「说明正开着」。
+///
+/// 说明区高度会变：减弱动态效果时传 nil 直接到位。
+private struct SettingsInfoButton: View {
+  let title: String
+  @Binding var isExpanded: Bool
+  let reduceMotion: Bool
+  @Environment(\.appTheme) private var theme
+
+  var body: some View {
+    Button {
+      withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) {
+        isExpanded.toggle()
+      }
+    } label: {
+      Image(systemName: isExpanded ? "info.circle.fill" : "info.circle")
+        .motionSymbolReplace(reduceMotion: reduceMotion)
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(isExpanded ? theme.accent : Color.secondary)
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+      value: isExpanded
+    )
+    .help("查看\(title)说明")
+    .accessibilityLabel("\(title)详细说明")
+    .accessibilityValue(isExpanded ? "已展开" : "已收起")
+  }
+}
+
 @MainActor @ViewBuilder
 private func settingsInfoButton(
   title: String,
   isExpanded: Binding<Bool>,
   reduceMotion: Bool
 ) -> some View {
-  Button {
-    withAnimation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)
-    ) {
-      isExpanded.wrappedValue.toggle()
-    }
-  } label: {
-    Image(systemName: "info.circle")
+  SettingsInfoButton(title: title, isExpanded: isExpanded, reduceMotion: reduceMotion)
+}
+
+/// 单选 / 下拉列表行的轻 hover 底色。只做底色，不位移。
+private struct SettingsHoverRowBackground: ViewModifier {
+  var cornerRadius: CGFloat = DesignTokens.Radius.sm
+  @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+          .fill(Color.primary.opacity(isHovering ? 0.05 : 0))
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: isHovering)
+      )
+      .onHover { isHovering = $0 }
   }
-  .buttonStyle(.borderless)
-  .foregroundStyle(.secondary)
-  .help("查看\(title)说明")
-  .accessibilityLabel("\(title)详细说明")
 }
 
 /// 一组单选，每项自带解释。
@@ -579,6 +618,7 @@ struct SettingsChoiceList<Value: Hashable>: View {
   /// 选中钮走主题强调色。`Color.accentColor` 读的是 App 级强调色（默认系统蓝），
   /// 不受窗口根部 `.tint(theme.accent)` 影响——于是暖褐主题下这一颗单选钮是蓝的。
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -592,6 +632,9 @@ struct SettingsChoiceList<Value: Hashable>: View {
               .foregroundStyle(isSelected ? theme.accent : Color.secondary)
               .font(.body)
               .frame(width: 18)
+              .animation(
+                DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+                value: isSelected)
             VStack(alignment: .leading, spacing: 2) {
               Text(choice.title)
                 .themedFont(.body)
@@ -604,6 +647,12 @@ struct SettingsChoiceList<Value: Hashable>: View {
             }
             Spacer(minLength: 0)
           }
+          // hover 底色比文字略大一圈；用负边距抵回去，排版位置和原来完全一样。
+          .padding(.vertical, 3)
+          .padding(.horizontal, 4)
+          .modifier(SettingsHoverRowBackground())
+          .padding(.vertical, -3)
+          .padding(.horizontal, -4)
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -675,6 +724,8 @@ struct SettingsInlineNotice: View {
   var body: some View {
     Label(message, systemImage: symbol)
       .themedFont(.subheadline)
+      // 下载百分比、x / y 进度会反复换值：等宽数字，整句不抖。
+      .monospacedDigit()
       .foregroundStyle(color)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -729,6 +780,8 @@ struct SettingsMenuLabel: View {
   /// true 时占满父视图给的宽度（用于「默认模型」这类独行长下拉）；
   /// false 保持标准 240pt 列宽（多级下拉在一列里对齐）。
   var fillsWidth = false
+  @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     HStack(spacing: DesignTokens.Space.sm) {
@@ -758,13 +811,17 @@ struct SettingsMenuLabel: View {
     .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.sm + 1, style: .continuous)
-        .fill(Color.primary.opacity(0.05))
+        .fill(Color.primary.opacity(isHovering ? 0.08 : 0.05))
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: isHovering)
     )
     .overlay(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.sm + 1, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.15))
     )
     .contentShape(Rectangle())
+    .onHover { isHovering = $0 }
   }
 }
 
@@ -842,6 +899,7 @@ struct SettingsMenuPicker<Value: Hashable>: View {
                 }
                 .padding(.horizontal, DesignTokens.Space.lg)
                 .padding(.vertical, 7)
+                .modifier(SettingsHoverRowBackground(cornerRadius: 0))
                 .contentShape(Rectangle())
               }
               .buttonStyle(.plain)

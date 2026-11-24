@@ -504,6 +504,7 @@ struct InstantHoverTip: ViewModifier {
   @State private var isShown = false
   @State private var pending: Task<Void, Never>?
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   func body(content: Content) -> some View {
     content
@@ -525,16 +526,21 @@ struct InstantHoverTip: ViewModifier {
             .foregroundStyle(theme.primaryText)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(theme.card, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hairline))
-            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+            .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+            .overlay(
+              RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                .strokeBorder(theme.hairline)
+            )
+            .designShadow(.floating, tint: theme.canvas)
             .fixedSize()
             // 提示框的顶边落在控件底边下方 6pt。
             .alignmentGuide(.bottom) { $0[.top] - 6 }
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+            .transition(.opacity)
         }
       }
+      .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: isShown)
       .accessibilityHint(text ?? "")
   }
 }
@@ -549,6 +555,8 @@ extension View {
 /// 归属印「汲 / 作」只在页头骑缝盖一方，这里不再重复（2026-09-30）。
 /// 每枚章悬停看来历，点一下跳到那份内容。
 struct ColophonView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var hoveredSeal: ProcessStep?
   let text: String
   /// 下载来的本地文件记着来源网址时，题跋文字可以点开它（2026-09-29）。
   var link: URL? = nil
@@ -586,8 +594,17 @@ struct ColophonView: View {
             ForEach(records) { record in
               Button { onSelect?(record.step) } label: {
                 SealMark(glyph: record.step.glyph, size: 26, color: sealColor, style: .stamped, rotation: record.step.rotation)
+                  .brightness(hoveredSeal == record.step && onSelect != nil ? 0.12 : 0)
               }
               .buttonStyle(.plain)
+              .onHover { hovering in
+                if hovering {
+                  hoveredSeal = record.step
+                } else if hoveredSeal == record.step {
+                  hoveredSeal = nil
+                }
+              }
+              .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: hoveredSeal)
               .instantHoverTip(record.provenance + (onSelect == nil ? "" : " · 点一下跳过去"))
               .accessibilityLabel(record.provenance)
               .accessibilityIdentifier("history-colophon-seal-\(record.step.rawValue)")

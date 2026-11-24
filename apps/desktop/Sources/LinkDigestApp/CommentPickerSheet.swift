@@ -70,6 +70,7 @@ final class CommentPickerModel: ObservableObject {
 /// 与「添加网页链接」同一套版式：标题 + 一句说明、内容区、底部取消与主操作。
 struct CommentPickerSheet: View {
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @StateObject private var model: CommentPickerModel
   let title: String
   let onSave: ([CapturedComment], Int?) -> Void
@@ -93,8 +94,14 @@ struct CommentPickerSheet: View {
           .truncationMode(.tail)
       }
 
-      content
-        .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 420, alignment: .top)
+      // 加载 / 失败 / 列表三态：只淡入淡出，不位移；内容区高度固定范围，不会跳。
+      ZStack(alignment: .top) {
+        content
+      }
+      .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 420, alignment: .top)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: phaseKind)
 
       HStack {
         Button("取消") {
@@ -112,6 +119,7 @@ struct CommentPickerSheet: View {
         }
         .keyboardShortcut(.defaultAction)
         .disabled(model.phase != .loaded)
+        .motionNumericText(reduceMotion: reduceMotion)
         .accessibilityIdentifier("comment-picker-save")
       }
     }
@@ -119,6 +127,20 @@ struct CommentPickerSheet: View {
     .frame(width: 560)
     .onAppear { model.start() }
     .onDisappear { model.cancel() }
+  }
+
+  private var phaseKind: Int {
+    switch model.phase {
+    case .loading: 0
+    case .loaded: 1
+    case .failed: 2
+    }
+  }
+
+  /// 勾选变化走 `instant`：行底色、勾选图标、计数数字在同一个事务里一起换。
+  private func selectionChange(_ change: () -> Void) {
+    withAnimation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), change)
   }
 
   private var saveTitle: String {
@@ -140,25 +162,34 @@ struct CommentPickerSheet: View {
           .foregroundStyle(.tertiary)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .transition(.opacity)
       .accessibilityIdentifier("comment-picker-loading")
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle.fill")
         .themedFont(.callout)
         .foregroundStyle(theme.warning)
         .fixedSize(horizontal: false, vertical: true)
+        .transition(.opacity)
         .accessibilityIdentifier("comment-picker-error")
     case .loaded:
-      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      loadedContent
+        .transition(.opacity)
+    }
+  }
+
+  private var loadedContent: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
         HStack(spacing: DesignTokens.Space.sm) {
           Text(countLabel)
             .themedFont(.callout, weight: .semibold)
+            .motionNumericText(reduceMotion: reduceMotion)
             .accessibilityIdentifier("comment-picker-count")
           Spacer()
-          Button("全选") { model.selectAll() }
+          Button("全选") { selectionChange { model.selectAll() } }
             .buttonStyle(.plain)
             .foregroundStyle(theme.accent)
             .disabled(model.selectedIDs.count == model.comments.count)
-          Button("清空") { model.selectNone() }
+          Button("清空") { selectionChange { model.selectNone() } }
             .buttonStyle(.plain)
             .foregroundStyle(theme.accent)
             .disabled(model.selectedIDs.isEmpty)
@@ -169,7 +200,7 @@ struct CommentPickerSheet: View {
               CommentPickerRow(
                 comment: comment,
                 isSelected: model.selectedIDs.contains(comment.id),
-                toggle: { model.toggle(comment.id) }
+                toggle: { selectionChange { model.toggle(comment.id) } }
               )
             }
           }
@@ -185,7 +216,6 @@ struct CommentPickerSheet: View {
         Text("保存后会替换这条内容原有的评论段；条数在「设置 → 收集 · 汲 → 评论」里改。")
           .themedFont(.caption)
           .foregroundStyle(.secondary)
-      }
     }
   }
 
@@ -203,6 +233,8 @@ private struct CommentPickerRow: View {
   let comment: CapturedComment
   let isSelected: Bool
   let toggle: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
 
   var body: some View {
     Button(action: toggle) {
@@ -211,6 +243,7 @@ private struct CommentPickerRow: View {
           .foregroundStyle(isSelected ? theme.accent : Color.secondary)
           .font(.system(size: 14))
           .padding(.top, 1)
+          .motionSymbolReplace(reduceMotion: reduceMotion)
         VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
           HStack(spacing: DesignTokens.Space.xs) {
             Text(displayAuthor)
@@ -243,12 +276,18 @@ private struct CommentPickerRow: View {
       .padding(.horizontal, DesignTokens.Space.sm)
       .padding(.leading, CGFloat(min(comment.depth, 3)) * DesignTokens.Space.lg)
       .background(
-        isSelected ? theme.accent.opacity(0.08) : Color.clear,
+        isSelected
+          ? theme.accent.opacity(0.08)
+          : (isHovering ? Color.primary.opacity(0.04) : Color.clear),
         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
       )
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering)
     .accessibilityLabel("\(displayAuthor)：\(comment.body)")
     .accessibilityValue(isSelected ? "已勾选" : "未勾选")
     .accessibilityAddTraits(.isToggle)

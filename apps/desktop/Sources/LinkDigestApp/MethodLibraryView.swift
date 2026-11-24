@@ -10,6 +10,12 @@ import SwiftUI
 struct MethodLibraryView: View {
   var model: HistoryViewModel
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 改变高度的展开/折叠、增删：减弱动态时直接到位。
+  private var layoutAnimation: Animation? {
+    reduceMotion ? nil : DesignTokens.Motion.standard
+  }
 
   @State private var isExpanded = false
   @State private var draft = ""
@@ -33,19 +39,23 @@ struct MethodLibraryView: View {
         }
         .padding(.horizontal, DesignTokens.Layout.columnInset)
         .padding(.bottom, DesignTokens.Space.md)
+        .animation(layoutAnimation, value: model.writingMethods.count)
+        .animation(layoutAnimation, value: model.distilledCandidates)
+        .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
   }
 
   private var header: some View {
     Button {
-      isExpanded.toggle()
+      withAnimation(layoutAnimation) { isExpanded.toggle() }
     } label: {
       HStack(spacing: 5) {
         // 展开箭头统一成 chevron.right 转 90°，和选题板、侧栏「更多平台」一致（2026-10-01）。
         Image(systemName: "chevron.right")
           .font(.system(size: 9, weight: .semibold))
           .rotationEffect(.degrees(isExpanded ? 90 : 0))
+          .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: isExpanded)
         Text("方法库")
           .themedFont(.body, weight: .semibold)
         Spacer(minLength: 0)
@@ -81,6 +91,7 @@ struct MethodLibraryView: View {
       // 下次还是写一样的东西。
       if let rejection {
         Text(rejection.message)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
           .themedFont(.caption)
           .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
@@ -155,6 +166,7 @@ struct MethodLibraryView: View {
         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
           .fill(appTheme.warning.opacity(0.08))
       )
+      .transition(.opacity)
     }
   }
 
@@ -162,12 +174,12 @@ struct MethodLibraryView: View {
     let text = draft
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     if let failed = model.addWritingMethod(text) {
-      rejection = failed
+      withAnimation(layoutAnimation) { rejection = failed }
       // 不清空输入框:用户要在原文上改，重打一遍是白费。
       return
     }
     draft = ""
-    rejection = nil
+    withAnimation(layoutAnimation) { rejection = nil }
   }
 
   private func row(_ method: WritingMethod) -> some View {
@@ -195,6 +207,7 @@ struct MethodLibraryView: View {
       Spacer(minLength: 0)
     }
     .padding(.vertical, 2)
+    .transition(.opacity)
     .contextMenu {
       Button("删掉这条", role: .destructive) { model.deleteWritingMethod(id: method.id) }
     }

@@ -10,7 +10,12 @@ import SwiftUI
 struct MCPSettingsView: View {
   @Environment(\.appTheme) private var theme
   @ObservedObject var model: MCPController
+  /// 复制失败的提示（成功只让按钮临时亮「已复制」）。几秒后自己收掉。
   @State private var copyNotice = ""
+  /// 刚复制成功的那个按钮；1.5 秒后恢复。设置窗口里没有主窗口那颗全局药丸，所以反馈放在按钮上。
+  @State private var copiedKey: String?
+  @State private var copyResetTask: Task<Void, Never>?
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var showsAdvanced = false
 
   var body: some View {
@@ -66,10 +71,8 @@ struct MCPSettingsView: View {
         control: {
           VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
             if !copyNotice.isEmpty {
-              Text(copyNotice)
-                .themedFont(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+              SettingsInlineNotice(message: copyNotice, tone: .danger)
+                .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
             }
             if !model.helperAvailable {
               SettingsInlineNotice(
@@ -91,6 +94,7 @@ struct MCPSettingsView: View {
             }
             .themedFont(.subheadline)
           }
+          .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: copyNotice.isEmpty)
         },
         titleAccessory: {
           copyInstructionsButton
@@ -129,14 +133,22 @@ struct MCPSettingsView: View {
   }
 
   private var copyInstructionsButton: some View {
-    Button("复制说明") { copy(model.agentInstructions) }
+    Button(copiedKey == "instructions" ? "已复制" : "复制说明") {
+      copy(model.agentInstructions, key: "instructions")
+    }
+      .contentTransition(.opacity)
+      .animation(copyLabelAnimation, value: copiedKey)
       .buttonStyle(.appProminent(theme.accent))
       .disabled(!model.enabled || !model.helperAvailable)
       .accessibilityIdentifier("mcp-copy-instructions")
   }
 
   @ViewBuilder private var advancedButtons: some View {
-    Button("复制配置") { copy(model.connectionJSON) }
+    Button(copiedKey == "config" ? "已复制" : "复制配置") {
+      copy(model.connectionJSON, key: "config")
+    }
+      .contentTransition(.opacity)
+      .animation(copyLabelAnimation, value: copiedKey)
       .buttonStyle(.appQuiet)
       .disabled(!model.helperAvailable)
     Button("重启服务") { model.restart() }
@@ -144,10 +156,21 @@ struct MCPSettingsView: View {
       .disabled(!model.enabled)
   }
 
-  private func copy(_ value: String) {
+  private var copyLabelAnimation: Animation {
+    DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)
+  }
+
+  private func copy(_ value: String, key: String) {
     NSPasteboard.general.clearContents()
-    copyNotice = NSPasteboard.general.setString(value, forType: .string)
-      ? "已复制，可以粘贴给你的助手了。"
-      : "没复制上，请再点一次。"
+    let ok = NSPasteboard.general.setString(value, forType: .string)
+    copyResetTask?.cancel()
+    copiedKey = ok ? key : nil
+    copyNotice = ok ? "" : "没复制上，请再点一次。"
+    copyResetTask = Task {
+      try? await Task.sleep(for: ok ? .milliseconds(1_500) : .seconds(4))
+      guard !Task.isCancelled else { return }
+      copiedKey = nil
+      copyNotice = ""
+    }
   }
 }

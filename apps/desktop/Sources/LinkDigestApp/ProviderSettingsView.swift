@@ -220,6 +220,8 @@ struct ProviderSettingsView: View {
   @State private var pendingGroupDeletion: LibraryProviderGroup?
   /// 「清除授权记录」按下之后的一行反馈。成功和失败都要说，因为清除本身没有可见效果。
   @State private var consentRevokeNotice: String?
+  @State private var consentRevokeFailed = false
+  @State private var isRevokingConsent = false
   /// 「清除授权记录」的二次确认。清完之后每一项都会重新问一遍，是会改变后续行为的重置。
   @State private var isConsentRevokeConfirmationPresented = false
   /// 「重置为默认提示词」的二次确认。用户手写的提示词会被整段覆盖，且没有撤销。
@@ -230,6 +232,8 @@ struct ProviderSettingsView: View {
   @State private var activeAssignmentPicker: AssignmentPicker?
   /// 「检测可用」包含付费模型时的确认框：编辑窗口里的列表，或模型库。
   @State private var pendingProbeScope: ModelProbeScope?
+  /// 组头菜单「检测这一家」含付费模型时的确认框，装的是这一家的模型 id。
+  @State private var pendingGroupProbeIDs: Set<String>?
 
   enum ModelProbeScope: Identifiable {
     case catalog
@@ -271,11 +275,13 @@ struct ProviderSettingsView: View {
     Binding(
       get: { commentLimit },
       set: { value in
+        let previous = commentLimit
         commentLimit = value
         do {
           try CapturePreferencesStore.standard().setCommentLimit(value)
           commentLimitSaveFailed = false
         } catch {
+          commentLimit = previous
           commentLimitSaveFailed = true
         }
       }
@@ -814,7 +820,7 @@ struct ProviderSettingsView: View {
     controlFillsWidth: true
   ) {
     if model.libraryEntryDisplays.isEmpty {
-      Text("先在下方添加模型")
+      Text("先去「模型服务」添加模型")
         .themedFont(.body)
         .foregroundStyle(.secondary)
         .settingsControlWidth()
@@ -1025,7 +1031,7 @@ struct ProviderSettingsView: View {
             Text(title).themedFont(.body)
             if details != nil {
               Button {
-                withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+                withAnimation((reduceMotion ? nil : DesignTokens.Motion.standard)) {
                   if isExpanded { expandedAssignmentDetails.remove(title) } else { expandedAssignmentDetails.insert(title) }
                 }
               } label: {
@@ -1056,7 +1062,7 @@ struct ProviderSettingsView: View {
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
-          .transition(.opacity.combined(with: .move(edge: .top)))
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
     .padding(.vertical, DesignTokens.Space.sm)
@@ -1121,6 +1127,33 @@ struct ProviderSettingsView: View {
   /// 「检测可用」：免费模型直接测；有付费模型时先问一句，因为每条会扣一点点费用。
   @ViewBuilder
   private func modelProbeButton(scope: ModelProbeScope) -> some View {
+    let plan = scope == .catalog ? model.catalogProbePlan : model.libraryProbePlan
+    // 确认框挂在 switch 外：状态切到 .running 时分支会卸载，挂在分支里的框会被一起带走。
+    Group {
+      modelProbeButtonContent(scope: scope, plan: plan)
+    }
+    .confirmationDialog(
+      probeConfirmationTitle(plan),
+      isPresented: Binding(
+        get: { pendingProbeScope == scope },
+        set: { if !$0, pendingProbeScope == scope { pendingProbeScope = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("全部检测（含 \(plan.paidModels.count) 个付费模型）") { startProbe(scope: scope, includesPaid: true) }
+      if !plan.freeModels.isEmpty {
+        Button("只检测 \(plan.freeModels.count) 个免费模型") { startProbe(scope: scope, includesPaid: false) }
+      }
+      Button("取消", role: .cancel) {}
+    } message: {
+      Text("每个模型发一句话，付费的只花一点额度。结果显示在模型名旁边。")
+    }
+  }
+
+  @ViewBuilder
+  private func modelProbeButtonContent(
+    scope: ModelProbeScope, plan: ProviderSettingsViewModel.ModelProbePlan
+  ) -> some View {
     switch model.modelProbeState {
     case let .running(done, total):
       HStack(spacing: 6) {
@@ -1129,7 +1162,6 @@ struct ProviderSettingsView: View {
         Button("停止") { model.cancelModelProbe() }.buttonStyle(.appQuiet).controlSize(.small)
       }
     default:
-      let plan = scope == .catalog ? model.catalogProbePlan : model.libraryProbePlan
       HStack(spacing: 6) {
         if case let .finished(available, total) = model.modelProbeState, total > 0 {
           Text("\(available)/\(total) 可用").themedFont(.caption).foregroundStyle(.secondary).monospacedDigit()
@@ -1146,22 +1178,6 @@ struct ProviderSettingsView: View {
         .disabled(plan.total == 0 || model.isSaving || model.isLoadingModels)
         .help("给每个模型发一句话，看能不能用")
         .accessibilityIdentifier(scope == .catalog ? "probe-catalog-models" : "probe-library-models")
-      }
-      .confirmationDialog(
-        probeConfirmationTitle(plan),
-        isPresented: Binding(
-          get: { pendingProbeScope == scope },
-          set: { if !$0, pendingProbeScope == scope { pendingProbeScope = nil } }
-        ),
-        titleVisibility: .visible
-      ) {
-        Button("全部检测（含 \(plan.paidModels.count) 个付费模型）") { startProbe(scope: scope, includesPaid: true) }
-        if !plan.freeModels.isEmpty {
-          Button("只检测 \(plan.freeModels.count) 个免费模型") { startProbe(scope: scope, includesPaid: false) }
-        }
-        Button("取消", role: .cancel) {}
-      } message: {
-        Text("每个模型发一句话，付费的只花一点额度。结果显示在模型名旁边。")
       }
     }
   }
@@ -1216,7 +1232,7 @@ struct ProviderSettingsView: View {
     entry: ProviderSettingsViewModel.LibraryEntryDisplay?
   ) -> String {
     if let entry { return entry.displayName }
-    return kind == .transcription ? "Mac 自带的语音识别" : "未指派"
+    return kind == .transcription ? "Mac 自带的语音识别" : "未选择"
   }
 
   private func assignmentDetail(
@@ -1341,6 +1357,7 @@ struct ProviderSettingsView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .modifier(QuickHoverFill(color: settingsTheme.accent.opacity(0.07)))
     .help(help ?? "")
   }
 
@@ -1394,7 +1411,7 @@ struct ProviderSettingsView: View {
     let expanded = expandedLibraryProvider == group.id
     return HStack(spacing: DesignTokens.Space.sm) {
       Button {
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+        withAnimation((reduceMotion ? nil : DesignTokens.Motion.standard)) {
           expandedLibraryProvider = expanded ? nil : group.id
         }
       } label: {
@@ -1438,7 +1455,12 @@ struct ProviderSettingsView: View {
           .accessibilityIdentifier("library-provider-fetch-models-menu")
         }
         Button("检测这一家（\(group.entries.count) 个）") {
-          model.probeLibraryModels(includesPaid: true, profileIDs: Set(group.entries.map(\.id)))
+          let ids = Set(group.entries.map(\.id))
+          if model.libraryProbePlan(for: ids).paidModels.isEmpty || ids.count == 1 {
+            model.probeLibraryModels(includesPaid: true, profileIDs: ids)
+          } else {
+            pendingGroupProbeIDs = ids
+          }
         }
         .disabled(model.isModelProbeRunning)
         .accessibilityIdentifier("probe-library-provider")
@@ -1452,13 +1474,37 @@ struct ProviderSettingsView: View {
       .menuStyle(.borderlessButton)
       .menuIndicator(.hidden)
       .fixedSize()
+      .confirmationDialog(
+        "检测这一家的 \(group.entries.count) 个模型能不能用？",
+        isPresented: Binding(
+          get: { pendingGroupProbeIDs == Set(group.entries.map(\.id)) },
+          set: { if !$0 { pendingGroupProbeIDs = nil } }
+        ),
+        titleVisibility: .visible
+      ) {
+        let ids = Set(group.entries.map(\.id))
+        let plan = model.libraryProbePlan(for: ids)
+        Button("全部检测（含 \(plan.paidModels.count) 个付费模型）") {
+          pendingGroupProbeIDs = nil
+          model.probeLibraryModels(includesPaid: true, profileIDs: ids)
+        }
+        if !plan.freeModels.isEmpty {
+          Button("只检测 \(plan.freeModels.count) 个免费模型") {
+            pendingGroupProbeIDs = nil
+            model.probeLibraryModels(includesPaid: false, profileIDs: ids)
+          }
+        }
+        Button("取消", role: .cancel) { pendingGroupProbeIDs = nil }
+      } message: {
+        Text("每个模型发一句话，付费的只花一点额度。结果显示在模型名旁边。")
+      }
       .help("更多")
       .accessibilityLabel("这家服务商的更多操作")
       .accessibilityIdentifier("library-provider-more")
       // 展开箭头放在行尾，和「更多」并排。它也必须能点：原来只是一张图，
       // 用户点箭头什么都不发生，只有点左边的名称才会展开。
       Button {
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+        withAnimation((reduceMotion ? nil : DesignTokens.Motion.standard)) {
           expandedLibraryProvider = expanded ? nil : group.id
         }
       } label: {
@@ -1634,7 +1680,8 @@ struct ProviderSettingsView: View {
             let submittedKey = apiKeyInput
             Task {
               await model.save(apiKey: submittedKey)
-              apiKeyInput = ""
+              // 失败时保留刚粘好的密钥，免得用户重新找一遍；成功后 Sheet 关闭才清。
+              if !model.isEditorVisible { apiKeyInput = "" }
             }
           }
           .buttonStyle(.appQuiet)
@@ -1645,7 +1692,7 @@ struct ProviderSettingsView: View {
           let submittedKey = apiKeyInput
           Task {
             await model.saveAndVerify(apiKey: submittedKey)
-            apiKeyInput = ""
+            if !model.isEditorVisible { apiKeyInput = "" }
           }
         }
         .buttonStyle(.appProminent(settingsTheme.accent))
@@ -1666,7 +1713,22 @@ struct ProviderSettingsView: View {
       // 从「填入」进来时光标放进密钥框。Sheet 出场时 AppKit 会把第一个输入框（服务地址）
       // 设成第一响应者，所以出场落定后再补一次，否则会被它盖掉。
       guard isPresetPrefilled else { return }
-      try? await Task.sleep(for: .milliseconds(800))
+      // 不再无条件睡 800ms 后抢焦点：等窗口成为 key 窗口，再留一小段给 AppKit 设首响应者；
+      // 期间用户点了别处或已经输入，就不再把光标拽回密钥框。
+      final class InteractionFlag: @unchecked Sendable { var value = false }
+      let interaction = InteractionFlag()
+      let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { event in
+        interaction.value = true
+        return event
+      }
+      defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+      var waited = 0
+      while NSApp.keyWindow == nil, waited < 30 {
+        try? await Task.sleep(for: .milliseconds(50))
+        waited += 1
+      }
+      try? await Task.sleep(for: .milliseconds(350))
+      guard !Task.isCancelled, !interaction.value, apiKeyInput.isEmpty, model.shouldShowAPIKeyInput else { return }
       isAPIKeyFieldFocused = true
     }
   }
@@ -1697,7 +1759,10 @@ struct ProviderSettingsView: View {
           ForEach(ProviderPreset.allCases) { preset in
             Button {
               model.selectPreset(preset)
-              if model.editingProfileID != nil { isChoosingPreset = false }
+              if model.editingProfileID != nil {
+                // 折叠是高度变化：减弱动态下传 nil 直接到位。
+                withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) { isChoosingPreset = false }
+              }
             } label: {
               providerCard(preset)
             }
@@ -1721,7 +1786,9 @@ struct ProviderSettingsView: View {
             .lineLimit(1)
             .truncationMode(.middle)
           Spacer(minLength: DesignTokens.Space.md)
-          Button("更换") { isChoosingPreset = true }
+          Button("更换") {
+            withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) { isChoosingPreset = true }
+          }
             .buttonStyle(.appQuiet)
             .disabled(editorBusy)
             .accessibilityIdentifier("change-provider-preset")
@@ -1797,7 +1864,14 @@ struct ProviderSettingsView: View {
                 Text(model.apiKeyStatusText).foregroundStyle(appTheme.success)
                   .accessibilityIdentifier("provider-api-key-configured")
                 Spacer(minLength: 0)
-                Button("更换", action: model.beginAPIKeyReplacement)
+                Button("更换") {
+                  model.beginAPIKeyReplacement()
+                  // 密钥框这一拍才出现，等一帧再聚焦，点完「更换」就能直接粘贴。
+                  Task { @MainActor in
+                    await Task.yield()
+                    isAPIKeyFieldFocused = true
+                  }
+                }
                   .buttonStyle(.appQuiet)
                   .disabled(!model.canBeginAPIKeyReplacement)
                   .accessibilityIdentifier("replace-provider-api-key")
@@ -1847,6 +1921,12 @@ struct ProviderSettingsView: View {
                 ScrollView {
                   LazyVStack(spacing: 0) {
                     let channelSections = model.catalogChannelSections
+                    if channelSections.isEmpty {
+                      Text("没有匹配的模型")
+                        .themedFont(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                    }
                     ForEach(channelSections, id: \.channel) { section in
                     if channelSections.count > 1 {
                       Text(section.channel.components(separatedBy: " · ").dropFirst().joined(separator: " · ")
@@ -1906,6 +1986,7 @@ struct ProviderSettingsView: View {
                         .contentShape(Rectangle())
                       }
                       .buttonStyle(.plain)
+                      .modifier(QuickHoverFill(color: settingsTheme.accent.opacity(0.07), isEnabled: !alreadyAdded))
                       .disabled(alreadyAdded)
                       .accessibilityIdentifier("provider-model-option")
                       if name != section.models.last {
@@ -1959,7 +2040,7 @@ struct ProviderSettingsView: View {
       .padding(.horizontal, DesignTokens.Space.lg)
       .modifier(SettingsThemedCardChrome())
 
-      Text("只发一句话，不留记录")
+      Text("测试连接只发一句话，不留记录")
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -2068,6 +2149,11 @@ struct ProviderSettingsView: View {
     // 与主界面侧栏共用同一档间距和浅色选中态，两个窗口切换时不会像两套组件。
     .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
+    .modifier(QuickHoverFill(
+      color: settingsTheme.accent.opacity(0.06),
+      cornerRadius: DesignTokens.Radius.md,
+      isEnabled: !isSelected
+    ))
     .background {
       RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         .fill(settingsTheme.accent.opacity(isSelected ? 0.12 : 0))
@@ -2211,7 +2297,7 @@ struct ProviderSettingsView: View {
         SettingsRow(
           title: "每日选题",
           caption: "每天定时从素材里出几条选题",
-          details: "过了时间点且今天还没出，就会补出一次，晚开电脑也照样出。会花订阅额度，所以默认关着。"
+          details: "过了时间点且今天还没出，就会补出一次，晚开电脑也照样出。会消耗模型额度，所以默认关着。"
         ) {
           VStack(alignment: .trailing, spacing: DesignTokens.Space.sm) {
             Toggle("每日选题", isOn: scheduleBinding(\.isEnabled))
@@ -2233,8 +2319,14 @@ struct ProviderSettingsView: View {
                 .labelsHidden()
                 .frame(width: 62)
               }
+              .transition(.opacity)
             }
           }
+          // 展开时间选择器是高度变化：减弱动态下传 nil 直接到位；动画只挂在这一小块上。
+          .animation(
+            reduceMotion ? nil : DesignTokens.Motion.standard,
+            value: TopicSchedule.decoded(from: topicScheduleRaw).isEnabled
+          )
         }
       }
 
@@ -2554,7 +2646,7 @@ struct ProviderSettingsView: View {
       processingSection(.translation) {
         // 开关旁统一写「自动」，和其它工序一致（原来写「翻译标题」，四种写法不一）。
         // 这件事干什么由标题「翻译 · 译」和说明句说；开关只管「新内容进来要不要自动做」。
-        stepHeader(.translation, caption: "外文标题自动译成中文", compact: true)
+        stepHeader(.translation, caption: "外文标题自动译成\(titleBackfillLanguage)", compact: true)
         SettingsRowGroup {
           translationAssignmentRow
         }
@@ -2618,6 +2710,10 @@ struct ProviderSettingsView: View {
   private var commentsTab: some View {
     SettingsPlainPage {
       pageHeader(for: .comments, caption: "收集时顺带存前几条评论，免费")
+      if commentLimitSaveFailed {
+        SettingsInlineNotice(message: "没存上，设置已恢复原样，请再试一次。", tone: .danger)
+          .accessibilityIdentifier("settings-comments-save-failed")
+      }
       SettingsRowGroup {
         SettingsRow(
           title: "自动保存",
@@ -2631,9 +2727,7 @@ struct ProviderSettingsView: View {
         }
         SettingsRow(
           title: "默认条数",
-          caption: commentLimitSaveFailed
-            ? "保存失败，请重试；这次仍按之前的条数存。"
-            : "下面没有单独设的平台都按这个数。",
+          caption: "下面没有单独设的平台都按这个数。",
           details: "适用于 X、抖音、哔哩哔哩、YouTube、论坛、Reddit、小红书、知乎。不够数时扩展会往下翻，够了或到底就停，再滚回原位置。"
         ) {
           SettingsMenuPicker(
@@ -2675,11 +2769,10 @@ struct ProviderSettingsView: View {
     }
   }
 
-  private func advancedCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-    let body = content()
-    return VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+  private func advancedCard<Content: View>(title: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
       DisclosureGroup(title) {
-        body
+        content()
           .padding(.top, DesignTokens.Space.md)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
@@ -2698,11 +2791,13 @@ struct ProviderSettingsView: View {
       get: { commentLimitsByPlatform[platform] ?? Self.followDefaultCommentLimit },
       set: { value in
         let stored: Int? = value == Self.followDefaultCommentLimit ? nil : value
+        let previous = commentLimitsByPlatform[platform]
         if let stored { commentLimitsByPlatform[platform] = stored } else { commentLimitsByPlatform.removeValue(forKey: platform) }
         do {
           try CapturePreferencesStore.standard().setCommentLimit(stored, forPlatform: platform)
           commentLimitSaveFailed = false
         } catch {
+          if let previous { commentLimitsByPlatform[platform] = previous } else { commentLimitsByPlatform.removeValue(forKey: platform) }
           commentLimitSaveFailed = true
         }
       }
@@ -2713,11 +2808,13 @@ struct ProviderSettingsView: View {
     Binding(
       get: { autoSaveComments },
       set: { value in
+        let previous = autoSaveComments
         autoSaveComments = value
         do {
           try CapturePreferencesStore.standard().setAutoSaveComments(value)
           commentLimitSaveFailed = false
         } catch {
+          autoSaveComments = previous
           commentLimitSaveFailed = true
         }
       }
@@ -2804,7 +2901,7 @@ struct ProviderSettingsView: View {
           Text("发送授权").themedFont(.body)
           Text(consentRevokeNotice ?? "第一次发给服务商时问过你的记录")
             .themedFont(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(consentRevokeFailed ? appTheme.danger : Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: DesignTokens.Space.md)
@@ -2812,20 +2909,14 @@ struct ProviderSettingsView: View {
         // 先问一句。清除本身没有可见效果，所以结果仍然用左边那行反馈。
         Button("清除记录") { isConsentRevokeConfirmationPresented = true }
           .buttonStyle(.appDestructive(appTheme.danger))
+          .disabled(isRevokingConsent)
           .accessibilityIdentifier("revoke-remembered-consents")
           .confirmationDialog(
             "清除发送授权？",
             isPresented: $isConsentRevokeConfirmationPresented,
             titleVisibility: .visible
           ) {
-            Button("清除记录", role: .destructive) {
-              Task {
-                let cleared = await appModel.revokeRememberedConsents()
-                consentRevokeNotice = cleared
-                  ? "已清除。下一次发送会重新问你一遍。"
-                  : "没清除成功，授权还是原样，请再点一次。"
-              }
-            }
+            Button("清除记录", role: .destructive) { revokeRememberedConsents() }
             .accessibilityIdentifier("revoke-remembered-consents-confirm")
             Button("取消", role: .cancel) {}
           } message: {
@@ -2836,6 +2927,18 @@ struct ProviderSettingsView: View {
     .padding(.vertical, DesignTokens.Space.md)
     .padding(.horizontal, DesignTokens.Space.lg)
     .modifier(SettingsThemedCardChrome())
+  }
+
+  private func revokeRememberedConsents() {
+    Task {
+      isRevokingConsent = true
+      let cleared = await appModel.revokeRememberedConsents()
+      isRevokingConsent = false
+      consentRevokeFailed = !cleared
+      consentRevokeNotice = cleared
+        ? "已清除。下一次发送会重新问你一遍。"
+        : "没清除成功，授权还是原样，请再点一次。"
+    }
   }
 
   private var translationConcurrencyRow: some View {
@@ -3038,13 +3141,13 @@ struct ProviderSettingsView: View {
           Text("补译标题")
           Text(titleBackfillCaption(history.titleBackfillState))
             .themedFont(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(titleBackfillFailed(history.titleBackfillState) ? appTheme.danger : Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 12)
         switch history.titleBackfillState {
         case .idle, .failed, .finished:
-          Button("检查") {
+          Button(titleBackfillFailed(history.titleBackfillState) ? "重试" : "检查") {
             history.countTitleBackfillCandidates(outputLanguage: model.outputLanguage)
           }
           .accessibilityIdentifier("title-backfill-count")
@@ -3052,10 +3155,10 @@ struct ProviderSettingsView: View {
           ProgressView().controlSize(.small)
         case let .ready(count):
           if count > 0 {
-            Button("译成中文…") { isTitleBackfillConfirmationPresented = true }
+            Button("译成\(titleBackfillLanguage)…") { isTitleBackfillConfirmationPresented = true }
               .accessibilityIdentifier("title-backfill-start")
           } else {
-            Button("完成") { history.resetTitleBackfill() }
+            Button("知道了") { history.resetTitleBackfill() }
           }
         case .running:
           Button("停止") { history.cancelTitleBackfill() }
@@ -3082,18 +3185,29 @@ struct ProviderSettingsView: View {
     }
   }
 
+  /// 补译标题实际用的输出语言（用户可在设置里改），空值时按默认的中文说。
+  private var titleBackfillLanguage: String {
+    let name = model.outputLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? "中文" : name
+  }
+
+  private func titleBackfillFailed(_ state: HistoryViewModel.TitleBackfillState) -> Bool {
+    if case .failed = state { return true }
+    return false
+  }
+
   private func titleBackfillConfirmationTitle(_ state: HistoryViewModel.TitleBackfillState) -> String {
-    if case let .ready(count) = state { return "把 \(count) 条外文标题译成中文？" }
-    return "把外文标题译成中文？"
+    if case let .ready(count) = state { return "把 \(count) 条外文标题译成\(titleBackfillLanguage)？" }
+    return "把外文标题译成\(titleBackfillLanguage)？"
   }
 
   private func titleBackfillCaption(_ state: HistoryViewModel.TitleBackfillState) -> String {
     switch state {
     case .idle: "开关只影响以后存的内容。点「检查」看看库里还有多少条外文标题。"
     case .counting: "正在检查…"
-    case let .ready(count): count > 0 ? "有 \(count) 条外文标题还没译成中文。" : "没有需要翻译的外文标题。"
+    case let .ready(count): count > 0 ? "有 \(count) 条外文标题还没译成\(titleBackfillLanguage)。" : "没有需要翻译的外文标题。"
     case let .running(done, total): "正在翻译 \(done) / \(total)，可以关掉设置窗口，后台继续。"
-    case let .finished(localized, total): "已处理 \(total) 条，其中 \(localized) 条译成了中文。"
+    case let .finished(localized, total): "已处理 \(total) 条，其中 \(localized) 条译成了\(titleBackfillLanguage)。"
     case .failed: "没能读取资料库，请稍后再试。"
     }
   }
@@ -3164,6 +3278,11 @@ struct ProviderSettingsView: View {
         .animation(
           DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
           value: isHovering
+        )
+        // 选中态的底色与描边也淡入淡出（instant 档，只动颜色）。
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+          value: selected
         )
         .onHover { isHovering = $0 }
     }
@@ -3337,6 +3456,31 @@ struct ProviderSettingsView: View {
 /// 所以每格直接把该主题的画布色画出来，右下角压一条强调色：
 /// 画布色分开浅色系和深色系，强调色（品牌橙 / 橄榄 / 莓红 / 纯黑）分开
 /// 同为近白底的浅色、石楠、珊瑚和高对比。
+/// 色卡的轻量 hover 描边。动画只挂在 hover 值上：点击切换主题时选中态仍是瞬切，
+/// 不会被带进过渡（见 ThemeSwatchPicker 里的实测说明）。
+private struct SwatchHoverOutline: ViewModifier {
+  let color: Color
+  var isEnabled = true
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .overlay {
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+          .strokeBorder(color, lineWidth: 1.5)
+          .opacity(isHovering && isEnabled ? 1 : 0)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: isHovering
+          )
+          .allowsHitTesting(false)
+      }
+      .onHover { isHovering = $0 }
+  }
+}
+
 private struct ThemeSwatchPicker: View {
   @Binding var selection: String
   /// 选中框走主题强调色。`Color.accentColor` 是 App 级强调色（默认系统蓝），
@@ -3398,6 +3542,7 @@ private struct ThemeSwatchPicker: View {
         .lineLimit(1)
     }
     .padding(3)
+    .modifier(SwatchHoverOutline(color: appTheme.accent.opacity(0.35), isEnabled: !isSelected))
     .background {
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(isSelected ? appTheme.accent : .clear, lineWidth: 2)
@@ -3408,6 +3553,29 @@ private struct ThemeSwatchPicker: View {
 
 /// 「推荐服务商 → 填入」打开的添加窗口：默认焦点给密钥框（服务地址已经填好了）。
 /// 其它入口不改默认焦点。
+/// 列表行的 hover 底色：quick 档淡入淡出，只动颜色不动布局。
+private struct QuickHoverFill: ViewModifier {
+  let color: Color
+  var cornerRadius: CGFloat = 0
+  var isEnabled = true
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+          .fill(color.opacity(isHovering && isEnabled ? 1 : 0))
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: isHovering
+          )
+      }
+      .onHover { isHovering = $0 }
+  }
+}
+
 private struct PrefilledAPIKeyFocus: ViewModifier {
   let isOn: Bool
   let focus: FocusState<Bool>.Binding

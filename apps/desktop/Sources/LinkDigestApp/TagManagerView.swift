@@ -11,6 +11,7 @@ import LinkDigestCore
 struct TagManagerView: View {
   @Bindable var model: HistoryViewModel
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var search = ""
   @State private var selection: Set<String> = []
@@ -63,12 +64,19 @@ struct TagManagerView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
       header
-      if let message = model.tagManagementMessage {
-        Text(message)
-          .themedFont(.callout)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("tag-manager-message")
+      // 动画只挂在这块小容器上，且只在消息出现/消失时触发。
+      Group {
+        if let message = model.tagManagementMessage {
+          Text(message)
+            .themedFont(.callout)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("tag-manager-message")
+            .transition(.opacity)
+        }
       }
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: model.tagManagementMessage)
       ForEach(sourceNameDuplicateTags, id: \.tag.normalizedName) { tag in
         HStack {
           Text(sourceDuplicateHint(for: tag) ?? "")
@@ -211,6 +219,10 @@ struct TagManagerView: View {
       }
     }
     .frame(minHeight: 28)
+    // 选 0 / 1 / 多个之间换操作栏：同一高度内淡入淡出，不位移。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: min(chosen.count, 2))
   }
 
   private var deleteTitle: String {

@@ -18,6 +18,12 @@ struct PieceDeskView: View {
   let onRewrite: (PieceID, RewritePrompt.Intensity) -> Void
   @AppStorage(ExperimentalFeatures.hitLabKey) private var isHitLabEnabled = false
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 会改变高度的切换（起草横幅、阶段工具）：减弱动态时直接到位。
+  private var layoutAnimation: Animation? {
+    reduceMotion ? nil : DesignTokens.Motion.standard
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -175,6 +181,7 @@ struct PieceDeskView: View {
         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
           .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
       )
+      .pieceHoverHighlight(cornerRadius: DesignTokens.Radius.md, isEnabled: material.isAvailable)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -234,6 +241,7 @@ struct PieceDeskView: View {
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
             .strokeBorder(appTheme.accent.opacity(0.25))
         )
+        .pieceHoverHighlight(cornerRadius: DesignTokens.Radius.md)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -241,6 +249,7 @@ struct PieceDeskView: View {
 
       if model.draftingPieceID == piece.id {
         draftingBanner
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
 
       Text(nextStepHint)
@@ -259,6 +268,9 @@ struct PieceDeskView: View {
 
     }
     .padding(16)
+    // 只在「起草开始/结束」「阶段变了」这两个离散时刻触发，不跟着流式文字走。
+    .animation(layoutAnimation, value: model.draftingPieceID == piece.id)
+    .animation(layoutAnimation, value: piece.stage)
     // 进了滚动容器就不能再要 maxHeight: .infinity 和撑底的 Spacer——
     // 那两样都是在跟一个没有固定高度的父视图要「剩下的高度」。
     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -323,14 +335,17 @@ struct PieceDeskView: View {
               RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             )
+            .pieceHoverHighlight(cornerRadius: DesignTokens.Radius.md, isEnabled: !tool.isDisabled)
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           .disabled(tool.isDisabled)
           .help(tool.hint)
+          .transition(.opacity)
         }
       }
       .padding(.top, DesignTokens.Space.xs)
+      .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
     }
   }
 
@@ -429,5 +444,32 @@ struct PieceDeskView: View {
     case .done:
       "已经发出。收到的反馈可以记成新笔记，它会回到素材库。"
     }
+  }
+}
+
+/// 创作台里可点行的 hover 提亮：只叠一层很淡的前景色，`quick` 渐入渐出。
+private struct PieceHoverHighlight: ViewModifier {
+  let cornerRadius: CGFloat
+  let isEnabled: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .overlay(
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+          .fill(Color.primary.opacity(isHovering && isEnabled ? 0.05 : 0))
+          .allowsHitTesting(false)
+      )
+      .onHover { isHovering = $0 }
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering)
+  }
+}
+
+extension View {
+  fileprivate func pieceHoverHighlight(cornerRadius: CGFloat, isEnabled: Bool = true) -> some View {
+    modifier(PieceHoverHighlight(cornerRadius: cornerRadius, isEnabled: isEnabled))
   }
 }

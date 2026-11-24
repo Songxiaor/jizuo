@@ -7,6 +7,7 @@ import SwiftUI
 /// 这里整块不挂，页面和以前一模一样，不占位置也不闪一下空标题。
 struct RelatedContentSection: View {
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   let taskID: TaskID
   let title: String?
@@ -58,11 +59,22 @@ struct RelatedContentSection: View {
               .themedFont(.caption)
               .foregroundStyle(appTheme.secondaryText)
               .accessibilityIdentifier("history-related-content-missing")
+              .transition(.opacity)
           }
         }
         .padding(.top, DesignTokens.Space.xl)
+        .transition(.opacity)
       }
     }
+    // 异步结果和 4 秒缺失提示只做透明度淡入淡出。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: service.items.isEmpty
+    )
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: missingNotice != nil
+    )
     .task(id: key) {
       // 懒求值：有总结就不调用 `bodyProvider`，不为了一个用不上的正文先拆一遍。
       let query = RelatedContentQuery.text(title: key.title, summary: key.summary, body: bodyProvider())
@@ -110,6 +122,7 @@ struct RelatedContentList: View {
   @Environment(\.appTheme) private var appTheme
   let items: [RelatedContentSelection.Item]
   let onOpen: (TaskID) -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var hovered: TaskID?
 
@@ -166,6 +179,7 @@ struct RelatedContentList: View {
       .padding(.horizontal, DesignTokens.Space.md)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(hovered == item.id ? appTheme.primaryText.opacity(0.035) : .clear)
+      .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: hovered == item.id)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

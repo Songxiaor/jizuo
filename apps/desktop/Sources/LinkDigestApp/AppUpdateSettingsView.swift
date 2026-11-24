@@ -11,6 +11,7 @@ import LinkDigestCore
 /// 「提醒」只控制要不要主动去看有没有新版本；装不装仍要确认。静默替换由发布配置钉死关闭。
 struct AppUpdateSettingsView: View {
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @StateObject private var model: AppUpdateSettingsModel
 
   init(updater: SPUUpdater) {
@@ -19,6 +20,9 @@ struct AppUpdateSettingsView: View {
 
   /// 兜底提示。会临时顶掉「反馈问题」那一行的说明文字，所以得是状态。
   @State private var feedbackNote: String?
+  /// 「复制地址」按钮临时亮「已复制」1.5 秒；设置窗口里没有主窗口那颗全局药丸。
+  @State private var addressCopied = false
+  @State private var feedbackResetTask: Task<Void, Never>?
 
   /// 优先交给系统邮件应用；系统把 `mailto:` 交给了浏览器（或压根没有邮件应用）时
   /// 改走网页版写信；两个都不行就把地址复制到剪贴板并说明。
@@ -41,6 +45,17 @@ struct AppUpdateSettingsView: View {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(address, forType: .string)
     feedbackNote = "已把 \(address) 复制到剪贴板，可以粘到任意邮箱里。"
+    addressCopied = true
+    feedbackResetTask?.cancel()
+    feedbackResetTask = Task {
+      try? await Task.sleep(for: .milliseconds(1_500))
+      guard !Task.isCancelled else { return }
+      addressCopied = false
+      // 说明里带着地址，多留几秒给人读；之后还原副标题，不再永久顶掉。
+      try? await Task.sleep(for: .seconds(5))
+      guard !Task.isCancelled else { return }
+      feedbackNote = nil
+    }
   }
 
   var body: some View {
@@ -133,7 +148,11 @@ struct AppUpdateSettingsView: View {
               .accessibilityLabel("反馈问题")
               .accessibilityIdentifier("app-update-feedback")
             // 系统里没有任何能处理 mailto 的邮件应用时，至少要保证地址拿得到。
-            Button("复制地址") { copyFeedbackAddress() }
+            Button(addressCopied ? "已复制" : "复制地址") { copyFeedbackAddress() }
+              .contentTransition(.opacity)
+              .animation(
+                DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+                value: addressCopied)
               .buttonStyle(.appNormal)
               .accessibilityLabel("复制支持邮箱地址")
               .accessibilityIdentifier("app-update-feedback-copy")

@@ -429,7 +429,7 @@ private struct InlineImageLightboxCanvas: View {
   @State private var dragBase: CGSize = .zero
   /// 单图 OCR：与详情页「图片文字识别」同一 Apple Vision 本机管线。
   @State private var recognition: RecognitionState = .idle
-  /// 打开时框体从 0.97 浮起到 1（暗幕本身只淡入）。关闭时只淡出，不再缩。
+  /// 打开时框体用 Transition.lift 浮起（暗幕本身只淡入）。关闭时整层只淡出，不再缩。
   @State private var isLifted = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -451,46 +451,48 @@ private struct InlineImageLightboxCanvas: View {
           .contentShape(Rectangle())
           .onTapGesture { InlineImageLightboxController.shared.dismiss() }
 
-        // 带边框的查看框：图片、手势与滚轮都被裁剪限制在框内。
-        VStack(spacing: 0) {
-          HStack(spacing: 0) {
-            canvas(in: CGSize(
-              width: proxy.size.width * 0.86 * (showsRecognizedText ? 0.62 : 1),
-              height: proxy.size.height * 0.84 - 44
-            ))
-            if showsRecognizedText {
-              Divider()
-              recognizedTextPanel
-                .frame(width: proxy.size.width * 0.86 * 0.38)
+        // 暗幕随整层淡入；查看框由 isLifted 驱动，走统一的 lift 转场（减弱动态只淡入）。
+        if isLifted {
+          VStack(spacing: 0) {
+            HStack(spacing: 0) {
+              canvas(in: CGSize(
+                width: proxy.size.width * 0.86 * (showsRecognizedText ? 0.62 : 1),
+                height: proxy.size.height * 0.84 - 44
+              ))
+              if showsRecognizedText {
+                Divider()
+                recognizedTextPanel
+                  .frame(width: proxy.size.width * 0.86 * 0.38)
+              }
             }
+            Divider()
+            HStack {
+              Text("双指滑动平移 · 双指捏合缩放 · 双击复位 · 点框外或 Esc 退出")
+                .themedFont(.caption)
+                .foregroundStyle(.secondary)
+              Spacer()
+              recognizeButton
+              Button {
+                MarkdownInlineImageActions.saveImage(at: url)
+              } label: { Label("存储为…", systemImage: "square.and.arrow.down") }
+                .accessibilityIdentifier("history-inline-image-lightbox-save")
+              Button("完成") { InlineImageLightboxController.shared.dismiss() }
+                .keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("history-inline-image-lightbox-close")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .background(Color(nsColor: .windowBackgroundColor))
           }
-          Divider()
-          HStack {
-            Text("双指滑动平移 · 双指捏合缩放 · 双击复位 · 点框外或 Esc 退出")
-              .themedFont(.caption)
-              .foregroundStyle(.secondary)
-            Spacer()
-            recognizeButton
-            Button {
-              MarkdownInlineImageActions.saveImage(at: url)
-            } label: { Label("存储为…", systemImage: "square.and.arrow.down") }
-              .accessibilityIdentifier("history-inline-image-lightbox-save")
-            Button("完成") { InlineImageLightboxController.shared.dismiss() }
-              .keyboardShortcut(.cancelAction)
-              .accessibilityIdentifier("history-inline-image-lightbox-close")
-          }
-          .padding(.horizontal, 12)
-          .frame(height: 44)
-          .background(Color(nsColor: .windowBackgroundColor))
+          .frame(width: proxy.size.width * 0.86, height: proxy.size.height * 0.84)
+          .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+              .stroke(Color.primary.opacity(0.25), lineWidth: 1)
+          )
+          .shadow(color: .black.opacity(0.35), radius: 28, y: 8)
+          .transition(DesignTokens.Transition.lift(reduceMotion: reduceMotion))
         }
-        .frame(width: proxy.size.width * 0.86, height: proxy.size.height * 0.84)
-        .scaleEffect(isLifted || reduceMotion ? 1 : 0.97)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-            .stroke(Color.primary.opacity(0.25), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.35), radius: 28, y: 8)
       }
     }
     .task(id: url) { await loadFullImage() }

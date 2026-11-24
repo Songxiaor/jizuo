@@ -18,6 +18,12 @@ struct TopicBoardView: View {
   @AppStorage(TopicSchedule.lastRunKey) private var lastRunAt: Double = 0
   @AppStorage(TopicRecipe.storageKey) private var recipeRaw = ""
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 改变高度的展开/折叠、划掉：减弱动态时直接到位（resolved 的 0.1s 插值只适合透明度）。
+  private var layoutAnimation: Animation? {
+    reduceMotion ? nil : DesignTokens.Motion.standard
+  }
 
   private var recipe: TopicRecipe { TopicRecipe.decoded(from: recipeRaw) }
 
@@ -57,10 +63,12 @@ struct TopicBoardView: View {
       header
       if isRecipeOpen {
         recipeDrawer
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
       if isExpanded {
         if days.isEmpty {
           emptyState
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
         } else {
           VStack(alignment: .leading, spacing: 10) {
             ForEach(days, id: \.day) { group in
@@ -69,6 +77,8 @@ struct TopicBoardView: View {
           }
           .padding(.horizontal, DesignTokens.Layout.columnInset)
           .padding(.bottom, DesignTokens.Space.sm)
+          .animation(layoutAnimation, value: model.topicCandidates.count)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
         }
       }
     }
@@ -96,7 +106,7 @@ struct TopicBoardView: View {
   private var header: some View {
     HStack(spacing: 6) {
       Button {
-        isExpanded.toggle()
+        withAnimation(layoutAnimation) { isExpanded.toggle() }
       } label: {
         HStack(spacing: 5) {
           // 2026-10-01：展开箭头全 App 统一成 chevron.right 转 90°。换符号会让
@@ -105,6 +115,7 @@ struct TopicBoardView: View {
           Image(systemName: "chevron.right")
             .font(.system(size: 9, weight: .semibold))
             .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: isExpanded)
           Text("选题板")
             .themedFont(.body, weight: .semibold)
         }
@@ -119,8 +130,10 @@ struct TopicBoardView: View {
       // 配方入口长在正在用的这块板上,不进设置页。
       // 「这五条为什么是这五条」的答案,应该在看见那五条的地方点得开。
       Button {
-        isRecipeOpen.toggle()
-        if !isRecipeOpen { model.topicDryRunResult = nil }
+        withAnimation(layoutAnimation) {
+          isRecipeOpen.toggle()
+          if !isRecipeOpen { model.topicDryRunResult = nil }
+        }
       } label: {
         Image(systemName: "slider.horizontal.3")
           .font(.system(size: DesignTokens.IconSize.inline))
@@ -420,7 +433,7 @@ struct TopicBoardView: View {
           .accessibilityLabel("从「\(candidate.title)」开始写")
 
           Button {
-            model.declineTopic(candidate.id)
+            withAnimation(layoutAnimation) { model.declineTopic(candidate.id) }
           } label: {
             Image(systemName: "xmark")
           }

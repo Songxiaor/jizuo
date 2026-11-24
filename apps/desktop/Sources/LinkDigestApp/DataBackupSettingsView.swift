@@ -179,6 +179,7 @@ final class DataBackupViewModel: ObservableObject {
 /// 用户也看不见、拿不到。
 struct DataBackupSettingsView: View {
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @StateObject private var model = DataBackupViewModel()
 
   private var dailyStatusText: String {
@@ -251,6 +252,7 @@ struct DataBackupSettingsView: View {
                 tone: model.noticeIsError ? .danger : (model.needsRestart ? .warning : .success)
               )
               .accessibilityIdentifier("data-backup-status")
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
             }
             SettingsActionRow(showsProgress: model.isWorking) {
               Button("打开位置") { model.revealBackupsFolder() }
@@ -262,6 +264,7 @@ struct DataBackupSettingsView: View {
                 .accessibilityIdentifier("data-backup-now")
             }
           }
+          .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: model.notice != nil)
         }
       )
 

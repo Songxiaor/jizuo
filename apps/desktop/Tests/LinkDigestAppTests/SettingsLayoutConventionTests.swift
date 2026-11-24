@@ -113,9 +113,9 @@ final class SettingsLayoutConventionTests: XCTestCase {
       shared.contains(".popover(isPresented: $isDetailsPresented"),
       "详细说明改成卡内展开之后，popover 不该回来")
     XCTAssertTrue(
-      shared.contains("DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)"),
+      shared.contains("reduceMotion ? nil : DesignTokens.Motion.standard"),
       "展开/收起要走统一的动效令牌，并遵守「减弱动态效果」")
-    XCTAssertTrue(shared.contains("Image(systemName: \"info.circle\")"))
+    XCTAssertTrue(shared.contains("isExpanded ? \"info.circle.fill\" : \"info.circle\""))
     XCTAssertFalse(shared.contains("DisclosureGroup(\"了解更多\")"))
   }
 
