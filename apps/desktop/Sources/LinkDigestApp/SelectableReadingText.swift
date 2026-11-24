@@ -545,6 +545,10 @@ struct SelectableReadingTextView: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator(onOpenLink: onOpenLink) }
 
+  static func dismantleNSView(_ nsView: ReadingTextHostView, coordinator: Coordinator) {
+    coordinator.cancelCorrection()
+  }
+
   func makeNSView(context: Context) -> ReadingTextHostView {
     let host = ReadingTextHostView()
     let view = host.textView
@@ -587,17 +591,20 @@ struct SelectableReadingTextView: NSViewRepresentable {
         host.invalidateIntrinsicContentSize()
       }
       context.coordinator.lastApplied = attributed
+      context.coordinator.cancelCorrection()
     }
     view.linkTextAttributes?[.foregroundColor] = accent
     let reduceMotion = context.environment.accessibilityReduceMotion
     if let scrollRequest, context.coordinator.lastScrollToken != scrollRequest.token {
       context.coordinator.lastScrollToken = scrollRequest.token
+      context.coordinator.cancelCorrection()
       DispatchQueue.main.async { Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: !reduceMotion) }
       // 落地后附近的块才建出视图、量出实际高度；再校正一次，误差大于几个点就补滚过去。
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-        // 校正量通常很小；偏得多时也平滑补过去，不是硬跳一截。减弱动态下直接到位。
-        Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: !reduceMotion, duration: 0.16)
-      }
+      // 校正由 coordinator 持有：新的跳转、正文变化、视图卸载、用户开始滚动都会取消它，
+      // 避免 0.45s 后把位置从更新的跳转或用户手里抢回去。减弱动态下直接到位。
+      context.coordinator.scheduleCorrection(
+        view: view, characterOffset: scrollRequest.characterOffset, animated: !reduceMotion
+      )
     }
     if context.coordinator.lastRevealText != revealText,
        let revealText,
@@ -653,13 +660,49 @@ struct SelectableReadingTextView: NSViewRepresentable {
     relayoutViewport()
   }
 
-  final class Coordinator: NSObject, NSTextViewDelegate {
+  @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
     var onOpenLink: (URL) -> Void
     var lastScrollToken: UUID?
     var lastRevealText: String?
     /// 上次应用到 textStorage 的实例，用于 `===` 快速跳过（见 updateNSView）。
     var lastApplied: NSAttributedString?
     init(onOpenLink: @escaping (URL) -> Void) { self.onOpenLink = onOpenLink }
+
+    private var correctionTask: Task<Void, Never>?
+    private var correctionToken = UUID()
+    private var liveScrollObserver: NSObjectProtocol?
+
+    @MainActor
+    func scheduleCorrection(view: NSTextView, characterOffset: Int, animated: Bool) {
+      cancelCorrection()
+      let token = UUID()
+      correctionToken = token
+      if let scrollView = view.enclosingScrollView {
+        liveScrollObserver = NotificationCenter.default.addObserver(
+          forName: NSScrollView.willStartLiveScrollNotification, object: scrollView, queue: .main
+        ) { [weak self] _ in
+          self?.cancelCorrection()
+        }
+      }
+      correctionTask = Task { @MainActor [weak self, weak view] in
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        guard !Task.isCancelled, let self, let view, self.correctionToken == token else { return }
+        self.removeLiveScrollObserver()
+        SelectableReadingTextView.scroll(view, toCharacter: characterOffset, animated: animated, duration: 0.16)
+      }
+    }
+
+    func cancelCorrection() {
+      correctionTask?.cancel()
+      correctionTask = nil
+      correctionToken = UUID()
+      removeLiveScrollObserver()
+    }
+
+    private func removeLiveScrollObserver() {
+      if let liveScrollObserver { NotificationCenter.default.removeObserver(liveScrollObserver) }
+      liveScrollObserver = nil
+    }
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
       // 链接不直接放行系统打开；交回 SwiftUI 层走 PublicWebURLPolicy 校验。

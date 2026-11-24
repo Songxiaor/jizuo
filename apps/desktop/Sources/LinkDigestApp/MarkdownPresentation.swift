@@ -2815,6 +2815,8 @@ struct MarkdownContentView: View {
     .environment(\.openURL, OpenURLAction { url in
       openValidated(url)
     })
+    // 换了一份正文（切到别的记录再切回来）：提示框的展开记忆清空，不沿用上一份正文的展开状态。
+    .onChange(of: source) { _, _ in calloutFolds.expanded.removeAll() }
     .alert("无法打开链接", isPresented: $rejectedLink) {
       Button("知道了", role: .cancel) {}
     } message: {
@@ -3181,7 +3183,7 @@ struct MarkdownContentView: View {
       case let .code(language, content):
         // 位置进键：同一篇里两个一模一样的流程图 / HTML 各切各的（原来按内容记，会一起切）。
         appendBlock(.full, followsText ? 10 : 0, 20, anchor, "code|\(anchor)|\(language ?? "")|\(content)") {
-          AnyView(self.specialCodeBlock(language: language, content: content, slot: "\(anchor)"))
+          AnyView(self.specialCodeBlock(language: language, content: content, slot: "\(segmentIndex)|\(anchor)"))
         }
       case let .table(headers, rows, alignments):
         appendBlock(.full, followsText ? 10 : 0, 20, anchor, "table|\(headers)|\(rows)|\(String(describing: alignments))") {
@@ -3205,16 +3207,33 @@ struct MarkdownContentView: View {
           AnyView(ReadingCalloutCard(
             kind: kind, title: title, fold: fold,
             accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor,
-            foldMemory: self.calloutFolds, foldKey: "\(anchor)|\(calloutKey)"
+            foldMemory: self.calloutFolds, foldKey: "\(segmentIndex)|\(anchor)|\(calloutKey)"
           ) {
             if !text.isEmpty {
-              AnyView(self.structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
+              AnyView(self.structuredMarkdown(
+                text,
+                segmentIndex: Self.nestedSegmentIndex(path: "\(segmentIndex)|\(anchor)|\(calloutKey)"),
+                foldsSections: false
+              ))
             }
           })
         }
       }
       pendingSpace = 0
     }
+  }
+
+  /// 嵌套提示框里子块的 segmentIndex：由「父块路径」决定，不再只看正文长度。
+  /// 两个相同或等长的提示框路径不同（父段序号 + 块锚点 + 内容键），子块的切换键和折叠键就不会共用。
+  /// 用固定算法（FNV-1a）而不是 Hasher，同一路径永远得到同一个数；落在 1e6 以内，
+  /// 避免多层嵌套时 `(segmentIndex + 1) * 1_000_000` 溢出。
+  static func nestedSegmentIndex(path: String) -> Int {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in path.utf8 {
+      hash ^= UInt64(byte)
+      hash = hash &* 0x0000_0100_0000_01B3
+    }
+    return 1_000_000 + Int(hash % 8_999_999)
   }
 
   /// Block-first reading layout: air before headings, body leading ~1.65, clear lists.
@@ -3366,7 +3385,11 @@ struct MarkdownContentView: View {
         if !text.isEmpty {
           // 按完整正文排：提示框 / 折叠块里常有代码、表格，只用文字视图会把它们丢掉。
           // AnyView 断开「结构化正文里套结构化正文」的类型递归。
-          AnyView(structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
+          AnyView(structuredMarkdown(
+            text,
+            segmentIndex: Self.nestedSegmentIndex(path: "\(slot)|callout|\(kind)|\(title)"),
+            foldsSections: false
+          ))
         }
       }
       .padding(.bottom, 20)
@@ -3970,6 +3993,7 @@ private struct CodeCopyButton: View {
   @State private var justCopied = false
   @State private var resetTask: Task<Void, Never>?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.appTheme) private var appTheme
 
   var body: some View {
     Button {
@@ -3987,7 +4011,7 @@ private struct CodeCopyButton: View {
         .motionSymbolReplace(reduceMotion: reduceMotion)
     }
     .buttonStyle(.plain)
-    .foregroundStyle(justCopied ? Color.green : (isHovered ? .primary : .secondary))
+    .foregroundStyle(justCopied ? appTheme.success : (isHovered ? .primary : .secondary))
     .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovered
