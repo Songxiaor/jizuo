@@ -253,6 +253,9 @@ struct UIReadingHistoryRow: View {
   private func rowBody(_ text: RowText) -> some View {
     // 图标跟标题第一行对齐：居中时，两行标题的卡片里图标会飘在几行字中间。
     HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
+      // 每行少建几层：列表滑动时每滑进一行就要整行新建一遍（2026-11-24 采样，行视图创建约占
+      // 主线程三分之一），所以只在真要叠东西时才包一层。
+      if theme.encodesStatusByShape {
       ZStack(alignment: .bottomTrailing) {
         favicon
         // 2026-09-23：彩色状态点不再叠在每一行的图标上。九成条目都是「未总结」，
@@ -270,8 +273,13 @@ struct UIReadingHistoryRow: View {
         }
       }
       .frame(width: 18, height: 18)
-      .padding(.trailing, 2)
-      .padding(.bottom, 2)
+      .padding(EdgeInsets(top: 0, leading: 0, bottom: 2, trailing: 2))
+      } else {
+        // 不叠状态点的主题（绝大多数）：图标本身就够，不包 ZStack。
+        favicon
+          .frame(width: 18, height: 18)
+          .padding(EdgeInsets(top: 0, leading: 0, bottom: 2, trailing: 2))
+      }
       // 三行之间留 4pt：标题、预览、作者原来只隔 2pt，扫读时几行糊成一团。
       VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
         // 标题固定占两行高度。
@@ -361,11 +369,19 @@ struct UIReadingHistoryRow: View {
     // 上下 10pt：条目之间改由细分隔线分开，不再靠大留白。
     .padding(.vertical, 10)
     .frame(minHeight: 44, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-        .fill(rowBackground)
-    )
-    .background(UIReadingListSelectionStyle(usesSystemSelection: theme.isNative))
+    // 底色只在选中、悬停时才有；其余时候是透明色，不必每行都画一块圆角矩形。
+    .background {
+      if isSelected || isHovering {
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+          .fill(rowBackground)
+      }
+    }
+    // 选中样式只影响被选中的那一行怎么画，所以只挂在选中行上。原来每一行都嵌一个 AppKit
+    // 视图：滑进一行多建一个原生视图，窗口每帧算标题栏拖动区域时也要多钻一层（2026-11-24 采样）。
+    // 行视图被复用时样式会留着；没被选中的行不画选中底色，留着也看不出来。
+    .background {
+      if isSelected { UIReadingListSelectionStyle(usesSystemSelection: theme.isNative) }
+    }
     // 条目之间一条细线（对标应用的分隔方式）；选中或悬停时由底色区分，线收起来。
     .overlay(alignment: .bottom) {
       if !isSelected && !isHovering {
@@ -417,6 +433,8 @@ struct UIReadingHistoryRow: View {
           .fixedSize()
       }
       // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
+      // 没有图标的行（大多数）不建这一组。
+      if hasStatusIcons {
       HStack(spacing: 4) {
         if row.transcriptionFailed == true {
           // 同一个位置、同样的淡色，只换个图形：不给失败条目加醒目标记，
@@ -435,12 +453,21 @@ struct UIReadingHistoryRow: View {
       }
       .font(.system(size: BadgeTypography.size))
       .foregroundStyle(.tertiary)
-      .apply { icons in
-        let help = statusIconHelp(text)
-        if help.isEmpty { icons } else { icons.help(help) }
-      }
+      .help(statusIconHelp(text))
       .accessibilityIdentifier("history-row-status-badges")
+      }
     }
+    // 原来没图标的行也建一个空的图标组，日期后面因此多一格间距；不建那一组后补回这格，
+    // 日期位置和原来一个像素都不差。
+    .padding(.trailing, !hasStatusIcons && savedTimeShown(text) ? DesignTokens.Space.xs : 0)
+  }
+
+  private var hasStatusIcons: Bool {
+    row.transcriptionFailed == true || row.hasMedia == true || row.hasTranscript == true || row.hasMindMap == true
+  }
+
+  private func savedTimeShown(_ text: RowText) -> Bool {
+    HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds) != text.title
   }
 
   /// 作者行。同名时把日期接在后面；作者被收起时只留日期。
