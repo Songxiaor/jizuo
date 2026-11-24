@@ -3207,7 +3207,7 @@ struct MarkdownContentView: View {
           AnyView(ReadingCalloutCard(
             kind: kind, title: title, fold: fold,
             accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor,
-            foldMemory: self.calloutFolds, foldKey: "\(segmentIndex)|\(anchor)|\(calloutKey)"
+            foldMemory: self.calloutFolds, foldKey: "\(self.anchorScope)|\(segmentIndex)|\(anchor)|\(calloutKey)"
           ) {
             if !text.isEmpty {
               AnyView(self.structuredMarkdown(
@@ -3380,7 +3380,7 @@ struct MarkdownContentView: View {
         accentColor: accentColor,
         secondaryTextColor: secondaryTextColor,
         foldMemory: calloutFolds,
-        foldKey: "\(slot)|callout|\(kind)|\(title)|\(text)"
+        foldKey: "\(anchorScope)|\(slot)|callout|\(kind)|\(title)|\(text)"
       ) {
         if !text.isEmpty {
           // 按完整正文排：提示框 / 折叠块里常有代码、表格，只用文字视图会把它们丢掉。
