@@ -99,34 +99,78 @@ extension View {
 // MARK: - 动效
 
 extension DesignTokens {
-  /// 四档时长。
+  /// 全 App 唯一的动效语言。按「状态变化的意图」选档，不要按部件各写曲线。
   ///
-  /// 全部要经 `reduceMotion` 判据——项目里已有 `historyUIAnimation(reduceMotion:)`
-  /// 这个现成模式，新代码沿用它，不要各写各的曲线。
+  /// | 档位 | 曲线 | 用在 |
+  /// |---|---|---|
+  /// | `press` | snappy 0.12 | 按下 / 松开 |
+  /// | `instant` | easeOut 0.10 | 选中底色、勾选、颜色/透明度轻变 |
+  /// | `quick` | easeOut 0.16 | hover、提示、搜索框/筛选条显隐、短文案/图标替换、数字跳动 |
+  /// | `standard` | snappy 0.24 | 展开/折叠、横幅与浮层、列表插删、详情切换 |
+  /// | `modal` | easeOut 0.22 | 全窗蒙版、灯箱、影院、拖放目标 |
+  /// | `stamp` | spring 0.30 / bounce 0.22 | 仅「印章落纸」一处仪式感 |
   ///
-  /// **不设常驻循环动画。** 唯一的例外是骨架屏的呼吸，它已经单独接了
-  /// reduce-motion 保护。
+  /// 规则：
+  /// - 全部经 `resolved(_:reduceMotion:)`；转场用 `DesignTokens.Transition`，
+  ///   它把「去掉位移/缩放」的降级一起做了。
+  /// - 隐式 `.animation(_, value:)` 只挂在变化的那一小块上，绝不挂在窗口根、
+  ///   整张 List、整篇正文这类大容器上。
+  /// - 拖动、调整大小直接跟手，过程中不加动画。
+  /// - 不设常驻循环动画，唯一例外是骨架屏呼吸（已接 reduce-motion）。
   enum Motion {
-    /// 100ms — 选中、开关这类「立即」的状态变化。
-    static let instant = Animation.linear(duration: 0.1)
-    /// 180ms — hover、按下。
-    static let quick = Animation.easeOut(duration: 0.18)
-    /// 240ms — 展开、切换。界面默认档。
-    ///
-    /// 用 `snappy` 而不是 `easeOut`：它带一点回弹，在 macOS 上手感更接近
-    /// 系统控件。项目原本的 `historyUIAnimation` 就是 snappy，token 跟着
-    /// 现状走，而不是反过来逼一屏屏已经调好的动效迁就一条新规则。
+    static let press = Animation.snappy(duration: 0.12)
+    static let instant = Animation.easeOut(duration: 0.10)
+    static let quick = Animation.easeOut(duration: 0.16)
+    /// 界面默认档。`snappy` 是可打断的弹簧，连续点击会从当前位置自然接上。
     static let standard = Animation.snappy(duration: 0.24)
-    /// 320ms — 模态出现/消失。
-    static let slow = Animation.easeInOut(duration: 0.32)
+    static let modal = Animation.easeOut(duration: 0.22)
+    static let stamp = Animation.spring(duration: 0.30, bounce: 0.22)
+    /// 旧名，等同 `modal`。新代码用 `modal`。
+    static let slow = modal
 
     /// 开启「减弱动态效果」时的统一替身：保留状态变化，去掉过程。
-    static let reduced = Animation.easeInOut(duration: 0.1)
+    static let reduced = Animation.easeInOut(duration: 0.10)
 
     /// 按无障碍设置挑一条曲线。
     static func resolved(_ animation: Animation, reduceMotion: Bool) -> Animation {
       reduceMotion ? reduced : animation
     }
+  }
+
+  /// 转场形态。reduce-motion 时一律只剩淡入淡出，不位移、不缩放。
+  enum Transition {
+    /// 横幅、搜索框、筛选条、展开区：从锚边滑入 + 淡入。
+    static func reveal(edge: Edge = .top, reduceMotion: Bool) -> AnyTransition {
+      reduceMotion ? .opacity : .opacity.combined(with: .move(edge: edge))
+    }
+
+    /// 底部药丸、撤销条、浮动提示：轻微放大 + 上浮 + 淡入。
+    static func pill(reduceMotion: Bool) -> AnyTransition {
+      reduceMotion
+        ? .opacity
+        : .opacity.combined(with: .scale(scale: 0.94)).combined(with: .offset(y: 8))
+    }
+
+    /// 灯箱、小窗播放器这类从内容里「浮起来」的层。
+    static func lift(reduceMotion: Bool) -> AnyTransition {
+      reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97))
+    }
+
+    static var fade: AnyTransition { .opacity }
+  }
+}
+
+extension View {
+  /// 低频离散数字（条数、已选 N 项、x/y 进度）换值时滚动过渡。
+  /// 高频数字（秒表、字节数、滚动百分比）不要用，只加 `.monospacedDigit()`。
+  func motionNumericText(reduceMotion: Bool) -> some View {
+    self.monospacedDigit()
+      .contentTransition(reduceMotion ? .identity : .numericText())
+  }
+
+  /// SF Symbol 按状态换图（星标、眼睛、播放/暂停、复制→勾）。
+  func motionSymbolReplace(reduceMotion: Bool) -> some View {
+    self.contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
   }
 }
 

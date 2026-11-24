@@ -11772,7 +11772,7 @@ func historyUIAnimation(reduceMotion: Bool) -> Animation {
 /// Banner enter/exit slides from its top anchor; Reduce Motion falls back to a
 /// plain cross-fade instead of positional movement.
 func historyBannerTransition(reduceMotion: Bool) -> AnyTransition {
-  reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top))
+  DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion)
 }
 
 private struct PointingHandOnHover: ViewModifier {
