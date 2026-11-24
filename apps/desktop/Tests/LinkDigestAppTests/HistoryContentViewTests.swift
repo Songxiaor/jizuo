@@ -1791,7 +1791,7 @@ final class HistoryContentViewTests: XCTestCase {
       XCTAssertTrue(branch.contains("onSelectQuality: { quality in"))
       XCTAssertTrue(branch.contains("qualityOverride: quality"))
       XCTAssertTrue(branch.contains("selectedQuality: sessionMediaPlayback.chosenQuality"))
-      XCTAssertFalse(branch.contains(".id(sessionMediaPlayback.generation)"), "换清晰度不拆播放器卡，就地响应 descriptor")
+      XCTAssertTrue(branch.contains(".id(sessionMediaPlayback.generation)"))
       let select = section(
         in: branch,
         from: "onSelectQuality: { quality in",

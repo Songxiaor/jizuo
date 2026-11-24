@@ -6088,6 +6088,7 @@ private struct HistoryDetailView: View, Equatable {
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-preview-card")
+            .id(sessionMediaPlayback.generation)
             streamSelectionDiagnostic
           } else if let youTubeVideoID = YouTubeWatchLink.videoID(from: detail.task.canonicalURL) {
             youTubeCard(videoID: youTubeVideoID)
@@ -6205,6 +6206,8 @@ private struct HistoryDetailView: View, Equatable {
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-session-restored-card")
+            // generation is read so cache/refresh updates re-render this branch.
+            .id(sessionMediaPlayback.generation)
             streamSelectionDiagnostic
           } else if HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
             hadMediaDescriptor: detail.hadMediaDescriptor,
@@ -6233,6 +6236,7 @@ private struct HistoryDetailView: View, Equatable {
               }
             )
             .padding(.top, 14)
+            .id(sessionMediaPlayback.generation)
           }
         }
 
