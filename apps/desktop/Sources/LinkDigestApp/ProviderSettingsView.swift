@@ -668,6 +668,9 @@ struct ProviderSettingsView: View {
       // 关闭编辑器：密钥草稿一并清掉，不留给下一次打开。
       if !visible { apiKeyInput = "" }
     }
+    .onChange(of: model.apiKeyDraftResetID) { _, _ in
+      apiKeyInput = ""
+    }
     .onChange(of: model.editorSessionID) { _, _ in
       // 开启新编辑会话：上一家的密钥草稿不能带进来，也不能随「读取列表」发到别的地址。
       apiKeyInput = ""

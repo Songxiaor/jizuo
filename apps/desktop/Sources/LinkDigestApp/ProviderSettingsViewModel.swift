@@ -128,6 +128,9 @@ final class ProviderSettingsViewModel {
   private(set) var isEditorVisible = false
   /// 每开启一次编辑会话加一。视图据此清掉密钥草稿：前一家的密钥不能带进下一家的表单。
   private(set) var editorSessionID = 0
+  /// 同一编辑会话里切换预设、服务地址随之改变时加一。视图据此清掉密钥草稿：
+  /// 旧服务商的密钥不能跟到新地址，也不能随「读取列表」发过去。
+  private(set) var apiKeyDraftResetID = 0
   private(set) var lastSavedProfileCount = 0
 
   private let configurationService: ProviderConfigurationService
@@ -993,6 +996,7 @@ final class ProviderSettingsViewModel {
     selectedPreset = preset
     if preset != .custom { apiMode = .chatCompletions }
     if !preset.baseURLTemplate.isEmpty {
+      if baseURL != preset.baseURLTemplate { apiKeyDraftResetID += 1 }
       baseURL = preset.baseURLTemplate
     }
     if transcriptionModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1064,6 +1068,7 @@ final class ProviderSettingsViewModel {
       ? orderedSelectedCatalogModels
       : [modelName]
     let wasAddingNewEntry = editingProfileID == nil
+    let startedSessionID = editorSessionID
 
     do {
       let savedProfiles: [ProviderProfile]
@@ -1111,6 +1116,11 @@ final class ProviderSettingsViewModel {
       }
       guard let profile = savedProfiles.first else {
         throw ProviderConfigurationError.modelRequired
+      }
+      // 保存回调晚到时用户可能已开了新的编辑会话：只刷新列表，不动编辑器。
+      guard editorSessionID == startedSessionID else {
+        await refreshLibrary()
+        return true
       }
       savedIdentity = DataDestinationIdentity(profile: profile)
       modelName = profile.model
