@@ -1684,10 +1684,12 @@ struct ProviderSettingsView: View {
         if !model.isAddingModelBatch {
           Button("直接保存") {
             let submittedKey = apiKeyInput
+            // 只清本次会话、本次提交的那份：保存等待期间若已换了会话或改了密钥，不动新输入。
+            let session = model.editorSessionID
             Task {
               // 失败时保留刚粘好的密钥，免得用户重新找一遍；保存成功才清。
               // 关闭编辑器、开启新会话时另有清空（见 onChange）。
-              if await model.save(apiKey: submittedKey) { apiKeyInput = "" }
+              if await model.save(apiKey: submittedKey), model.editorSessionID == session, apiKeyInput == submittedKey { apiKeyInput = "" }
             }
           }
           .buttonStyle(.appQuiet)
@@ -1696,8 +1698,9 @@ struct ProviderSettingsView: View {
         }
         Button(model.isAddingModelBatch ? "保存 \(model.selectedCatalogModelCount) 个模型" : "验证并保存") {
           let submittedKey = apiKeyInput
+          let session = model.editorSessionID
           Task {
-            if await model.saveAndVerify(apiKey: submittedKey) { apiKeyInput = "" }
+            if await model.saveAndVerify(apiKey: submittedKey), model.editorSessionID == session, apiKeyInput == submittedKey { apiKeyInput = "" }
           }
         }
         .buttonStyle(.appProminent(settingsTheme.accent))

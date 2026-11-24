@@ -591,7 +591,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
         host.invalidateIntrinsicContentSize()
       }
       context.coordinator.lastApplied = attributed
-      context.coordinator.cancelCorrection()
+      // 正文变了不取消纠偏：公式、流程图排好会让同一篇正文重拼、块变高，这正是纠偏要补的误差。
+      // 换跳转、用户开始滚动、视图卸载才取消。
     }
     view.linkTextAttributes?[.foregroundColor] = accent
     let reduceMotion = context.environment.accessibilityReduceMotion
@@ -681,7 +682,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
         liveScrollObserver = NotificationCenter.default.addObserver(
           forName: NSScrollView.willStartLiveScrollNotification, object: scrollView, queue: .main
         ) { [weak self] _ in
-          self?.cancelCorrection()
+          // 注册时指定了主队列，回调就在主线程。
+          MainActor.assumeIsolated { self?.cancelCorrection() }
         }
       }
       correctionTask = Task { @MainActor [weak self, weak view] in

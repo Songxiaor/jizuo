@@ -2815,8 +2815,8 @@ struct MarkdownContentView: View {
     .environment(\.openURL, OpenURLAction { url in
       openValidated(url)
     })
-    // 换了一份正文（切到别的记录再切回来）：提示框的展开记忆清空，不沿用上一份正文的展开状态。
-    .onChange(of: source) { _, _ in calloutFolds.expanded.removeAll() }
+    // 展开记忆不随正文变化清空：边翻边看时正文每批都在变，清了会让前面已展开的提示框在重建时收回去。
+    // 记忆的键里带着提示框全文和位置，换到别的记录也对不上号，不会串。
     .alert("无法打开链接", isPresented: $rejectedLink) {
       Button("知道了", role: .cancel) {}
     } message: {

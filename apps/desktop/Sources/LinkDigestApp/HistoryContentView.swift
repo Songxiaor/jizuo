@@ -4768,6 +4768,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var transcriptSnapshotWhenRunBegan: String?
   /// 刚校对完的那一条：「校对稿已保存」只亮几秒。
   @State private var recentlyCompletedTidyTaskID: TaskID?
+  /// 每次校对完成加一：同一条连着校对两次时，第二次的提示按自己的 4 秒计时。
+  @State private var tidySavedEvent = 0
   /// 三条定时收起的提示各存自己的计时任务：连续两次完成时，旧计时要取消，否则会提前抹掉新提示。
   @State private var completionBannerTimer: Task<Void, Never>?
   @State private var stampTimer: Task<Void, Never>?
@@ -6553,6 +6555,7 @@ private struct HistoryDetailView: View, Equatable {
     .onChange(of: model.transcriptTidyState(for: detail.task.id) == .completed) { _, completed in
       guard completed else { return }
       let taskID = detail.task.id
+      tidySavedEvent += 1
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = taskID }
       // 计时不在这里起：提示可能还在排队等前面的完成提示，真正显示出来才开始数（见 completionNotice）。
     }
@@ -7267,9 +7270,10 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-transcript-tidy-saved")
           .transition(historyBannerTransition(reduceMotion: reduceMotion))
           // 提示真正出现才开始计 4 秒；被前面的提示顶掉时任务随视图消失，重新出现再从头数。
-          .task(id: detail.task.id) {
+          .task(id: tidySavedEvent) {
+            let event = tidySavedEvent
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, event == tidySavedEvent else { return }
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = nil }
           }
       }
