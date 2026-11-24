@@ -589,9 +589,10 @@ struct SelectableReadingTextView: NSViewRepresentable {
       context.coordinator.lastApplied = attributed
     }
     view.linkTextAttributes?[.foregroundColor] = accent
+    let reduceMotion = context.environment.accessibilityReduceMotion
     if let scrollRequest, context.coordinator.lastScrollToken != scrollRequest.token {
       context.coordinator.lastScrollToken = scrollRequest.token
-      DispatchQueue.main.async { Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: true) }
+      DispatchQueue.main.async { Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: !reduceMotion) }
       // 落地后附近的块才建出视图、量出实际高度；再校正一次，误差大于几个点就补滚过去。
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
         Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: false)
@@ -638,7 +639,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
     }
     if animated {
       NSAnimationContext.runAnimationGroup { context in
-        context.duration = 0.25
+        context.duration = 0.24
+        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
         clip.animator().setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: landing))
       } completionHandler: {
         Task { @MainActor in relayoutViewport() }

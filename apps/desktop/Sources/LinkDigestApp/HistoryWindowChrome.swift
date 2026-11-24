@@ -194,38 +194,50 @@ struct PendingCaptureRow: View {
   let pending: ManualLinkViewModel.PendingCapture
   @ObservedObject var model: ManualLinkViewModel
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var isFailedPhase: Bool {
+    if case .failed = pending.phase { return true }
+    return false
+  }
 
   var body: some View {
     HStack(spacing: 8) {
-      switch pending.phase {
-      case .queued:
-        Image(systemName: "clock").foregroundStyle(.secondary)
-      case .fetching, .saving:
-        ProgressView().controlSize(.small)
-      case .failed:
-        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.warning)
+      Group {
+        switch pending.phase {
+        case .queued:
+          Image(systemName: "clock").foregroundStyle(.secondary)
+        case .fetching, .saving:
+          ProgressView().controlSize(.small)
+        case .failed:
+          Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.warning)
+        }
       }
+      .motionSymbolReplace(reduceMotion: reduceMotion)
       VStack(alignment: .leading, spacing: 2) {
         Text(pending.urlString)
           .themedFont(.caption)
           .lineLimit(1)
           .truncationMode(.middle)
-        switch pending.phase {
-        case .queued: Text("排队中").themedFont(.caption2).foregroundStyle(.tertiary)
-        case .fetching:
-          Text(pending.isBrowserRelaying ? "正在用浏览器抓取…" : "正在保存…")
-            .themedFont(.caption2).foregroundStyle(.tertiary)
-        case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
-        case let .failed(message):
-          // 失败原因必须完整可读。窄侧栏里若按理想宽度排成一行，List 会把后半句裁成省略号。
-          Text(message)
-            .themedFont(.caption2)
-            .foregroundStyle(theme.warning)
-            .lineLimit(nil)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+        Group {
+          switch pending.phase {
+          case .queued: Text("排队中").themedFont(.caption2).foregroundStyle(.tertiary)
+          case .fetching:
+            Text(pending.isBrowserRelaying ? "正在用浏览器抓取…" : "正在保存…")
+              .themedFont(.caption2).foregroundStyle(.tertiary)
+          case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
+          case let .failed(message):
+            // 失败原因必须完整可读。窄侧栏里若按理想宽度排成一行，List 会把后半句裁成省略号。
+            Text(message)
+              .themedFont(.caption2)
+              .foregroundStyle(theme.warning)
+              .lineLimit(nil)
+              .multilineTextAlignment(.leading)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
+        .contentTransition(.opacity)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       Spacer(minLength: 4)
@@ -252,8 +264,12 @@ struct PendingCaptureRow: View {
     // 与 HistoryRowView 同一个坑：macOS List 会沿用估算行高把内容压扁，
     // 失败提示换行后第三行就被裁掉。固定纵向 intrinsic 高度 + 内容变化换 identity，
     // 强制按真实内容测量。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: pending.phase
+    )
     .fixedSize(horizontal: false, vertical: true)
-    .id("\(pending.id)-\(pending.phase)")
+    .id("\(pending.id)-\(isFailedPhase)")
     .accessibilityIdentifier("pending-capture-row")
   }
 }

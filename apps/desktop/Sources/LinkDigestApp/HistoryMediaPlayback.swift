@@ -1222,6 +1222,7 @@ struct CurrentCaptureMediaPreviewCard: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let descriptor: MediaDescriptor
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
@@ -1516,35 +1517,42 @@ struct CurrentCaptureMediaPreviewCard: View {
     // VStack 在操作栏、空状态和播放器之间各加一次 spacing，视觉上就变成大空洞。
     if state != .idle || preview?.isEmpty == false || timings != nil || cleanupFailure != nil {
       VStack(alignment: .leading, spacing: 7) {
-        switch state {
-        case .idle:
-          EmptyView()
-        case .preparingMedia:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备临时媒体…") }
-        case .checkingModel:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查中文离线模型…") }
-        case .awaitingModelDownload:
-          Text("等待确认 Apple 中文离线模型下载")
-        case .preparingModel:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备中文离线模型…") }
-        case .extractingAudio:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在提取音频…") }
-        case .transcribing:
-          HStack(spacing: 7) {
-            ProgressView().controlSize(.small)
-            Text(
-              model.transcriptionUsesOnlineService
-                ? (model.onlineTranscriptionPhase ?? "正在在线转写…")
-                : "正在本机转写，音频不会上传…"
-            )
+        Group {
+          switch state {
+          case .idle:
+            EmptyView()
+          case .preparingMedia:
+            HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备临时媒体…") }
+          case .checkingModel:
+            HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查中文离线模型…") }
+          case .awaitingModelDownload:
+            Text("等待确认 Apple 中文离线模型下载")
+          case .preparingModel:
+            HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备中文离线模型…") }
+          case .extractingAudio:
+            HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在提取音频…") }
+          case .transcribing:
+            HStack(spacing: 7) {
+              ProgressView().controlSize(.small)
+              Text(
+                model.transcriptionUsesOnlineService
+                  ? (model.onlineTranscriptionPhase ?? "正在在线转写…")
+                  : "正在本机转写，音频不会上传…"
+              )
+            }
+          case .completed:
+            Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").foregroundStyle(appTheme.success)
+          case .cancelled:
+            Text(LocalVideoTranscriptionError.cancelled.userMessage).foregroundStyle(.secondary)
+          case let .failed(message):
+            Text(message).foregroundStyle(appTheme.danger)
           }
-        case .completed:
-          Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").foregroundStyle(appTheme.success)
-        case .cancelled:
-          Text(LocalVideoTranscriptionError.cancelled.userMessage).foregroundStyle(.secondary)
-        case let .failed(message):
-          Text(message).foregroundStyle(appTheme.danger)
         }
+        .contentTransition(.opacity)
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: state
+        )
         // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
         // 预览文本单独成叶子视图观察 LiveRunTextModel：partial 拍点只重绘
         // 这一小块，视频卡与详情其余部分不受影响。
@@ -1568,6 +1576,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       .themedFont(.caption)
       .fixedSize(horizontal: false, vertical: true)
+      .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       .accessibilityIdentifier("remote-transcribe-state")
     }
   }
@@ -2150,6 +2159,7 @@ extension View {
 /// seek+play，不依赖 AVKit 内部动作。
 /// 浅色音频播放条：播放 / 暂停、进度、时间、倍速。颜色全部来自主题令牌，深浅主题都成立。
 struct LightAudioPlaybackBar: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let player: AVPlayer?
   let theme: HistoryThemeTokens
   @Binding var isPlaybackEnded: Bool
@@ -2170,6 +2180,7 @@ struct LightAudioPlaybackBar: View {
     HStack(spacing: DesignTokens.Space.md) {
       Button(action: togglePlay) {
         Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+          .motionSymbolReplace(reduceMotion: reduceMotion)
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(Color.white)
           .frame(width: 32, height: 32)
@@ -2463,6 +2474,7 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
 struct HistoryVideoPlayerCard: View {
   // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let fileURL: URL
   let media: MediaAsset?
   let taskID: TaskID
@@ -2658,7 +2670,9 @@ struct HistoryVideoPlayerCard: View {
         .receive(on: DispatchQueue.main)
     ) { status in
       guard status == .playing, !hasStartedPlayback else { return }
-      withAnimation(.easeOut(duration: 0.2)) { hasStartedPlayback = true }
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+        hasStartedPlayback = true
+      }
     }
     .onChange(of: model.mediaSeekRequest) { _, request in
       hasStartedPlayback = true
@@ -2767,7 +2781,9 @@ struct HistoryVideoPlayerCard: View {
           // 按钮挂在视频自己的框上：竖屏视频收窄后也贴着视频右上角，不会甩到阅读区右边。
           .overlay(alignment: .topTrailing) { videoCornerActions }
           .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.15)) { isHoveringVideo = hovering }
+            withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+              isHoveringVideo = hovering
+            }
           }
           .videoCinemaDoubleClick {
             guard let player else { return }
