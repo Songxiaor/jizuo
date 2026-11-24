@@ -260,17 +260,15 @@ struct UIReadingHistoryRow: View {
         favicon
         // 2026-09-23：彩色状态点不再叠在每一行的图标上。九成条目都是「未总结」，
         // 满屏棕点只是噪点；状态仍在「待总结」筛选、悬停提示和读屏文本里。
-        // 只有按形状编码状态的主题（给色弱用户）才保留这个标记。
-        if theme.encodesStatusByShape {
-          statusIndicator
-            .frame(width: 7, height: 7)
-            .background(
-              Circle().fill(theme.card).padding(-1.5)
-            )
-            .offset(x: 1, y: 1)
-            .accessibilityLabel("总结状态")
-            .accessibilityValue(isSummarized ? "已总结" : "未总结")
-        }
+        // 只有按形状编码状态的主题（给色弱用户）才保留这个标记（外层已按主题分支）。
+        statusIndicator
+          .frame(width: 7, height: 7)
+          .background(
+            Circle().fill(theme.card).padding(-1.5)
+          )
+          .offset(x: 1, y: 1)
+          .accessibilityLabel("总结状态")
+          .accessibilityValue(isSummarized ? "已总结" : "未总结")
       }
       .frame(width: 18, height: 18)
       .padding(EdgeInsets(top: 0, leading: 0, bottom: 2, trailing: 2))
