@@ -12,6 +12,7 @@
     "createdAt": {"type": "string", "format": "date-time"},
     "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 256},
     "requestedAction": {"type": "string", "enum": ["save", "summarize", "translate"]},
+    "captureJobID": {"type": "string", "minLength": 1, "maxLength": 64},
     "source": {
       "type": "object",
       "required": ["kind", "url", "title", "platform"],

@@ -380,7 +380,13 @@ public final class LocalMediaStore: @unchecked Sendable {
     }
   }
 
-  /// 总容量上限触发的淘汰计划：按「最久没碰过」优先，删够为止。
+  /// 总容量上限触发的淘汰计划：先删「已转写、最久没碰过」的，再删没转写的（同样最久没碰过的先删），删够为止。
+  ///
+  /// 已转写的视频文字已经在库里，删了损失最小；刚下载、还没转写的视频往往是马上要用的，
+  /// 以前只按时间排，补下载一条就挤掉一条还在用的旧视频（2026-11-20）。
+  /// 「已转写」只认这份视频保存之后的转写（`transcribedAfterSaving`）：作者换过视频、或刚重新下载回来的，
+  /// 按没转写算。同一个文件被多条记录引用时，只要有一条没转写，就按没转写算。
+  /// `protectedSinceMilliseconds` 之后才保存的视频一律不删：一批补下载的视频不能互相挤掉。
   ///
   /// 纯函数，不碰磁盘，好让顺序这件事能被单独测。
   /// - 用户自己选的文件夹里的文件不参与：那是用户的文件，不是我们的缓存。
@@ -390,20 +396,26 @@ public final class LocalMediaStore: @unchecked Sendable {
     fileSizes: [String: Int64],
     currentBytes: Int64,
     incomingBytes: Int64,
-    limitBytes: Int64
+    limitBytes: Int64,
+    protectedSinceMilliseconds: Int64 = .max
   ) -> [MediaFile] {
     guard limitBytes > 0 else { return [] }
     var budget = currentBytes + incomingBytes - limitBytes
     guard budget > 0 else { return [] }
     var seen = Set<String>()
     var plan: [MediaFile] = []
-    for entry in inventory.sorted(by: {
-      $0.lastUsedMilliseconds == $1.lastUsedMilliseconds
-        ? $0.mediaID < $1.mediaID
-        : $0.lastUsedMilliseconds < $1.lastUsedMilliseconds
-    }) {
+    var untranscribedPaths = Set<String>()
+    var protectedPaths = Set<String>()
+    for entry in inventory {
+      if !(entry.isTranscribed && entry.transcribedAfterSaving) { untranscribedPaths.insert(entry.relativePath) }
+      if entry.createdAtMilliseconds >= protectedSinceMilliseconds { protectedPaths.insert(entry.relativePath) }
+    }
+    func rank(_ entry: MediaStorageEntry) -> (Int, Int64, String) {
+      (untranscribedPaths.contains(entry.relativePath) ? 1 : 0, entry.lastUsedMilliseconds, entry.mediaID)
+    }
+    for entry in inventory.sorted(by: { rank($0) < rank($1) }) {
       guard budget > 0 else { break }
-      guard !entry.usesUserSelectedFile else { continue }
+      guard !entry.usesUserSelectedFile, !protectedPaths.contains(entry.relativePath) else { continue }
       guard seen.insert(entry.relativePath).inserted else { continue }
       guard let size = fileSizes[entry.relativePath] else { continue }
       plan.append(.init(relativePath: entry.relativePath, byteSize: size))
@@ -465,7 +477,9 @@ public final class LocalMediaStore: @unchecked Sendable {
       fileSizes: sizes,
       currentBytes: currentBytes,
       incomingBytes: Int64(incomingByteCount),
-      limitBytes: limit
+      limitBytes: limit,
+      // 最近 30 分钟内保存的视频不删：批量补下载时，前面刚下回来的不会被后面的挤掉。
+      protectedSinceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000) - 30 * 60 * 1000
     )
     guard !plan.isEmpty else {
       return .init(evicted: [], stillOverLimit: currentBytes + Int64(incomingByteCount) > limit)
@@ -914,7 +928,14 @@ public final class VideoMediaDownloader: @unchecked Sendable {
     } catch {
       throw MediaDownloadError.network
     }
-    guard (200...299).contains(response.statusCode) else { throw MediaDownloadError.responseStatus }
+    guard (200...299).contains(response.statusCode) else {
+      // 记下对端状态码，不记地址里的签名参数：403/404/410 的排查方向完全不同。
+      AppLog.error(.media, "media_download_rejected", code: "HTTP_\(response.statusCode)", [
+        "host": AppLog.host(url),
+        "platform": media.platform,
+      ])
+      throw MediaDownloadError.responseStatus
+    }
     guard response.body.count > 0 else { throw MediaDownloadError.emptyBody }
     guard response.body.count <= effectiveLimit else { throw MediaDownloadError.responseTooLarge }
     var body = response.body

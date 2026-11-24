@@ -1622,7 +1622,28 @@ describe("background douyin item identity lock", () => {
       expect(source).not.toMatch(/document\.cookie|chrome\.cookies|browser\.cookies|localStorage|sessionStorage|performance\.getEntries/gu);
     }
     const config = readFileSync(new URL("../wxt.config.ts", import.meta.url), "utf8");
-    expect(config).not.toMatch(/host_permissions|cookies|webRequest|declarativeNetRequest/u);
+    // 浏览器代抓要在没有用户点击（没有 activeTab 授权）的情况下注入提取脚本，
+    // 但只需要实际支持的平台域名：具体名单在共用 JSON 里，泛网页走 optional。
+    // 仍然不读 cookie、不拦网络请求，也不要 <all_urls> 或文件页面。
+    expect(config).not.toMatch(/cookies|webRequest|declarativeNetRequest|<all_urls>|file:\/\//u);
+    expect(config).toMatch(/host_permissions:\s*relayHostPermissions/u);
+    expect(config).toContain('optional_host_permissions: ["http://*/*", "https://*/*"]');
+    expect(config).toContain('"alarms"');
+    const relayHosts = JSON.parse(
+      readFileSync(
+        new URL("../../desktop/Sources/LinkDigestCore/Resources/relay-host-permissions.json", import.meta.url),
+        "utf8"
+      )
+    ) as { formatVersion: number; hosts: string[] };
+    expect(relayHosts.formatVersion).toBe(1);
+    // 与 App 侧 BrowserCaptureHostPolicy 的兜底名单同一批站点；少一个都会变成「静默超时」。
+    for (const host of [
+      "douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "x.com",
+      "bilibili.com", "b23.tv", "mp.weixin.qq.com", "youtube.com", "zhihu.com", "github.com",
+    ]) {
+      expect(relayHosts.hosts).toContain(host);
+    }
+    expect(relayHosts.hosts).not.toContain("");
   });
 
   it("captures an image post from DOM images, drops its music-track video, and deduplicates the caption", async () => {

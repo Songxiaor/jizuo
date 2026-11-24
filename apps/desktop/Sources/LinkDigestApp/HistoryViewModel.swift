@@ -103,6 +103,8 @@ enum BatchSummaryItemState: Sendable {
 /// 闭包显式接收 detail，不能再偷读「此刻选中的那一条」。
 private struct AutoPipelineRequest {
   let taskID: TaskID
+  /// 这次捕获落下的快照。重抓同一链接时 taskID 不变，必须靠它认「这一批媒体到了没有」。
+  let snapshotID: ContentSnapshotID?
   let expectsMedia: Bool
   let transcribe: Bool
   let tidy: Bool
@@ -1273,8 +1275,15 @@ final class HistoryViewModel {
       if case .cancelled = transcriptionState {
         setTranscriptionText("")
       }
+      // 转写落库后排一次知识库（Obsidian）同步：原来只在新链接进库时排，
+      // 转写往往晚于那 20 秒，笔记里就一直缺稿或留着旧视频的稿。
+      if transcriptionState == .completed, oldValue != .completed {
+        onTranscriptSaved?()
+      }
     }
   }
+  /// 转写成功落库的回调，由 App 接到知识库自动同步。
+  @ObservationIgnored var onTranscriptSaved: (@MainActor () -> Void)?
   /// 非 @Published：写入统一走 `setTranscriptionText`。转写 partial 每
   /// 250ms 一个增长拍点，只更新 `liveTranscriptionText` 收窄重绘；
   /// 空↔非空边界与终态清空仍整体通知。
@@ -1638,7 +1647,7 @@ final class HistoryViewModel {
     prepared: PreparedSpeakerDiarization? = nil
   ) {
     guard let history, !isReadOnly, let audioURL = localMediaFileURL,
-          let transcript = LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+          let transcript = LayeredSourceDocument.transcriptSnapshot(in: VideoTranscriptScope(detail))
     else { return }
     let taskID = detail.task.id
     speakerDiarizationTask?.cancel()
@@ -1713,7 +1722,7 @@ final class HistoryViewModel {
 
   private func startPendingAutoDiarization(detail: HistoryDetailProjection) {
     guard let prepared = pendingAutoDiarization, prepared.taskID == detail.task.id, localMediaFileURL != nil,
-          let transcript = LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+          let transcript = LayeredSourceDocument.transcriptSnapshot(in: VideoTranscriptScope(detail))
     else { return }
     pendingAutoDiarization = nil
     // 已经分过（比如手动点过）就不覆盖。
@@ -1793,6 +1802,77 @@ final class HistoryViewModel {
     }
   }
 
+  /// 这条记录的视频文件此刻是不是真的在本机。库里有登记不算数：「转写后清理」会删文件、留登记。
+  func hasLocalMediaFile(_ media: MediaAsset?) -> Bool {
+    guard let media, let mediaStore, let lease = try? mediaStore.resolve(media) else { return false }
+    return FileManager.default.fileExists(atPath: lease.url.path)
+  }
+
+  enum AgentVideoRedownloadOutcome: Equatable {
+    case alreadyLocal
+    /// needsTranscription：下到的视频还没有转写稿（已交给自动转写队列，开关关着时队列不会接）。
+    case downloaded(needsTranscription: Bool)
+    case failed(String)
+  }
+
+  /// 原链接、平台和作者：重新取视频直链要用，和阅读页「重新下载视频」按钮取法一致。
+  struct VideoSourceContext: Equatable {
+    let platform: String?
+    let sourceURL: String
+    let author: String?
+  }
+
+  nonisolated static func videoSourceContext(for detail: HistoryDetailProjection) -> VideoSourceContext {
+    let caption = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
+    let author = MarkdownNoteFrontmatter.parse(caption?.bodyText ?? "").author
+    return .init(
+      platform: caption?.platform ?? detail.snapshots.last?.platform,
+      sourceURL: detail.snapshots.last?.sourceURL ?? detail.task.canonicalURL,
+      author: author
+    )
+  }
+
+  /// Agent 给已保存的记录补下视频（不管当前打开的是哪条）：本机文件真在就跳过；
+  /// 不在就从原链接重新取直链、下载、挂回这条记录。下到的视频还没有转写稿时，
+  /// 按「自动转写」开关排本机转写；不碰总结等付费步骤。同一个视频重下回来，原转写稿照旧有效。
+  func redownloadVideoForAgent(
+    taskID: TaskID,
+    fetchDescriptor: @escaping @MainActor (VideoSourceContext) async throws -> MediaDescriptor
+  ) async -> AgentVideoRedownloadOutcome {
+    guard !isReadOnly else { return .failed("资料库现在只能看、不能改；重新打开汲作通常就能恢复。") }
+    guard let detail = await loadStoredDetail(taskID: taskID) else { return .failed("记录不存在") }
+    if hasLocalMediaFile(detail.media) { return .alreadyLocal }
+    if let media = detail.media, ExternalMediaReference.isExternal(media) {
+      return .failed("这条是本机导入的文件，原文件找不到了，没有网上链接可以重下；请在汲作里打开这条，用「重新定位」找回原文件。")
+    }
+    let descriptor: MediaDescriptor
+    do {
+      descriptor = try await fetchDescriptor(Self.videoSourceContext(for: detail))
+    } catch let error as SessionMediaRefreshError {
+      return .failed(error.userMessage)
+    } catch {
+      return .failed(SessionMediaRefreshError.networkOrParse.userMessage)
+    }
+    guard let media = CurrentCaptureMediaPreview.favoriteMedia(descriptor) else {
+      return .failed(CurrentCaptureMediaPreview.favoriteUnavailableMessage(descriptor))
+    }
+    let snapshotID = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)?.id
+      ?? detail.snapshots.last?.id ?? ContentSnapshotID()
+    let asset: MediaAsset
+    do {
+      asset = try await downloadAndAttachMedia(media, taskID: taskID, snapshotID: snapshotID, pageURL: descriptor.pageURL)
+    } catch let error as MediaDownloadError {
+      return .failed(error.userMessage)
+    } catch {
+      return .failed("下载回来了但没能挂到这条记录上，请检查视频存储设置后重试。")
+    }
+    if selectedTaskID == taskID { revealAttachedMedia(asset, taskID: taskID) }
+    guard let updated = await loadStoredDetail(taskID: taskID) else { return .downloaded(needsTranscription: false) }
+    guard !VideoTranscriptScope(updated).hasCurrentTranscript else { return .downloaded(needsTranscription: false) }
+    onNewCapturedVideoNeedsTranscription?(taskID)
+    return .downloaded(needsTranscription: true)
+  }
+
   /// 在线分离是否可用（模型库里配了带 diarize 的模型）。
   func isOnlineSpeakerDiarizationConfigured() async -> Bool {
     await onlineSpeakerDiarizer?.configuredProfile() != nil
@@ -1801,7 +1881,7 @@ final class HistoryViewModel {
   /// 说话人改名：正文和分段一起换。
   func renameSpeaker(detail: HistoryDetailProjection, from old: String, to new: String) {
     guard let history, !isReadOnly,
-          let transcript = LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots) else { return }
+          let transcript = LayeredSourceDocument.transcriptSnapshot(in: VideoTranscriptScope(detail)) else { return }
     let body = transcript.bodyText
     let renamed = SpeakerTranscript.renaming(old, to: new, in: body)
     guard renamed != body else { return }
@@ -2811,8 +2891,12 @@ final class HistoryViewModel {
     guard !transcriptionState.isActive else { throw MCPFailure("busy", "已有转写任务正在执行") }
     guard let history, let mediaStore else { throw MCPFailure("not_ready", "视频服务尚未就绪") }
     let value = try history.detail(taskID: taskID)
-    guard let media = value.media else { throw MCPFailure("media_required", "请先下载该作品视频，再转写") }
-    let lease = try mediaStore.resolve(media)
+    guard let media = value.media else { throw MCPFailure("media_required", "请先用jizuo_download_videos下载该作品视频，再转写") }
+    guard let lease = try? mediaStore.resolve(media) else {
+      throw MCPFailure("media_file_missing", ExternalMediaReference.isExternal(media)
+        ? "本机导入的原文件找不到了，请在汲作里打开这条，用「重新定位」找回原文件"
+        : "本机视频文件不在了（被容量上限或转写后清理删掉，或所在的外置盘没接上），请先用jizuo_download_videos重新下载")
+    }
     // Keep the security-scoped lease alive throughout the asynchronous transcription.
     mcpTranscriptionLease = lease
     automaticallyTranscribedTaskIDs.remove(value.task.id)
@@ -2862,8 +2946,16 @@ final class HistoryViewModel {
       return .failed("本机转写现在用不了（需要 macOS 26 的本机听写）。")
     }
     guard !isReadOnly else { return .failed("历史记录当前为只读模式，不能保存转写结果。") }
-    guard let detail = await loadStoredDetail(taskID: taskID) else { return .failed("找不到这条记录。") }
-    if Self.latestTranscriptText(in: detail) != nil { return .alreadyTranscribed }
+    guard let initialDetail = await loadStoredDetail(taskID: taskID) else { return .failed("找不到这条记录。") }
+    // 只看**当前视频**的转写：作者换过视频时，旧视频的稿子不算「已经转写过」。
+    if VideoTranscriptScope(initialDetail).hasCurrentTranscript { return .alreadyTranscribed }
+    // 通道被别的转写占着：等它结束。
+    _ = await waitFor(timeoutSeconds: 24 * 60 * 60) { !self.transcriptionState.isActive }
+    if Task.isCancelled { return .cancelled }
+    // 等通道期间库里可能变了：新视频落地，或同一条视频已被别的路径（自动管线）
+    // 转好。按最新详情再判一次，避免把同一条视频转两遍。
+    let detail = await loadStoredDetail(taskID: taskID) ?? initialDetail
+    if VideoTranscriptScope(detail).hasCurrentTranscript { return .alreadyTranscribed }
     guard let media = detail.media else { return .failed("这条没有可转写的音视频。") }
     let lease: SecurityScopedURLLease
     do {
@@ -2873,9 +2965,6 @@ final class HistoryViewModel {
     } catch {
       return .failed("找不到这条的音视频文件。")
     }
-    // 通道被别的转写占着：等它结束。
-    _ = await waitFor(timeoutSeconds: 24 * 60 * 60) { !self.transcriptionState.isActive }
-    if Task.isCancelled { return .cancelled }
     guard beginLocalTranscription(detail: detail, fileURL: lease.url, autoDiarize: false) else {
       if case let .failed(message) = transcriptionState { return .failed(message) }
       return .failed("转写没能开始，请在条目里重试。")
@@ -2907,6 +2996,20 @@ final class HistoryViewModel {
     default: return Task.isCancelled ? .cancelled : .failed("转写没有完成，请在条目里重试。")
     }
   }
+
+  /// 浏览器代抓把视频落到本地后调用：只有「确实换过视频、当前视频还没转写」才排本机转写。
+  ///
+  /// 只排转写（和批量/手动重抓同一个入口），不重跑自动总结、脑图等付费步骤；
+  /// 同一视频重下（同快照或同内容哈希）不会被 `videoChanged` 判成换视频。
+  func enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: TaskID) async {
+    guard let detail = await loadStoredDetail(taskID: taskID) else { return }
+    let scope = VideoTranscriptScope(detail)
+    guard scope.videoChanged, !scope.hasCurrentTranscript else { return }
+    onNewCapturedVideoNeedsTranscription?(taskID)
+  }
+
+  /// App 接到「浏览器重抓了新视频」后把它接到本机转写队列；由 App 注入。
+  @ObservationIgnored var onNewCapturedVideoNeedsTranscription: (@MainActor (TaskID) -> Void)?
 
   // MARK: 重新定位原文件
 
@@ -3714,6 +3817,7 @@ final class HistoryViewModel {
   /// 存储（首次目的地仍确认一次）。用户切走当前条目时静默停止后续步骤。
   func startAutoPipeline(
     taskID: TaskID,
+    snapshotID: ContentSnapshotID? = nil,
     expectsMedia: Bool,
     transcribe: Bool,
     tidy: Bool,
@@ -3733,6 +3837,7 @@ final class HistoryViewModel {
     autoPipelineQueuedTaskIDs.insert(taskID)
     autoPipelineQueue.append(.init(
       taskID: taskID,
+      snapshotID: snapshotID,
       expectsMedia: expectsMedia,
       transcribe: transcribe,
       tidy: tidy,
@@ -3783,16 +3888,19 @@ final class HistoryViewModel {
     // 1. 本机转写。只有捕获本身声明了媒体才等待下载落地；纯文本不会白等 30 秒。
     if request.transcribe,
        request.expectsMedia,
-       Self.latestTranscriptText(in: storedDetail) == nil {
-      if storedDetail.media == nil {
+       !VideoTranscriptScope(storedDetail).hasCurrentTranscript {
+      // 等「这次捕获的视频」落地。只看「有媒体」不够：重抓同一链接时旧视频本来就在，
+      // 会把旧视频当成新视频立刻开始转写。
+      if !Self.isMediaForCapture(storedDetail.media, snapshotID: request.snapshotID) {
         storedDetail = await waitForStoredDetail(
           taskID: request.taskID,
           timeoutSeconds: 30,
-          where: { $0.media != nil || Self.latestTranscriptText(in: $0) != nil }
+          where: { Self.isMediaForCapture($0.media, snapshotID: request.snapshotID) }
         ) ?? storedDetail
       }
-      if Self.latestTranscriptText(in: storedDetail) == nil,
+      if !VideoTranscriptScope(storedDetail).hasCurrentTranscript,
          let media = storedDetail.media,
+         Self.isMediaForCapture(media, snapshotID: request.snapshotID),
          let mediaStore,
          let lease = try? mediaStore.resolve(media) {
         var channelAvailable = !transcriptionState.isActive
@@ -4644,7 +4752,7 @@ final class HistoryViewModel {
       .compactMap { $0.artifact?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines) }
       .last { !$0.isEmpty }
     let source = summary
-      ?? LayeredSourceDocument.modelInput(from: detail.snapshots)
+      ?? LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail))
         .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !source.isEmpty else { return nil }
     return String(source.prefix(Self.mindMapInputCharacterLimit))
@@ -4657,7 +4765,7 @@ final class HistoryViewModel {
 
   /// 只看原文，不看总结：总结再长也是从这几句话里扩出来的。
   static func isTooShortForMindMap(_ detail: HistoryDetailProjection) -> Bool {
-    LayeredSourceDocument.modelInput(from: detail.snapshots)
+    LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail))
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .count < mindMapMinimumSourceCharacters
   }
@@ -4984,10 +5092,16 @@ final class HistoryViewModel {
   /// detail projection instead of the streaming buffer so a tidy after
   /// relaunch works on exactly what history shows.
   private static func latestTranscriptText(in detail: HistoryDetailProjection) -> String? {
-    let text = detail.snapshots.last(where: {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-    })?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = VideoTranscriptScope(detail).currentTranscriptSnapshot()?
+      .bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
     return text?.isEmpty == false ? text : nil
+  }
+
+  /// 这份媒体是不是「这次捕获」落下的。`snapshotID` 为空表示调用方没有捕获快照（旧路径）。
+  private static func isMediaForCapture(_ media: MediaAsset?, snapshotID: ContentSnapshotID?) -> Bool {
+    guard let media else { return false }
+    guard let snapshotID else { return true }
+    return media.snapshotID == snapshotID
   }
 
   /// 听写还原要带着标题和配文，模型才能把口误还原成课上更可能说的词。
@@ -5025,9 +5139,8 @@ final class HistoryViewModel {
   /// 拿校对稿再校对，上一次的错（某段没校成、某段被错配覆盖）会一路带下去：2026-09-28
   /// 一次错配把开头 4 分钟换成了结尾的内容，再点「校对转写稿」也补不回来。
   private static func machineTranscriptText(in detail: HistoryDetailProjection) -> String? {
-    let text = detail.snapshots.last(where: {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-        && $0.captureMethod != "openai_compatible_chat_tidy"
+    let text = VideoTranscriptScope(detail).currentTranscriptSnapshots().last(where: {
+      $0.captureMethod != "openai_compatible_chat_tidy"
     })?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
     return text?.isEmpty == false ? text : nil
   }
@@ -5285,10 +5398,9 @@ final class HistoryViewModel {
 
   /// 校对稿（不是机器原稿）那条快照。存疑的采纳只改它，原稿永远不动。
   private func tidiedSnapshot(in detail: HistoryDetailProjection) -> ContentSnapshot? {
-    detail.snapshots.last(where: {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-        && $0.captureMethod == ProcessStepRecord.tidyCaptureMethod
-    })
+    VideoTranscriptScope(detail).currentTranscriptSnapshots().last {
+      $0.captureMethod == ProcessStepRecord.tidyCaptureMethod
+    }
   }
 
   /// 采纳一处：把校对稿里的原文片段换成建议。片段已经找不到（用户手改过）就只提示，不乱改。
@@ -9890,7 +10002,7 @@ final class HistoryViewModel {
     let side = detailSideload(
       history, taskID: taskID,
       snapshotID: value.snapshots.last?.id,
-      transcriptSnapshotID: LayeredSourceDocument.transcriptSnapshot(in: value.snapshots)?.id,
+      transcriptSnapshotID: LayeredSourceDocument.transcriptSnapshot(in: VideoTranscriptScope(value))?.id,
       imageCache: imageCache
     )
     return (result, side)
@@ -9947,7 +10059,7 @@ final class HistoryViewModel {
   ) -> BatchTranslationItemState {
     guard let detail = try? history.detail(taskID: taskID) else { return .unreadable }
     if batchTranslationIsTranslated(detail) { return .alreadyTranslated }
-    let body = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    let body = LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail))
     guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           !LocalImportDocument.isUntranscribedPlaceholder(detail.snapshots.last?.bodyText ?? "")
     else {
@@ -9972,7 +10084,7 @@ final class HistoryViewModel {
           taskID: taskID,
           title: batchSummaryTitle(for: detail),
           estimatedInputTokens: batchSummaryEstimatedTokens(
-            in: LayeredSourceDocument.modelInput(from: detail.snapshots)
+            in: LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail))
           )
         ))
       case .alreadyTranslated:
@@ -10006,7 +10118,7 @@ extension HistoryViewModel {
       store: store, extractor: extractor,
       loadSource: { taskID in
         guard let detail = try? await Task.detached(operation: { try history.detail(taskID: taskID) }).value,
-              let snapshot = detail.snapshots.last(where: { $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue })
+              let snapshot = VideoTranscriptScope(detail).currentTranscriptSnapshot()
         else { return nil }
         return MaterialCardService.Source(text: snapshot.bodyText, title: detail.snapshots.last?.title)
       },

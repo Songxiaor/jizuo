@@ -22,6 +22,9 @@ struct OwnershipSourceRow: Equatable, Identifiable {
   /// 本机来源（笔记、备忘录、语音备忘录、文件、作品）：它们说的是「从哪个渠道进来」，不是网站。
   var isLocal: Bool { OwnershipSourceNavigation.localHosts.contains(key) }
 
+  /// 直播录制：也走本机通道，但有条目就说明是录下来的一整场，不是「判错的网站」。
+  var isLiveRecording: Bool { HistoryPlatformRegistry.isLiveRecordingHost(key) }
+
   /// 侧栏上的名字。本机来源用短名（「文件」不写「本地文件」：上面那一行已经说了归谁）。
   var title: String? {
     switch key {
@@ -43,8 +46,16 @@ enum OwnershipSourceNavigation {
     LocalImportSource.appleNotes.rawValue,
     LocalImportSource.voiceMemos.rawValue,
     LocalImportSource.files.rawValue,
+    "douyinlive",
+    "xiaohongshulive",
     HistoryPlatformDisplay.workHost,
   ]
+
+  /// 悬停说明只有「本地文件」和网站需要解释归属（默认会判错、可以右键改）；
+  /// 直播录制没有这回事，说明回到默认的「抖音直播（N 条）」。
+  static func isLiveRecordingHost(_ host: String) -> Bool {
+    HistoryPlatformRegistry.isLiveRecordingHost(host)
+  }
 
   /// 一边的全部子项。
   ///

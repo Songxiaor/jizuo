@@ -263,7 +263,23 @@ public enum HistoryPlatformRegistry {
     .init(canonicalHost: LocalImportSource.voiceMemos.rawValue, displayName: "语音备忘录", exactHosts: [LocalImportSource.voiceMemos.rawValue]),
     .init(canonicalHost: LocalImportSource.files.rawValue, displayName: "文件", exactHosts: [LocalImportSource.files.rawValue]),
     .init(canonicalHost: LocalImportSource.appleNotes.rawValue, displayName: "备忘录", exactHosts: [LocalImportSource.appleNotes.rawValue]),
+    // 直播录制：canonical URL 是 `linkdigest-local://douyinlive/…` / `xiaohongshulive`，
+    // 给它们正式名字，侧栏才会显示平台名而不是「待分类」。
+    // 图标复用抖音、小红书的成套素材：原来没有映射，侧栏和列表退成首字母「D」「X」，
+    // 小红书的「X」还和推特撞脸（2026-11-11 Syc 走查）。
+    .init(canonicalHost: "douyinlive", displayName: "抖音直播", exactHosts: ["douyinlive"], bundledAssetName: "douyin"),
+    .init(canonicalHost: "xiaohongshulive", displayName: "小红书直播", exactHosts: ["xiaohongshulive"], bundledAssetName: "xiaohongshu"),
   ]
+
+  /// 直播录制来源的 host（`linkdigest-local://<host>/…`）。
+  ///
+  /// 它们和「本地文件」一样走本机来源通道，但不是文件：图标、悬停说明都要按平台办，
+  /// 不能套「改成「外部」的…」那一类模板。
+  public static let liveRecordingHosts: Set<String> = ["douyinlive", "xiaohongshulive"]
+
+  public static func isLiveRecordingHost(_ rawHost: String) -> Bool {
+    liveRecordingHosts.contains(canonicalHost(for: rawHost))
+  }
 
   public static func descriptor(forHost rawHost: String) -> HistoryPlatformDescriptor? {
     let host = HistoryHostNormalizer.normalized(rawHost)
@@ -286,6 +302,7 @@ public enum HistoryPlatformRegistry {
   public static func bundledAssetName(forHost rawHost: String) -> String? {
     descriptor(forHost: rawHost)?.bundledAssetName
   }
+
 }
 
 /// 平台是"内容从哪来"的系统维度：侧边栏显示人类可读的中文平台名，

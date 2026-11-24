@@ -148,7 +148,9 @@ final class ProxyAwareWebPageFetcherTests: XCTestCase {
       ) {
         XCTAssertEqual($0 as? ManualLinkError, .proxyHTTPSRequired)
         XCTAssertTrue(ManualLinkError.proxyHTTPSRequired.userMessage.contains("HTTPS"))
-        XCTAssertTrue(ManualLinkError.proxyHTTPSRequired.userMessage.contains("浏览器扩展"))
+        // 代理限制读不了的页面不再让用户手动交给扩展：这里只说明原因与要检查的设置。
+        XCTAssertTrue(ManualLinkError.proxyHTTPSRequired.userMessage.contains("代理"))
+        XCTAssertFalse(ManualLinkError.proxyHTTPSRequired.userMessage.contains("用浏览器扩展保存"))
       }
     }
     XCTAssertTrue(proxy.calls.isEmpty)

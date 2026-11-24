@@ -36,6 +36,43 @@ final class DouyinWebCaptureTests: XCTestCase {
     )
   }
 
+  func testNavigationFailureSeparatesRedirectFromUnreadablePage() {
+    // 同一个抖音域内的地址（哪怕路由不对）说明页面没认出来，不是「跳到了别的网站」。
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.navigationFailure(
+        url: URL(string: "https://www.douyin.com/video/7661288207509769506")
+      ),
+      .invalidPageResult
+    )
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.navigationFailure(
+        url: URL(string: "https://passport.douyin.com/login")
+      ),
+      .invalidPageResult
+    )
+    // 主框被跳到站外：说「跳到了别的网站」，而不是笼统的「请用扩展」。
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.navigationFailure(url: URL(string: "https://evil.example/collect")),
+      .webHostNotAllowed
+    )
+    XCTAssertEqual(DouyinWebCapturePolicy.navigationFailure(url: nil), .invalidPageResult)
+  }
+
+  /// 渲染兜底截止时页面没加载完，提示必须说「没加载出来」，而不是让用户去开扩展。
+  func testDouyinTimeoutMessageNamesTheRealCause() {
+    let message = CaptureRouteGuidance.failureMessage(
+      for: .timedOut,
+      url: URL(string: "https://www.douyin.com/video/7661288207509769506")
+    )
+    XCTAssertTrue(message.contains("没在时限内加载出来"))
+    XCTAssertFalse(message.contains("请在浏览器里打开它"), "不要把加载超时说成要开扩展")
+    // 其他平台/其他错误仍走原来的通用说明。
+    XCTAssertEqual(
+      CaptureRouteGuidance.failureMessage(for: .timedOut, url: URL(string: "https://example.org/a")),
+      ManualLinkError.timedOut.userMessage
+    )
+  }
+
   func testValidatesBoundedRenderedItemResult() throws {
     let page = try DouyinWebCapturePolicy.validateJavaScriptResult([
       "awemeID": "7661288207509769506",

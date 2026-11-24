@@ -44,6 +44,21 @@ import {
   readBilibiliStreamInMainWorld,
 } from "../content/bilibili";
 import {
+  DOUYIN_LIVE_REFERER,
+  LIVE_BROWSER_USER_AGENT,
+  douyinRoomID,
+  isDouyinLiveURL,
+  liveQualityLabel,
+  pickQualityOptions,
+  selectLiveVariant,
+  type DouyinLiveRoom,
+  type LiveQualityKey,
+} from "../content/douyin-live";
+import {
+  XIAOHONGSHU_LIVE_REFERER,
+  isXiaohongshuLiveURL,
+} from "../content/xiaohongshu-live";
+import {
   isXiaohongshuNoteURL,
   readXiaohongshuVideoStreamInMainWorld,
   xiaohongshuCanonicalURL,
@@ -56,13 +71,30 @@ import {
   truncateToUtf8Bytes,
   utf8ByteLength,
   validateCapture,
+  validateLiveRecording,
   type CaptureEnvelope,
   type CapturePlatform,
+  type LiveRecordingMessage,
   type CaptureRequestedAction,
   type MediaDescriptor,
   type NativeResponse,
 } from "../contract";
 import { mapNativeFailure, withTimeout } from "../native-client";
+import {
+  createRelayTabState,
+  forgetRelayTab,
+  handleRelayTabEvent,
+  hasRelayMarker,
+  queryRelayJob,
+  relayCommentMode,
+  RELAY_SWEEP_ALARM,
+  RELAY_SWEEP_PERIOD_MINUTES,
+  stripRelayMarker,
+  sweepRelayTabs,
+  type RelayBlockReason,
+  type RelayCommentMode,
+  type RelayTabDeps,
+} from "../relay";
 import { detectCapturePlatform, isDouyinVideoURL } from "../platform";
 import {
   collectXBookmarkIDsInPage,
@@ -729,6 +761,7 @@ function downgradeToV1(value: CaptureEnvelope): CaptureEnvelope {
     createdAt: value.createdAt,
     ...(value.idempotencyKey ? { idempotencyKey: value.idempotencyKey } : {}),
     ...(value.requestedAction ? { requestedAction: value.requestedAction } : {}),
+    ...(value.captureJobID ? { captureJobID: value.captureJobID } : {}),
     source: value.source,
     capture: value.capture,
     evidence: { sourceLabel: "Current page DOM", usedCookie: false },
@@ -1666,18 +1699,38 @@ export async function sendCapture(
   requestedAction: CaptureRequestedAction = "save",
   selectedCommentIDs?: readonly string[],
   commentMode?: CommentSendMode,
+  captureJobID?: string,
 ): Promise<ExtensionSendResult> {
   const attempt = await captureAttemptFromTab(tabId, { include: true, selectedIDs: selectedCommentIDs, mode: commentMode });
   const { envelope, mediaDiagnostic, metadataDiagnostic } = attempt;
+  // 代抓标签的地址带着 App 加的标记片段：存进汲作的链接不能带它。
+  if (captureJobID) {
+    envelope.source.url = stripRelayMarker(envelope.source.url);
+    if ("media" in envelope && envelope.media) {
+      const media = { ...(envelope.media as unknown as Record<string, unknown>) };
+      for (const key of ["pageURL", "canonicalURL"]) {
+        const value = media[key];
+        if (typeof value === "string") media[key] = stripRelayMarker(value);
+      }
+      (envelope as { media?: unknown }).media = media;
+    }
+  }
   // V2-first strategy: validate the V2 envelope (which carries the media
   // descriptor). Only if V2 validation actually fails do we downgrade to V1.
   // This preserves the video player URL and media metadata for the App.
-  let wireEnvelope: CaptureEnvelope = { ...envelope, requestedAction };
+  let wireEnvelope: CaptureEnvelope = {
+    ...envelope,
+    requestedAction,
+    ...(captureJobID ? { captureJobID } : {}),
+  };
   let invalid = validateCapture(wireEnvelope);
   if (invalid && envelope.version === 2) {
     // V2 validation failed — downgrade to V1 (drops media, keeps text).
     // Better to deliver text-only than to fail the entire capture.
-    wireEnvelope = downgradeToV1(envelope);
+    wireEnvelope = {
+      ...downgradeToV1(envelope),
+      ...(captureJobID ? { captureJobID } : {}),
+    };
   }
 
   // Payload size guard: Native Messaging has a 4 MiB hard limit.
@@ -1754,6 +1807,157 @@ export async function previewCurrentPage(tabId: number): Promise<SafeCapturePrev
     attempt.imageCount,
   );
   return attempt.pageTranslatedBy ? { ...preview, pageTranslatedBy: attempt.pageTranslatedBy } : preview;
+}
+
+export type LiveRoomInfo =
+  | {
+      ok: true;
+      platform: LivePlatformKey;
+      roomID: string;
+      anchorName?: string;
+      title?: string;
+      options: Array<{ quality: LiveQualityKey; label: string; container: "flv" | "hls" }>;
+      recommended: LiveQualityKey;
+    }
+  | { ok: false; code: "not_live" | "read_failed" | "no_stream" };
+
+export type LiveRecordingStartResult =
+  | { ok: true; recordingID: string; quality: LiveQualityKey; qualityLabel: string }
+  | { ok: false; code: string };
+
+/** 注入打包后的解析脚本；返回值里只有房间信息和地址，没有正文。 */
+type LivePlatformKey = "douyin" | "xiaohongshu";
+
+async function readLiveRoom(
+  tabId: number,
+  platform: LivePlatformKey,
+): Promise<DouyinLiveRoom | null> {
+  const attempts = platform === "xiaohongshu" ? 10 : 3;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 800));
+    const room = await readLiveRoomOnce(tabId, platform);
+    if (room) return room;
+  }
+  return null;
+}
+
+async function readLiveRoomOnce(
+  tabId: number,
+  platform: LivePlatformKey,
+): Promise<DouyinLiveRoom | null> {
+  try {
+    const results = await browser.scripting.executeScript({
+      target: { tabId },
+      files: [platform === "xiaohongshu" ? "/xiaohongshu-live.js" : "/douyin-live.js"],
+      // 抖音 `__pace_f` 与小红书 `__INITIAL_STATE__` 都在页面主世界；
+      // 隔离世界拿不到。两个脚本都只在页面里读数据，不发请求。
+      world: "MAIN",
+    });
+    const room = results[0]?.result as DouyinLiveRoom | null | undefined;
+    if (!room || !Array.isArray(room.variants) || room.variants.length === 0) return null;
+    const valid = platform === "xiaohongshu"
+      ? isXiaohongshuLiveURL(room.pageURL)
+      : douyinRoomID(room.pageURL) !== null;
+    if (!valid) return null;
+    return room;
+  } catch {
+    return null;
+  }
+}
+
+export async function liveRoomInfo(tabId: number): Promise<LiveRoomInfo> {
+  const tab = await browser.tabs.get(tabId).catch(() => undefined);
+  const platform = livePlatformForURL(tab?.url);
+  if (!platform) return { ok: false, code: "not_live" };
+  const room = await readLiveRoom(tabId, platform);
+  if (!room) return { ok: false, code: "no_stream" };
+  const options = pickQualityOptions(room.variants).map((variant) => ({
+    quality: variant.quality,
+    label: liveQualityLabel(variant),
+    container: variant.container,
+  }));
+  const recommended = selectLiveVariant(room.variants, "origin", platform)?.quality ?? options[0]?.quality;
+  if (!recommended) return { ok: false, code: "no_stream" };
+  return {
+    ok: true,
+    platform,
+    roomID: room.roomID,
+    ...(room.anchorName ? { anchorName: room.anchorName } : {}),
+    ...(room.title ? { title: room.title } : {}),
+    options,
+    recommended,
+  };
+}
+
+function livePlatformForURL(rawURL: string | undefined): LivePlatformKey | null {
+  if (!rawURL) return null;
+  if (isDouyinLiveURL(rawURL)) return "douyin";
+  if (isXiaohongshuLiveURL(rawURL)) return "xiaohongshu";
+  return null;
+}
+
+/**
+ * 开始录制：重新读一次页面拿最新地址（签名会过期，不能用弹窗打开时那份），
+ * 再经 nativeMessaging 交给 App。地址只进内存消息，不写 storage、不落日志。
+ */
+export async function startLiveRecording(
+  tabId: number,
+  requestedQuality: unknown,
+): Promise<LiveRecordingStartResult> {
+  const quality: LiveQualityKey = requestedQuality === "origin"
+    || requestedQuality === "hd"
+    || requestedQuality === "sd"
+    || requestedQuality === "ld"
+    ? requestedQuality
+    : "origin";
+  const tab = await browser.tabs.get(tabId).catch(() => undefined);
+  const platform = livePlatformForURL(tab?.url);
+  if (!platform) return { ok: false, code: "NOT_LIVE_PAGE" };
+  const room = await readLiveRoom(tabId, platform);
+  if (!room) return { ok: false, code: "LIVE_STREAM_NOT_FOUND" };
+  const selected = selectLiveVariant(room.variants, quality, platform);
+  if (!selected) return { ok: false, code: "LIVE_STREAM_NOT_FOUND" };
+  const message: LiveRecordingMessage = {
+    kind: "liveRecording",
+    version: 1,
+    requestId: requestId(),
+    createdAt: new Date().toISOString(),
+    platform,
+    pageURL: room.pageURL,
+    roomID: room.roomID,
+    ...(room.anchorName ? { anchorName: room.anchorName } : {}),
+    ...(room.anchorID ? { anchorID: room.anchorID } : {}),
+    ...(room.anchorAvatarURL ? { anchorAvatarURL: room.anchorAvatarURL } : {}),
+    ...(room.anchorProfileURL ? { anchorProfileURL: room.anchorProfileURL } : {}),
+    ...(room.title ? { title: room.title } : {}),
+    quality: selected.quality,
+    variants: room.variants,
+    requestHeaders: {
+      referer: platform === "xiaohongshu" ? XIAOHONGSHU_LIVE_REFERER : DOUYIN_LIVE_REFERER,
+      userAgent: LIVE_BROWSER_USER_AGENT,
+    },
+  };
+  const invalid = validateLiveRecording(message);
+  if (invalid) return { ok: false, code: invalid };
+  try {
+    const response: unknown = await withTimeout(
+      browser.runtime.sendNativeMessage(HOST_NAME, message),
+      30_000,
+    );
+    const normalized = normalizeNativeResponse(response, message.requestId);
+    if (normalized.kind === "liveRecordingAccepted") {
+      return {
+        ok: true,
+        recordingID: normalized.recordingID,
+        quality: selected.quality,
+        qualityLabel: liveQualityLabel(selected),
+      };
+    }
+    if (normalized.kind === "error") return { ok: false, code: normalized.error.code };
+    return { ok: false, code: "NATIVE_MESSAGE_FAILED" };
+  } catch (error) {
+    return { ok: false, code: mapNativeFailure(error, message.requestId).code };
+  }
 }
 
 /** 记住上次同步到的最新收藏 id，供下次增量同步判断「追上了」/标「已在库」。 */
@@ -2108,7 +2312,124 @@ export async function openPeerApp(taskID?: unknown): Promise<{ ok: true } | { ok
   }
 }
 
+// ---------------------------------------------------------------------------
+// 浏览器代抓：App 自己读不到某页时，会在浏览器里后台开一个标签并登记一次性 job。
+// 扩展只在「标签加载完成」时问一次 App；命中才抓，抓完只关自己刚打开的那个标签。
+
+function relayHostPermissionPattern(url: string): string | undefined {
+  try {
+    return `${new URL(url).origin}/*`;
+  } catch {
+    return undefined;
+  }
+}
+
+function relayDeps(): RelayTabDeps {
+  const setSweepAlarm = (enabled: boolean): void => {
+    try {
+      if (enabled) {
+        browser.alarms.create(RELAY_SWEEP_ALARM, { periodInMinutes: RELAY_SWEEP_PERIOD_MINUTES });
+      } else {
+        void browser.alarms.clear(RELAY_SWEEP_ALARM);
+      }
+    } catch {
+      // 没有 alarms 权限时退化为「只在加载完成那一帧处理」。
+    }
+  };
+  return {
+    query: (urls, tabID) =>
+      queryRelayJob(
+        urls,
+        tabID,
+        true,
+        (message) => browser.runtime.sendNativeMessage(HOST_NAME, message),
+        requestId,
+      ),
+    commentMode: async (tabURL: string) => {
+      // 评论设置和用户在弹窗里保存时同一套：平台设 0 = 不抓，开了自动保存就现读前 N 条。
+      const preferences = await capturePreferences();
+      const platform = commentPlatformForURL(tabURL);
+      return relayCommentMode(
+        platform ? effectiveCommentLimit(preferences, platform) : undefined,
+        preferences.autoSaveComments,
+      );
+    },
+    capture: async (tabId: number, mode: RelayCommentMode | undefined, jobID: string) => {
+      const result = await sendCapture(tabId, "save", undefined, mode, jobID);
+      return {
+        accepted: result.response.kind === "taskAccepted",
+        ...(result.response.kind === "error" ? { code: result.response.error.code } : {}),
+      };
+    },
+    closeTab: (tabId: number) => browser.tabs.remove(tabId).then(() => undefined, () => undefined),
+    reportBlocked: async (tabId: number, jobID: string, finalURL: string, reason: RelayBlockReason) => {
+      try {
+        await browser.runtime.sendNativeMessage(HOST_NAME, {
+          kind: "browserCaptureJobOutcome",
+          version: 1,
+          requestId: requestId(),
+          jobID,
+          finalURL,
+          reason,
+        });
+      } catch {
+        // App 没开时这一步就无从送达；标签仍按回收规则处理。
+      }
+      void tabId;
+    },
+    hasHostPermission: async (url: string) => {
+      const pattern = relayHostPermissionPattern(url);
+      if (!pattern) return false;
+      try {
+        return await browser.permissions.contains({ origins: [pattern] });
+      } catch {
+        return false;
+      }
+    },
+    now: () => Date.now(),
+    setSweepAlarm,
+  };
+}
+
 export default defineBackground(() => {
+  const relayState = createRelayTabState();
+  const relay = relayDeps();
+  browser.tabs.onCreated.addListener((tab) => {
+    if (typeof tab.id === "number") relayState.createdAt.set(tab.id, Date.now());
+  });
+  browser.tabs.onRemoved.addListener((tabId) => forgetRelayTab(relayState, tabId));
+  browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    // 只有带代抓标记的标签才会进入这里发 native message（见 relay.ts）。
+    void handleRelayTabEvent(
+      relayState,
+      tabId,
+      tab.url ?? changeInfo.url,
+      tab.title,
+      changeInfo.status,
+      relay,
+    );
+  });
+  // 后台被浏览器回收重启时，内存里的「哪些标签是代抓开的」会丢。启动时按标记重建一次：
+  // 短链跳转后标记仍在地址里，重建就能继续认出来；没有标记的标签一律不碰。
+  void browser.tabs.query({}).then((tabs) => {
+    for (const tab of tabs) {
+      if (typeof tab.id !== "number" || !hasRelayMarker(tab.url)) continue;
+      relayState.markerTabs.add(tab.id);
+      relayState.createdAt.set(tab.id, Date.now());
+      relay.setSweepAlarm(true);
+    }
+  }).catch(() => undefined);
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== RELAY_SWEEP_ALARM) return;
+    void (async () => {
+      const outcome = await sweepRelayTabs(
+        relayState,
+        () => browser.tabs.query({}),
+        { query: relay.query, closeTab: relay.closeTab, now: relay.now },
+      );
+      if (outcome.remaining === 0) relay.setSweepAlarm(false);
+    })();
+  });
   browser.runtime.onMessage.addListener(async (
     message: {
       type?: string;
@@ -2118,6 +2439,7 @@ export default defineBackground(() => {
       requestedAction?: CaptureRequestedAction;
       selectedCommentIDs?: string[];
       commentMode?: unknown;
+      quality?: unknown;
       taskID?: unknown;
       url?: unknown;
     },
@@ -2131,6 +2453,8 @@ export default defineBackground(() => {
     if (message.type === "enqueue-x-bookmarks") return enqueueXBookmarkIDs(message.tweetIDs);
     if (typeof message.tabId !== "number") return undefined;
     if (message.type === "preview-current-page") return previewCurrentPage(message.tabId);
+    if (message.type === "live-room-info") return liveRoomInfo(message.tabId);
+    if (message.type === "start-live-recording") return startLiveRecording(message.tabId, message.quality);
     if (message.type === "collect-comments") return collectCommentsForPicker(message.tabId);
     if (message.type === "send-current-page") {
       const action = message.requestedAction;

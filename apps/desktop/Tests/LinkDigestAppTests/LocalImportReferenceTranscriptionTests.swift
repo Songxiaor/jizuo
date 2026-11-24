@@ -128,6 +128,110 @@ final class LocalImportReferenceTranscriptionTests: XCTestCase {
     XCTAssertEqual(again, .alreadyTranscribed, "已转写的不重复转")
   }
 
+  /// 作者在同一链接下换过视频：旧视频的转写不能挡住新视频的自动转写。
+  func testNewVideoIsTranscribedEvenWhenAnOldTranscriptExists() async throws {
+    let canonical = "https://www.xiaohongshu.com/explore/1"
+    let first = try repository.acceptCapture(.init(
+      document: captureDocument(url: canonical, origin: .manualLink, text: "旧文案"),
+      receivedAtMilliseconds: 10
+    ))
+    let oldFile = base.appendingPathComponent("旧视频.mp4")
+    try Data("old-video-bytes".utf8).write(to: oldFile)
+    let oldSHA = try LocalFileImportReader.contentSHA256(of: oldFile)
+    try repository.attachMedia(.init(asset: try store.externalReferenceAsset(
+      fileURL: oldFile, taskID: first.taskID, snapshotID: first.snapshotID,
+      contentSHA256: oldSHA, byteSize: 15, durationSeconds: 150,
+      platform: "files", createdAtMilliseconds: 11
+    )))
+    // 旧视频的转写：seq2，早于新视频被引入的那份快照。
+    _ = try repository.acceptCapture(.init(
+      document: captureDocument(
+        url: canonical, origin: .localTranscription, text: "旧视频转写",
+        method: "speech_analyzer_local"
+      ),
+      receivedAtMilliseconds: 20
+    ))
+    // 同一链接重抓：seq3，带来新视频。
+    let second = try repository.acceptCapture(.init(
+      document: captureDocument(url: canonical, origin: .manualLink, text: "新文案"),
+      receivedAtMilliseconds: 30
+    ))
+    let newFile = base.appendingPathComponent("新视频.mp4")
+    try Data("new-video-bytes".utf8).write(to: newFile)
+    let newSHA = try LocalFileImportReader.contentSHA256(of: newFile)
+    try repository.attachMedia(.init(asset: try store.externalReferenceAsset(
+      fileURL: newFile, taskID: first.taskID, snapshotID: second.snapshotID,
+      contentSHA256: newSHA, byteSize: 15, durationSeconds: 156,
+      platform: "files", createdAtMilliseconds: 31
+    )))
+
+    let before = try repository.detail(taskID: first.taskID)
+    XCTAssertFalse(
+      VideoTranscriptScope(before).hasCurrentTranscript,
+      "旧视频的转写不能算成当前视频已转写"
+    )
+    XCTAssertTrue(VideoTranscriptScope(before).showsStaleTranscriptOnly)
+
+    let transcriber = WorkspaceRecordingTranscriber(mode: .succeed)
+    let model = makeModel(transcriber)
+    var requested: [TaskID] = []
+    model.onNewCapturedVideoNeedsTranscription = { requested.append($0) }
+    await model.enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: first.taskID)
+    XCTAssertEqual(requested, [first.taskID], "浏览器重抓换过视频、当前视频没转写时排进队列")
+
+    let outcome = await model.transcribeImportedMedia(taskID: first.taskID)
+
+    XCTAssertEqual(outcome, .completed)
+    XCTAssertTrue(same(transcriber.fileURLs.first, newFile), "转的是新视频，不是旧视频")
+    let after = try repository.detail(taskID: first.taskID)
+    XCTAssertTrue(VideoTranscriptScope(after).hasCurrentTranscript)
+    XCTAssertEqual(VideoTranscriptScope(after).staleTranscriptSnapshots().count, 1, "旧稿保留，只是不再算当前")
+
+    await model.enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: first.taskID)
+    XCTAssertEqual(requested.count, 1, "当前视频已经转写，不再排第二次")
+  }
+
+  /// 同一视频重下（同一快照换清晰度）不是换视频，不该排进转写队列。
+  func testSameVideoRedownloadDoesNotRequestTranscription() async throws {
+    let existing = try XCTUnwrap(repository.mediaAsset(taskID: taskID))
+    let highDefinition = base.appendingPathComponent("讲座-高清.mp3")
+    try Data("fake-mp3-hd-bytes".utf8).write(to: highDefinition)
+    let sha = try LocalFileImportReader.contentSHA256(of: highDefinition)
+    try repository.attachMedia(.init(asset: try store.externalReferenceAsset(
+      fileURL: highDefinition, taskID: taskID, snapshotID: existing.snapshotID,
+      contentSHA256: sha, byteSize: 19, durationSeconds: 12,
+      platform: LocalImportSource.files.rawValue, createdAtMilliseconds: 3
+    )))
+
+    let model = makeModel(.init(mode: .succeed))
+    var requested: [TaskID] = []
+    model.onNewCapturedVideoNeedsTranscription = { requested.append($0) }
+    await model.enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: taskID)
+    XCTAssertTrue(requested.isEmpty, "同一快照重下高清不是换视频")
+  }
+
+  private func captureDocument(
+    url: String,
+    origin: CapturedDocument.Origin,
+    text: String,
+    method: String? = nil
+  ) -> CapturedDocument {
+    let timestamp = "2026-11-12T02:00:00.000Z"
+    let isTranscript = origin == .localTranscription
+    return CapturedDocument(
+      createdAt: timestamp,
+      origin: origin,
+      url: url,
+      title: "测试",
+      platform: isTranscript ? "local_video" : "manual",
+      method: method ?? (isTranscript ? "speech_analyzer_local" : "manual_link"),
+      text: text,
+      completeness: "complete",
+      capturedAt: timestamp,
+      sourceLabel: isTranscript ? "本机视频转写" : "手动链接"
+    )
+  }
+
   func testFailedTranscriptionAlsoDeletesTheTemporaryTrack() async throws {
     let transcriber = WorkspaceRecordingTranscriber(mode: .fail)
     let model = makeModel(transcriber)

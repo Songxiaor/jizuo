@@ -19,9 +19,12 @@ public enum LayeredSourceDocument {
     CapturedDocument.Origin.burnedInSubtitles.rawValue
   ]
 
-  /// 本机导入的录音、音视频在转写前只有一段「点转写」的占位说明，不是真正的配文。
+  /// 本机导入的录音、音视频，以及直播录制，在转写前只有一段「点转写」的占位说明，不是真正的配文。
+  ///
+  /// 直播录制（`live_recording`）的正文也只有文件名、主播、开播时间和这句提示，同样是占位；
+  /// 转写完了还留着它，原文区就多一个叫「文案」的页签，详情默认停在那里也就不是转写稿了（2026-11-11）。
   public static let placeholderCaptionMethods: Set<String> = [
-    "voice_memos_import", "local_file_audio", "local_file_video"
+    "voice_memos_import", "local_file_audio", "local_file_video", "live_recording"
   ]
 
   /// 已经有了转写或字幕，这段占位说明就过时了：不再作为「配文」层显示，也不喂给模型。
@@ -41,6 +44,23 @@ public enum LayeredSourceDocument {
       $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
         && !body(of: $0).isEmpty
     }
+  }
+
+  /// 当前视频的转写稿。作者换过视频后，旧视频的转写不算。
+  public static func transcriptSnapshot(in scope: VideoTranscriptScope) -> ContentSnapshot? {
+    scope.currentTranscriptSnapshot()
+  }
+
+  /// 发给总结/翻译/脑图/导出的正文：旧视频的转写不能混进当前视频。
+  public static func modelInput(from scope: VideoTranscriptScope) -> String {
+    modelInput(from: scope.scopedSnapshots())
+  }
+
+  public static func needsTranslation(
+    from scope: VideoTranscriptScope,
+    outputLanguage: String
+  ) -> Bool {
+    needsTranslation(from: scope.scopedSnapshots(), outputLanguage: outputLanguage)
   }
 
   /// 画面字幕层已下线（2026-10-07 Syc 定）：读字幕的入口 09-06 就没了，只剩两条旧记录

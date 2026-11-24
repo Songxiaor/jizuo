@@ -259,7 +259,7 @@ final class HistoryContentViewTests: XCTestCase {
     let sideload = section(in: model, from: "struct DetailSideload", to: "nonisolated static func batchSummaryState")
     XCTAssertTrue(sideload.contains("loadTranscriptParagraphs("))
     XCTAssertTrue(sideload.contains("loadReformat(taskID: taskID)"))
-    XCTAssertTrue(sideload.contains("transcriptSnapshot(in: value.snapshots)"))
+    XCTAssertTrue(sideload.contains("transcriptSnapshot(in: VideoTranscriptScope(value))"))
     let receive = section(in: model, from: "private func receiveDetail(", to: "private func backfillRemoteImagesIfNeeded(")
     let detailAssign = try XCTUnwrap(receive.range(of: "detail = value"))
     let preload = try XCTUnwrap(receive.range(of: "preloadedTranscriptParagraphs = sideload.transcriptParagraphs"))

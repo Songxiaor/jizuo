@@ -200,6 +200,15 @@ public enum DouyinWebCapturePolicy {
     return isMainFrame ? .failCapture : .blockSilently
   }
 
+  /// 主框被拦下时给用户的真实原因：跳到别的网站（`webHostNotAllowed`）和页面内容没认出来
+  /// 是两件事。以前两种情况都报 `extensionCaptureRequired`，用户和自动化都以为是「要开扩展」。
+  public static func navigationFailure(url: URL?) -> ManualLinkError {
+    guard let url, let host = normalizedHost(url.host), !isDouyinHost(host) else {
+      return .invalidPageResult
+    }
+    return .webHostNotAllowed
+  }
+
   public static func validateJavaScriptResult(_ value: Any) throws -> DouyinRenderedPage {
     guard let dictionary = value as? [String: Any] else {
       throw ManualLinkError.invalidPageResult

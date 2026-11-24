@@ -16,6 +16,7 @@ import {
   popupDuration,
   popupSourceLine,
   popupScaleLabel,
+  liveRecordingDefaultNote,
 } from "../src/popup-presentation";
 import type { DouyinSessionDiagnosticCode } from "../src/content/douyin-session-detail";
 
@@ -518,5 +519,28 @@ describe("comment login wall note (2026-10-02)", () => {
     expect(xhs).toContain("读满 20 条");
     expect(xhs).toContain("只保留一处登录");
     expect(commentLoginWallNote("reddit", 5, 20)).not.toContain("小红书");
+  });
+});
+
+describe("live recording default quality note (2026-11-11)", () => {
+  const options = (...qualities: Array<"origin" | "hd" | "sd" | "ld">) =>
+    qualities.map((quality) => ({ quality }));
+
+  it("says 默认原画 only when origin is actually preselected", () => {
+    expect(liveRecordingDefaultNote({ recommended: "origin", options: options("origin", "hd") }))
+      .toContain("默认原画");
+  });
+
+  it("explains that origin is unplayable when only its FLV exists", () => {
+    // 抖音原画只有 FLV 时下拉框预选高清，文案不能再写「默认原画」。
+    const note = liveRecordingDefaultNote({ recommended: "hd", options: options("origin", "hd") });
+    expect(note).toContain("这一场原画暂时录不了，已默认高清");
+    expect(note).not.toContain("默认原画");
+  });
+
+  it("names the real preselected tier when the page has no origin at all", () => {
+    const note = liveRecordingDefaultNote({ recommended: "sd", options: options("sd", "ld") });
+    expect(note).toContain("这一场页面没有原画档，已默认标清");
+    expect(note).not.toContain("默认原画");
   });
 });

@@ -54,6 +54,50 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     }
   }
 
+  func testChinesePunctuationLosesTheSpaceInFrontOfIt() {
+    // 系统中文识别器按 token 输出，标点前常带一个空格（实测落库文本：
+    // 「呃 ，但是她不上班」「不像吗 ？」）。
+    XCTAssertEqual(
+      ChinesePunctuationSpacing.removingSpacesBeforePunctuation("呃 ，但是她不上班也没有工作 ，平时就是帮帮我"),
+      "呃，但是她不上班也没有工作，平时就是帮帮我"
+    )
+    XCTAssertEqual(
+      ChinesePunctuationSpacing.removingSpacesBeforePunctuation("不像吗 ？真的吗 ？"),
+      "不像吗？真的吗？"
+    )
+    // 顿号、冒号、分号、叹号、句号同等处理；连续多个空格一并收掉。
+    XCTAssertEqual(
+      ChinesePunctuationSpacing.removingSpacesBeforePunctuation("苹果 、香蕉 ：好吃 ；真的 ！好的 。"),
+      "苹果、香蕉：好吃；真的！好的。"
+    )
+  }
+
+  func testChinesePunctuationSpacingLeavesLatinAndNumbersAlone() {
+    // 半角标点前本来就该有空格，英文句子里那个词距不能动。
+    XCTAssertEqual(
+      ChinesePunctuationSpacing.removingSpacesBeforePunctuation("hello , world . ok"),
+      "hello , world . ok"
+    )
+    // 小数点不能被当成句号收空格（“9.7”）。
+    XCTAssertEqual(
+      ChinesePunctuationSpacing.removingSpacesBeforePunctuation("价格 9.7 元"),
+      "价格 9.7 元"
+    )
+  }
+
+  func testAccumulatorStripsSpaceBeforePunctuationInBodyAndParagraphs() {
+    var value = TimedTranscriptionAccumulator()
+    _ = value.apply(range: range(0, 1), text: "呃 ，但是她不上班", isFinal: true)
+    XCTAssertEqual(value.finalText, "00:00 呃，但是她不上班")
+    XCTAssertEqual(value.finalParagraphs.map(\.text), ["呃，但是她不上班"])
+
+    // 标点自成一段（典型 token 流）时也不能把空格留在拼接处。
+    _ = value.apply(range: range(1.1, 1), text: "不像吗", isFinal: true)
+    _ = value.apply(range: range(2.1, 1), text: " ？", isFinal: true)
+    XCTAssertTrue(value.finalText.hasSuffix("不像吗？"))
+    XCTAssertFalse(value.finalText.contains(" ？"))
+  }
+
   func testLatinSegmentsKeepTheSpaceTheSegmentBoundaryAte() {
     var value = TimedTranscriptionAccumulator()
     _ = value.apply(range: range(0, 1), text: "hello there", isFinal: true)

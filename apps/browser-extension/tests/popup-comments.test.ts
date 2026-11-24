@@ -39,6 +39,7 @@ function popupDOM(): Record<string, FakeElement> {
     "#excerpt", "#stats", "#source-note", "#translation-note", "#saved-view", "#saved-seal", "#saved-title", "#saved-detail",
     "#failure-view", "#failure-title", "#failure-message", "#failure-steps", "#result-actions", "#close-popup",
     "#step-chain", "#dup-view", "#dup-date", "#dup-steps", "#saved-steps", "#save-again",
+    "#live-card", "#live-platform", "#live-hint", "#live-title", "#live-quality", "#live-start", "#live-note",
   ];
   return Object.fromEntries(ids.map((id) => [id, element()]));
 }

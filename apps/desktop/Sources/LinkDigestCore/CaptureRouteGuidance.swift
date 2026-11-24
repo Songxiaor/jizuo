@@ -19,16 +19,22 @@ public enum CaptureRouteGuidance {
   /// 输入框下方的提前提醒：这个平台在汲作里还没登录时才出现。
   public static func loginHint(for platform: SiteSessionPlatform) -> String {
     let name = platform.displayName
-    return "\(name)要登录后才能读到完整内容。先到「设置 → 网站登录」登录\(name)；或在浏览器里打开它，用浏览器扩展保存。"
+    return "\(name)要登录后才能读到完整内容。先到「设置 → 网站登录」登录\(name)；汲作读不到时也会自动改用浏览器里的登录。"
   }
 
   /// 抓取失败时的说明。登录、验证类失败落在需要登录的平台上，就点名平台、给出两个出口。
   public static func failureMessage(for error: ManualLinkError, url: URL?) -> String {
-    guard let url, let platform = loginPlatform(for: url),
-          error == .loginRequired || error == .verificationRequired
-    else { return error.userMessage }
+    let platform = url.flatMap(loginPlatform)
+    if error == .timedOut, platform == .douyin {
+      // 抖音的渲染兜底是「等页面自己把作品渲染出来」。截止时页面还没就绪，
+      // 说成「请在浏览器里打开它」会把原因藏掉：这里明说是加载慢/后台降速。
+      return "抖音页面没在时限内加载出来（网络慢，或汲作在后台被系统降速），这次没有保存。可以直接再试一次。"
+    }
+    guard let platform, error == .loginRequired || error == .verificationRequired else {
+      return error.userMessage
+    }
     let name = platform.displayName
-    return "\(name)要求登录或验证，这次没有保存。先到「设置 → 网站登录」登录\(name)后点「重试」；或在浏览器里打开它，用浏览器扩展保存。"
+    return "\(name)要求登录或验证，这次没有保存。先到「设置 → 网站登录」登录\(name)后点「重试」。"
   }
 
   /// 「抓取评论…」读不到时，对小红书单独说明原因：笔记要用分享链接里的访问码才打得开，
@@ -36,13 +42,13 @@ public enum CaptureRouteGuidance {
   /// 其他平台返回 nil，沿用通用提示。
   public static func commentsUnavailableMessage(for url: URL) -> String? {
     guard CommentCapture.platform(for: url) == "xiaohongshu" else { return nil }
-    return "小红书笔记要用分享链接里的访问码才能打开，这个访问码会过期，汲作没有保存，所以这里读不到评论。在浏览器里打开这条笔记，用浏览器扩展保存时勾选评论。"
+    return "小红书笔记要用分享链接里的访问码才能打开，这个访问码会过期，汲作没有保存，所以这里读不到评论。要评论的话，下次保存时让浏览器扩展一并带上。"
   }
 
   /// 自动存评论两次都没读到时的提示。小红书事后补读打不开原笔记（访问码不落库），不能教用户去「抓取评论…」。
   public static func commentsMissedNotice(for url: URL) -> String {
     if CommentCapture.platform(for: url) == "xiaohongshu" {
-      return "笔记已保存，但评论没读到。小红书事后补读打不开原笔记；需要评论的话，在浏览器里打开这条笔记，用浏览器扩展保存。"
+      return "笔记已保存，但评论没读到。小红书事后补读打不开原笔记；需要评论的话，下次保存时让浏览器扩展一并带上。"
     }
     return "作品已保存，但有的评论没读到。可以打开该条目，用「处理 → 存评论…」重试。"
   }

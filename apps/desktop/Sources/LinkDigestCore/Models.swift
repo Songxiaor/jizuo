@@ -369,16 +369,20 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   case profileCandidatesPresented(version: Int, requestId: String, acceptedCount: Int)
   /// 打开 App：成功时带上 Host 支持的协议版本，扩展用它判断要不要提示升级。
   case openAppAccepted(version: Int, requestId: String, supportedVersions: [Int])
+  /// 直播录制已受理：App 已在后台起 ffmpeg。`recordingID` 用于在录制列表里对号。
+  case liveRecordingAccepted(version: Int, requestId: String, recordingID: String)
   /// 抓取偏好：扩展据此决定评论读几条（10–100）。
   /// `commentLimits` 按平台单独设（0 = 不抓），`autoSaveComments` 为真时不弹勾选、直接存前几条。
   /// 两者是 v1 上新增的可选字段：旧扩展不认识也不影响。
   case capturePreferences(version: Int, requestId: String, commentLimit: Int, commentLimits: [String: Int] = [:], autoSaveComments: Bool = false, autoSteps: [String]? = nil)
   /// 这一页存过没有、各道工序做到哪了（`PageStatusRequest`）。只读，不算送达。
   case pageStatus(version: Int, requestId: String, status: PageStatusPayload)
+  /// 浏览器代抓：这个地址有没有待抓任务。jobID 为空表示没有。
+  case browserCaptureJob(version: Int, requestId: String, jobID: String?)
   case error(AppError)
 
   enum CodingKeys: String, CodingKey {
-    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, commentLimit, commentLimits, autoSaveComments, autoSteps, status, error
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, recordingID, commentLimit, commentLimits, autoSaveComments, autoSteps, status, jobID, error
   }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -442,6 +446,20 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         requestId: try c.decode(String.self, forKey: .requestId),
         supportedVersions: supported
       )
+    case "liveRecordingAccepted":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      let recordingID = try c.decode(String.self, forKey: .recordingID)
+      guard !recordingID.isEmpty, recordingID.count <= 64 else {
+        throw DecodingError.dataCorruptedError(forKey: .recordingID, in: c, debugDescription: "recordingID out of range")
+      }
+      self = .liveRecordingAccepted(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        recordingID: recordingID
+      )
     case "capturePreferences":
       let version = try c.decode(Int.self, forKey: .version)
       guard version == 1 else {
@@ -464,6 +482,20 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         version: version,
         requestId: try c.decode(String.self, forKey: .requestId),
         status: try c.decode(PageStatusPayload.self, forKey: .status)
+      )
+    case "browserCaptureJob":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      let jobID = try c.decodeIfPresent(String.self, forKey: .jobID)
+      if let jobID { guard !jobID.isEmpty, jobID.count <= 64 else {
+        throw DecodingError.dataCorruptedError(forKey: .jobID, in: c, debugDescription: "jobID out of range")
+      } }
+      self = .browserCaptureJob(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        jobID: jobID
       )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
@@ -494,6 +526,9 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .openAppAccepted(v, r, supported):
       try c.encode("openAppAccepted", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(supported, forKey: .supportedVersions)
+    case let .liveRecordingAccepted(v, r, recordingID):
+      try c.encode("liveRecordingAccepted", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(recordingID, forKey: .recordingID)
     case let .capturePreferences(v, r, limit, limits, autoSave, autoSteps):
       try c.encode("capturePreferences", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(limit, forKey: .commentLimit)
@@ -503,6 +538,10 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .pageStatus(v, r, status):
       try c.encode("pageStatus", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(status, forKey: .status)
+    case let .browserCaptureJob(v, r, jobID):
+      try c.encode("browserCaptureJob", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId)
+      if let jobID { try c.encode(jobID, forKey: .jobID) }
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
     }
@@ -512,9 +551,10 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   /// `profileCandidatesPresented` 算送达：候选已进 App 内存，不是探测、也不是虚构在线。
   public var isSuccessfulBrowserDelivery: Bool {
     switch self {
-    case .taskAccepted, .bookmarksAccepted, .bookmarksLookup, .profileCandidatesPresented:
+    case .taskAccepted, .bookmarksAccepted, .bookmarksLookup, .profileCandidatesPresented, .liveRecordingAccepted:
       return true
-    case .openAppAccepted, .capturePreferences, .pageStatus, .error:
+    // 代抓任务的查询回包只说明「有没有活」，不代表任何内容进过 App。
+    case .openAppAccepted, .capturePreferences, .pageStatus, .browserCaptureJob, .error:
       return false
     }
   }

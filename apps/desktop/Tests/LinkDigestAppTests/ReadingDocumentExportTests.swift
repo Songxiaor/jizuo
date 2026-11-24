@@ -285,6 +285,48 @@ final class ReadingDocumentExportTests: XCTestCase {
     XCTAssertFalse(body.contains("配文正文"))
   }
 
+  /// 作者换过视频：导出只带当前视频的配文，不把旧视频的转写拼进来。
+  func testChangedVideoExportLeavesOutTheOldVideosTranscript() {
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: "https://www.xiaohongshu.com/explore/1",
+      canonicalizationVersion: 1, createdAtMilliseconds: 1, updatedAtMilliseconds: 2
+    )
+    func snapshot(_ sequence: Int, kind: String, text: String) -> ContentSnapshot {
+      ContentSnapshot(
+        id: ContentSnapshotID(), taskID: task.id, sequence: sequence,
+        envelopeCreatedAtMilliseconds: Int64(sequence), capturedAtMilliseconds: Int64(sequence),
+        sourceKind: kind, sourceURL: task.canonicalURL, title: "示例",
+        platform: "xiaohongshu", captureMethod: "manual_link", completeness: "complete",
+        bodyText: text, characterCount: text.count, bodySHA256: String(repeating: "a", count: 64),
+        sourceLabel: "小红书", usedCookie: false
+      )
+    }
+    func media(_ snapshotID: ContentSnapshotID, character: Character, at: Int64) -> MediaAsset {
+      MediaAsset(
+        taskID: task.id, snapshotID: snapshotID,
+        relativePath: "\(String(repeating: String(character), count: 64)).mp4",
+        contentSHA256: String(repeating: String(character), count: 64), byteSize: 1,
+        durationSeconds: 150, platform: "xiaohongshu", transcriptionStatus: .none,
+        createdAtMilliseconds: at
+      )
+    }
+    let oldCapture = snapshot(2, kind: CapturedDocument.Origin.manualLink.rawValue, text: "旧文案")
+    let oldTranscript = snapshot(3, kind: CapturedDocument.Origin.localTranscription.rawValue, text: "旧视频转写")
+    let newCapture = snapshot(7, kind: CapturedDocument.Origin.manualLink.rawValue, text: "新文案")
+    let oldMedia = media(oldCapture.id, character: "a", at: 100)
+    let newMedia = media(newCapture.id, character: "b", at: 700)
+    let detail = HistoryDetailProjection(
+      task: task, snapshots: [oldCapture, oldTranscript, newCapture], runs: [],
+      media: newMedia, mediaAssets: [newMedia, oldMedia]
+    )
+
+    let document = ExportContentDocument(detail: detail)
+    XCTAssertEqual(document.available, [.caption])
+    let body = document.body(selecting: ExportContentSelection(layers: [.caption], current: .caption))
+    XCTAssertTrue(body.contains("新文案"))
+    XCTAssertFalse(body.contains("旧视频转写"))
+  }
+
   /// 校对过的转写分成校对稿和原稿。只导出校对稿时标题用页签上的叫法。
   func testProofreadExportSplitsTheRevisedTranscriptFromTheMachineCopy() throws {
     let document = ExportContentDocument(detail: sampleTranscript(proofread: true))

@@ -744,7 +744,8 @@ final class LocalImportController: ObservableObject {
     document: CapturedDocument,
     fileURL: URL,
     contentSHA256: String,
-    durationSeconds: Double?
+    durationSeconds: Double?,
+    platform: String = LocalImportSource.files.rawValue
   ) async throws -> TaskID {
     guard let history, let mediaStore else { throw RepositoryFailure.unavailable }
     let capture = try await ingest(document)
@@ -764,11 +765,246 @@ final class LocalImportController: ObservableObject {
       contentSHA256: contentSHA256,
       byteSize: size,
       durationSeconds: durationSeconds,
-      platform: LocalImportSource.files.rawValue,
+      platform: platform,
       createdAtMilliseconds: Self.milliseconds(Date())
     )
     try history.attachMedia(.init(asset: asset))
     return capture.taskID
+  }
+
+  /// 直播录制的成品入库：和本机导入走同一条落库 + 挂媒体引用 + 自动转写通道，
+  /// 不另写一套。录制文件已经在资料目录（或用户选的外接盘）里，不再复制。
+  @discardableResult
+  func ingestLiveRecording(_ payload: LiveRecordingIngestPayload) async throws -> TaskID {
+    guard history != nil, mediaStore != nil else { throw RepositoryFailure.unavailable }
+    let fileName = payload.fileURL.lastPathComponent
+    let document = try Self.liveRecordingDocument(payload, fileName: fileName)
+    let title = document.title ?? fileName
+    let url = payload.fileURL
+    let sha = try await Task.detached(priority: .utility) {
+      try LocalFileImportReader.contentSHA256(of: url)
+    }.value
+    let taskID = try await storeReference(
+      document: document,
+      fileURL: payload.fileURL,
+      contentSHA256: sha,
+      durationSeconds: payload.durationSeconds,
+      platform: Self.liveRecordingSourceHost(payload.platform)
+    )
+    associateLiveRecordingCreator(payload, taskID: taskID)
+    historyModel?.reload()
+    if isAutomaticTranscriptionEnabled() {
+      enqueueAutomaticTranscription(taskID: taskID, name: title)
+    }
+    return taskID
+  }
+
+  /// 直播录制入库的文档组装。抽成纯函数，字段（来源、方法、身份、正文）可以单测。
+  static func liveRecordingDocument(
+    _ payload: LiveRecordingIngestPayload,
+    fileName: String,
+    now: Date = Date()
+  ) throws -> CapturedDocument {
+    let partSuffix = payload.part > 1 ? "-part\(payload.part)" : ""
+    let identity = "\(payload.roomID ?? "room")-\(Int(payload.startedAt.timeIntervalSince1970))\(partSuffix)"
+    let host = liveRecordingSourceHost(payload.platform)
+    let canonical = try CanonicalURL.localImport(source: host, identifier: identity)
+    let title = liveRecordingTitle(payload, fileName: fileName)
+    let pageURL = liveRecordingPageURL(payload)
+    return CapturedDocument(
+      createdAt: ISO8601DateFormatter().string(from: now),
+      origin: .localImport,
+      url: canonical.value,
+      title: title,
+      platform: host,
+      method: "live_recording",
+      text: liveRecordingBody(payload, pageURL: pageURL),
+      completeness: "partial",
+      capturedAt: ISO8601DateFormatter().string(from: payload.startedAt),
+      sourceLabel: liveRecordingSourceLabel(payload.platform)
+    )
+  }
+
+  static func liveRecordingSourceHost(_ platform: LiveRecordingPlatform) -> String {
+    switch platform {
+    case .douyin: return "douyinlive"
+    case .xiaohongshu: return "xiaohongshulive"
+    }
+  }
+
+  static func liveRecordingSourceLabel(_ platform: LiveRecordingPlatform) -> String {
+    "\(platform.displayName)直播"
+  }
+
+  static func liveRecordingTitle(_ payload: LiveRecordingIngestPayload, fileName: String) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    let when = formatter.string(from: payload.startedAt)
+    let anchor = payload.anchorName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 小红书页面不带主播名，退回页面标题；文件名里已有时间戳，不能再拿来当标题（会出现两遍时间）。
+    let base = (anchor?.isEmpty == false ? anchor! : nil)
+      ?? liveRecordingNameFromPageTitle(payload.title)
+      ?? "\(liveRecordingSourceLabel(payload.platform)) \(payload.roomID ?? "")".trimmingCharacters(in: .whitespaces)
+    return "\(base) 直播 \(when)"
+  }
+
+  /// 「Sezoel的小红书直播间」「某某的抖音直播间 - 抖音直播」→「Sezoel」「某某」。
+  static func liveRecordingNameFromPageTitle(_ raw: String?) -> String? {
+    guard var title = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
+    if let dash = title.range(of: " - ") { title = String(title[..<dash.lowerBound]) }
+    for suffix in ["的小红书直播间", "的抖音直播间", "的直播间"] where title.hasSuffix(suffix) {
+      title = String(title.dropLast(suffix.count))
+      break
+    }
+    title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return title.isEmpty ? nil : title
+  }
+
+  static func liveRecordingBody(
+    _ payload: LiveRecordingIngestPayload,
+    pageURL: String?
+  ) -> String {
+    var lines: [String] = []
+    if let anchor = payload.anchorName?.trimmingCharacters(in: .whitespacesAndNewlines), !anchor.isEmpty {
+      lines.append("主播：\(anchor)")
+    }
+    if let title = liveRecordingPageTitle(payload.title, platform: payload.platform) {
+      lines.append("标题：\(title)")
+    }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    lines.append("开播：\(formatter.string(from: payload.startedAt))")
+    if let duration = payload.durationSeconds, duration > 0 {
+      let total = Int(duration.rounded())
+      lines.append(String(format: "时长：%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60))
+    }
+    lines.append("清晰度：\(payload.quality.displayName)")
+    if let pageURL {
+      lines.append("直播间：\(pageURL)")
+    }
+    let anchor = payload.anchorName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return MarkdownNoteFrontmatter(
+      author: anchor?.isEmpty == false ? anchor : nil,
+      sourcePage: pageURL,
+      body: lines.joined(separator: "\n")
+    ).render()
+  }
+
+  /// 直播间原网页。身份仍是 `linkdigest-local://`，这里只留能点开的公开地址；
+  /// 查询串和片段一律去掉，避免把 `xsec_token` 这类跟踪参数写进资料库。
+  static func liveRecordingPageURL(_ payload: LiveRecordingIngestPayload) -> String? {
+    guard var components = URLComponents(
+      string: payload.pageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    ),
+      components.scheme?.lowercased() == "https",
+      components.user == nil,
+      components.password == nil,
+      let host = components.host?.lowercased(),
+      !host.isEmpty
+    else { return nil }
+    switch payload.platform {
+    case .douyin:
+      guard host == "live.douyin.com" else { return nil }
+    case .xiaohongshu:
+      guard host == "xiaohongshu.com" || host.hasSuffix(".xiaohongshu.com") else { return nil }
+    }
+    components.query = nil
+    components.fragment = nil
+    return components.string
+  }
+
+  /// 页面标题里的「某某的抖音直播间 - 抖音直播」是平台模板，不是这场的主题。
+  static func liveRecordingPageTitle(
+    _ raw: String?,
+    platform: LiveRecordingPlatform
+  ) -> String? {
+    guard var title = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
+      return nil
+    }
+    for suffix in [" - 抖音直播", " - 小红书直播"] where title.hasSuffix(suffix) {
+      title = String(title.dropLast(suffix.count))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let templates = [
+      "的抖音直播间", "的小红书直播间", "的直播间",
+      "抖音直播", "小红书直播", "直播间",
+    ]
+    guard !templates.contains(where: { title.hasSuffix($0) }) else { return nil }
+    return title.isEmpty ? nil : title
+  }
+
+  struct LiveRecordingCreatorIdentity: Equatable {
+    let platform: String
+    let authorID: String
+    let profileURL: String
+  }
+
+  /// 主播 id 与主页链接二选一即可：都有时以主页链接为主，id 优先用页面给的。
+  static func liveRecordingCreatorIdentity(
+    _ payload: LiveRecordingIngestPayload
+  ) -> LiveRecordingCreatorIdentity? {
+    let platform: ProfileImportPlatform = payload.platform == .douyin ? .douyin : .xiaohongshu
+    var authorID = admittedAnchorID(payload.anchorID)
+    var profileURL: URL?
+    if let raw = payload.anchorProfileURL,
+       let url = URL(string: raw),
+       ProfileImportPlatform.fromProfileURL(url) == platform {
+      profileURL = url
+      if authorID == nil { authorID = admittedAnchorID(platform.authorID(url)) }
+    }
+    if profileURL == nil, let authorID, !authorID.isEmpty, authorID.count <= 256 {
+      profileURL = platform.canonicalProfileURL(authorID: authorID)
+    }
+    guard let authorID, !authorID.isEmpty, authorID.count <= 256, var components = profileURL
+      .flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) })
+    else { return nil }
+    components.query = nil
+    components.fragment = nil
+    guard let clean = components.url else { return nil }
+    return LiveRecordingCreatorIdentity(
+      platform: platform.host,
+      authorID: authorID,
+      profileURL: clean.absoluteString
+    )
+  }
+
+  /// 主播 id 只用来当博主身份键，限制成平台实际会出现的字符，
+  /// 避免页面数据把 `/`、`?` 之类的字符带进主页地址。
+  private static func admittedAnchorID(_ raw: String?) -> String? {
+    guard let id = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !id.isEmpty,
+          id.count <= 256,
+          id.allSatisfy({ character in
+            character.isASCII && (character.isLetter || character.isNumber || character == "_" || character == "-")
+          })
+    else { return nil }
+    return id
+  }
+
+  /// 能对上已有博主就复用并更新资料，没有就按这场直播建一位。
+  private func associateLiveRecordingCreator(
+    _ payload: LiveRecordingIngestPayload,
+    taskID: TaskID
+  ) {
+    guard let manualLink,
+          let identity = Self.liveRecordingCreatorIdentity(payload),
+          let creatorID = manualLink.ensureCreator(
+            platform: identity.platform,
+            authorID: identity.authorID,
+            profileURL: identity.profileURL,
+            displayName: payload.anchorName,
+            avatarURL: payload.anchorAvatarURL
+          )
+    else { return }
+    do {
+      try history?.attachCreatorWork(creatorID: creatorID, taskID: taskID)
+    } catch {
+      AppLog.error(.storage, "live_creator_attach_failed", code: "LIVE_CREATOR_ATTACH_FAILED", [
+        "error": String(describing: error),
+      ])
+    }
   }
 
   private func finish(title: String, summary: Summary, host: String) {

@@ -34,7 +34,13 @@ actor AppComposition {
     /// 此时扩展会收到「请升级 App」而不是静默丢弃这批 id。
     let bookmarksSink: CaptureReceiver.BookmarksSink?
     let profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink?
+    let liveRecordingSink: CaptureReceiver.LiveRecordingSink?
     let pageStatusSink: CaptureReceiver.PageStatusSink?
+    /// 浏览器代抓：扩展来问有没有待抓任务，以及把抓到的内容按 job 送回。
+    /// 缺省 nil 时老行为不变（页面查询一律回「没有任务」）。
+    let browserCaptureJobSink: CaptureReceiver.BrowserCaptureJobSink?
+    let browserCaptureDeliverySink: CaptureReceiver.BrowserCaptureDeliverySink?
+    let browserCaptureOutcomeSink: CaptureReceiver.BrowserCaptureOutcomeSink?
 
     init(
       applicationSupportRoot: @escaping ApplicationSupportRoot,
@@ -45,7 +51,11 @@ actor AppComposition {
       captureSink: @escaping CaptureReceiver.CaptureSink,
       bookmarksSink: CaptureReceiver.BookmarksSink? = nil,
       profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink? = nil,
-      pageStatusSink: CaptureReceiver.PageStatusSink? = nil
+      liveRecordingSink: CaptureReceiver.LiveRecordingSink? = nil,
+      pageStatusSink: CaptureReceiver.PageStatusSink? = nil,
+      browserCaptureJobSink: CaptureReceiver.BrowserCaptureJobSink? = nil,
+      browserCaptureDeliverySink: CaptureReceiver.BrowserCaptureDeliverySink? = nil,
+      browserCaptureOutcomeSink: CaptureReceiver.BrowserCaptureOutcomeSink? = nil
     ) {
       self.applicationSupportRoot = applicationSupportRoot
       self.repositoryFactory = repositoryFactory
@@ -55,7 +65,11 @@ actor AppComposition {
       self.captureSink = captureSink
       self.bookmarksSink = bookmarksSink
       self.profileCandidatesSink = profileCandidatesSink
+      self.liveRecordingSink = liveRecordingSink
       self.pageStatusSink = pageStatusSink
+      self.browserCaptureJobSink = browserCaptureJobSink
+      self.browserCaptureDeliverySink = browserCaptureDeliverySink
+      self.browserCaptureOutcomeSink = browserCaptureOutcomeSink
     }
   }
 
@@ -129,7 +143,11 @@ actor AppComposition {
           captureSink: dependencies.captureSink,
           bookmarksSink: dependencies.bookmarksSink,
           profileCandidatesSink: dependencies.profileCandidatesSink,
-          pageStatusSink: dependencies.pageStatusSink
+          liveRecordingSink: dependencies.liveRecordingSink,
+          pageStatusSink: dependencies.pageStatusSink,
+          browserCaptureJobSink: dependencies.browserCaptureJobSink,
+          browserCaptureDeliverySink: dependencies.browserCaptureDeliverySink,
+          browserCaptureOutcomeSink: dependencies.browserCaptureOutcomeSink
         )
         let started = startServer(receiver, using: dependencies.serverStarter)
         return .init(
@@ -173,7 +191,11 @@ actor AppComposition {
         captureSink: dependencies.captureSink,
         bookmarksSink: dependencies.bookmarksSink,
         profileCandidatesSink: dependencies.profileCandidatesSink,
-        pageStatusSink: dependencies.pageStatusSink
+        liveRecordingSink: dependencies.liveRecordingSink,
+        pageStatusSink: dependencies.pageStatusSink,
+        browserCaptureJobSink: dependencies.browserCaptureJobSink,
+        browserCaptureDeliverySink: dependencies.browserCaptureDeliverySink,
+        browserCaptureOutcomeSink: dependencies.browserCaptureOutcomeSink
       )
       return .init(
         availability: availability,
@@ -201,7 +223,8 @@ actor AppComposition {
       nowMilliseconds: dependencies.nowMilliseconds,
       captureSink: dependencies.captureSink,
       bookmarksSink: dependencies.bookmarksSink,
-      profileCandidatesSink: dependencies.profileCandidatesSink
+      profileCandidatesSink: dependencies.profileCandidatesSink,
+      liveRecordingSink: dependencies.liveRecordingSink
     )
     return .init(
       availability: degraded,

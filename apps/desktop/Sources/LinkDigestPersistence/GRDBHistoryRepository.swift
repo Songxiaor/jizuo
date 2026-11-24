@@ -321,24 +321,80 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   ///
   /// 收成一份，两处都指向它，口径不可能再分叉。
 
+  /// 当前视频的转写快照判据（与 `VideoTranscriptScope.isCurrentVideoTranscript` 同一规则）。
+  ///
+  /// 同一链接重抓后作者可能换掉视频：旧视频的转写还在库里，但它不是当前视频的稿子。
+  /// SQL 侧只认「序号大于引入当前视频那份快照」的转写；同一快照重下高清、同一内容哈希
+  /// 重复保存都不算换视频；旧数据没把媒体绑到快照时按落库时间兜底。
+  ///
+  /// `alias` 是 `content_snapshots` 的别名；调用方的 tasks 别名必须是 `t`。
+  static func currentVideoTranscriptCondition(_ alias: String) -> String {
+    let latestCreatedAt = """
+      SELECT latest.created_at_ms FROM media_assets latest
+      WHERE latest.task_id = t.id
+      ORDER BY latest.created_at_ms DESC, latest.id DESC LIMIT 1
+      """
+    let latestSHA = """
+      SELECT latest.content_sha256 FROM media_assets latest
+      WHERE latest.task_id = t.id
+      ORDER BY latest.created_at_ms DESC, latest.id DESC LIMIT 1
+      """
+    let introducingSequence = """
+      SELECT intro.sequence FROM media_assets latest
+      INNER JOIN content_snapshots intro ON intro.id = latest.snapshot_id
+      WHERE latest.task_id = t.id
+      ORDER BY latest.created_at_ms DESC, latest.id DESC LIMIT 1
+      """
+    return """
+      \(alias).source_kind = 'local_transcription'
+      AND trim(\(alias).body_text) <> ''
+      AND (
+        NOT EXISTS (SELECT 1 FROM media_assets cm WHERE cm.task_id = t.id)
+        OR NOT EXISTS (
+          SELECT 1 FROM media_assets other
+          WHERE other.task_id = t.id AND other.content_sha256 <> (\(latestSHA))
+        )
+        OR (
+          (\(introducingSequence)) IS NOT NULL
+          AND \(alias).sequence > (\(introducingSequence))
+        )
+        OR (
+          (\(introducingSequence)) IS NULL
+          AND \(alias).captured_at_ms >= (\(latestCreatedAt))
+        )
+      )
+    """
+  }
+
+  /// `EXISTS` 包一层：任一快照满足「当前视频的转写」。
+  static func currentVideoTranscriptSQL(_ alias: String = "s", extraConditions: String = "") -> String {
+    """
+    EXISTS (SELECT 1 FROM content_snapshots \(alias)
+      WHERE \(alias).task_id = t.id
+        AND \(currentVideoTranscriptCondition(alias))
+        \(extraConditions))
+    """
+  }
+
   /// 有本机转写（机器听写稿）、还没有模型校对稿的条目。两张子查询都走 content_snapshots 的 task_id 索引。
   ///
   /// 只数有内容可校的（2026-10-04）：没人说话的音视频听写出「00:00 you」「02:11 我」这种一个词，
   /// 原来也算「待校对」，批量校对会把这个词发给模型。12 个字符以内（时间码加一两个字）不算。
+  /// 换过视频后，旧视频的稿子和旧的校对稿都不算：当前视频要有机器稿、且这份机器稿还没校对。
   static let untidiedTranscriptSQL = """
-    EXISTS (SELECT 1 FROM content_snapshots s WHERE s.task_id = t.id
-      AND s.source_kind = 'local_transcription' AND s.capture_method <> 'openai_compatible_chat_tidy'
-      AND s.character_count > 12)
+    \(currentVideoTranscriptSQL(
+      extraConditions: "AND s.capture_method <> 'openai_compatible_chat_tidy' AND s.character_count > 12"
+    ))
     AND NOT EXISTS (SELECT 1 FROM content_snapshots s2 WHERE s2.task_id = t.id
-      AND s2.capture_method = 'openai_compatible_chat_tidy')
+      AND s2.capture_method = 'openai_compatible_chat_tidy'
+      AND \(currentVideoTranscriptCondition("s2")))
     """
 
-  /// 带音视频、还没有任何文字稿（本机或在线转写都算）的条目（侧栏「待转写」）。
-  /// 看的是有没有转写快照，不看 media_assets 的状态字段：旧数据里有转写好了状态仍是 none 的。
+  /// 带音视频、当前视频还没有文字稿（本机或在线转写都算）的条目（侧栏「待转写」）。
+  /// 看的是有没有当前视频的转写快照，不看 media_assets 的状态字段：旧数据里有转写好了状态仍是 none 的。
   static let untranscribedMediaSQL = """
     EXISTS (SELECT 1 FROM media_assets m WHERE m.task_id = t.id)
-    AND NOT EXISTS (SELECT 1 FROM content_snapshots s WHERE s.task_id = t.id
-      AND s.source_kind = 'local_transcription')
+    AND NOT \(currentVideoTranscriptSQL())
     """
 
   static let completedSummarySQL = """
@@ -393,7 +449,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           r.kind, r.status, r.model, COALESCE(r.finished_at_ms, r.started_at_ms, r.created_at_ms) AS latest_run_at_ms,
           r.input_tokens, r.output_tokens, r.total_tokens, r.cost_amount_micros, r.cost_currency_code,
           CASE WHEN a.body_text IS NULL THEN NULL ELSE substr(CAST(a.body_text AS BLOB), 1, 960) END AS artifact_preview_utf8,
-          EXISTS(SELECT 1 FROM content_snapshots ts WHERE ts.task_id = t.id AND ts.source_kind = 'local_transcription') AS has_transcript,
+          (\(Self.currentVideoTranscriptSQL())) AS has_transcript,
           -- 这条抓进来时带没带视频。`capture_contract_version = 2` 是持久信号；
           -- 签名播放地址本身从不入库，所以不能靠「有没有可播地址」判断。
           -- 已保存到本地的视频走 media_assets，两者取并集。
@@ -2890,16 +2946,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       snapshots.append(snapshots.remove(at: index))
     }
     let rows = try Row.fetchAll(db, sql: "SELECT r.*, a.id AS artifact_id, a.content_format, a.completeness AS artifact_completeness, CAST(a.body_text AS BLOB) AS artifact_body_utf8, a.created_at_ms AS artifact_created_at_ms, a.updated_at_ms AS artifact_updated_at_ms FROM runs r LEFT JOIN artifacts a ON a.run_id = r.id WHERE r.task_id = ? ORDER BY r.created_at_ms, r.id", arguments: [taskID.rawValue])
-    let mediaRow = try Row.fetchOne(
+    // 同一链接重抓后可能有多份媒体（作者换过视频）。转写归属要看到全部媒体，
+    // 只取最新一条会让「新视频 + 旧转写」拼在一起；`media` 仍是最新一条。
+    let mediaAssets = try Row.fetchAll(
       db,
       sql: """
         SELECT * FROM media_assets
         WHERE task_id = ?
         ORDER BY created_at_ms DESC, id DESC
-        LIMIT 1
         """,
       arguments: [taskID.rawValue]
-    )
+    ).compactMap { try? mediaAsset($0) }
     // V2 capture_deliveries always ingested a MediaDescriptor. Ephemeral URLs
     // are never stored; this flag is the durable "this task had session media"
     // fact used by history UI after the in-memory descriptor is replaced.
@@ -2919,7 +2976,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       snapshots: snapshots,
       runs: try rows.map(runDetail),
       tags: try tags(db: db, taskID: taskID),
-      media: try mediaRow.map { try mediaAsset($0) },
+      media: mediaAssets.first,
+      mediaAssets: mediaAssets,
       hadMediaDescriptor: hadMediaDescriptor,
       isFavorite: isFavorite
     )

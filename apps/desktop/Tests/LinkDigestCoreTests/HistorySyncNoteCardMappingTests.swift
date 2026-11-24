@@ -242,4 +242,50 @@ final class HistorySyncNoteCardMappingTests: XCTestCase {
       HistorySyncNoteCardMapping.needsRemoteSummaryWrite(detail: empty, remoteSummary: "任意")
     )
   }
+
+  /// 手机同步回读的 `transcript` 只给当前视频；作者换过视频时旧稿不能冒充当前内容。
+  func testLatestTranscriptIgnoresTheOldVideosTranscript() {
+    let canonical = "https://www.xiaohongshu.com/explore/1"
+    let task = HistoryTask(
+      id: TaskID(), canonicalURL: canonical, canonicalizationVersion: 1,
+      createdAtMilliseconds: 1, updatedAtMilliseconds: 2
+    )
+    func snapshot(_ sequence: Int, kind: String, text: String) -> ContentSnapshot {
+      ContentSnapshot(
+        id: ContentSnapshotID(), taskID: task.id, sequence: sequence,
+        envelopeCreatedAtMilliseconds: Int64(sequence), capturedAtMilliseconds: Int64(sequence),
+        sourceKind: kind, sourceURL: canonical, title: "t", platform: "xiaohongshu",
+        captureMethod: "manual_link", completeness: "complete", bodyText: text,
+        characterCount: text.count, bodySHA256: String(repeating: "a", count: 64),
+        sourceLabel: "小红书", usedCookie: false
+      )
+    }
+    func media(_ snapshotID: ContentSnapshotID, character: Character, createdAt: Int64) -> MediaAsset {
+      MediaAsset(
+        taskID: task.id, snapshotID: snapshotID,
+        relativePath: "\(String(repeating: String(character), count: 64)).mp4",
+        contentSHA256: String(repeating: String(character), count: 64), byteSize: 1,
+        durationSeconds: 150, platform: "xiaohongshu", transcriptionStatus: .none,
+        createdAtMilliseconds: createdAt
+      )
+    }
+    let oldCapture = snapshot(2, kind: CapturedDocument.Origin.manualLink.rawValue, text: "旧文案")
+    let oldTranscript = snapshot(3, kind: CapturedDocument.Origin.localTranscription.rawValue, text: "旧视频转写")
+    let newCapture = snapshot(7, kind: CapturedDocument.Origin.manualLink.rawValue, text: "新文案")
+    let oldMedia = media(oldCapture.id, character: "a", createdAt: 100)
+    let newMedia = media(newCapture.id, character: "b", createdAt: 700)
+
+    let staleOnly = HistoryDetailProjection(
+      task: task, snapshots: [oldCapture, oldTranscript, newCapture], runs: [],
+      media: newMedia, mediaAssets: [newMedia, oldMedia]
+    )
+    XCTAssertNil(HistorySyncNoteCardMapping.latestTranscript(in: staleOnly))
+
+    let newTranscript = snapshot(8, kind: CapturedDocument.Origin.localTranscription.rawValue, text: "新视频转写")
+    let current = HistoryDetailProjection(
+      task: task, snapshots: [oldCapture, oldTranscript, newCapture, newTranscript], runs: [],
+      media: newMedia, mediaAssets: [newMedia, oldMedia]
+    )
+    XCTAssertEqual(HistorySyncNoteCardMapping.latestTranscript(in: current), "新视频转写")
+  }
 }

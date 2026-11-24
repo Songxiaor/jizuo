@@ -9,6 +9,7 @@ mkdir -p "$DESTINATION/fixtures"
 cp "$SOURCE/capture-envelope-v1.schema.json" "$DESTINATION/"
 cp "$SOURCE/capture-envelope-v2.schema.json" "$DESTINATION/"
 cp "$SOURCE/x-profile-candidates-v1.schema.json" "$DESTINATION/"
+cp "$SOURCE/live-recording-v1.schema.json" "$DESTINATION/"
 cp "$SOURCE/native-response-fixtures.json" "$DESTINATION/"
 cp "$SOURCE/fixtures/"*.json "$DESTINATION/fixtures/"
 

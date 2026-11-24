@@ -12,6 +12,33 @@ import type {
 
 export type PopupCaptureAction = "save" | "summarize" | "translate";
 
+export type LiveQualityKey = "origin" | "hd" | "sd" | "ld";
+
+const liveQualityName: Readonly<Record<LiveQualityKey, string>> = {
+  origin: "原画",
+  hd: "高清",
+  sd: "标清",
+  ld: "流畅",
+};
+
+/**
+ * 直播录制卡片底部的说明。必须和下拉框实际预选的档位一致：
+ * 抖音有的场次原画只有 FLV（录不出画面），下拉框会预选高清，这时不能再写「默认原画」。
+ */
+export function liveRecordingDefaultNote(input: {
+  recommended: LiveQualityKey;
+  options: ReadonlyArray<{ quality: LiveQualityKey }>;
+}): string {
+  if (input.recommended === "origin") {
+    return "默认原画。录制在汲作后台进行，关掉网页也不影响。";
+  }
+  const picked = liveQualityName[input.recommended];
+  if (input.options.some((option) => option.quality === "origin")) {
+    return `这一场原画暂时录不了，已默认${picked}。录制在汲作后台进行，关掉网页也不影响。`;
+  }
+  return `这一场页面没有原画档，已默认${picked}。录制在汲作后台进行，关掉网页也不影响。`;
+}
+
 const actionPresentation: Readonly<Record<PopupCaptureAction, {
   title: string;
   detail: string;

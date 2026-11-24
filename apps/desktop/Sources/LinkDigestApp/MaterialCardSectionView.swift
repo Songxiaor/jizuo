@@ -10,10 +10,7 @@ struct MaterialCardSectionView: View {
   private var taskID: TaskID { detail.task.id }
 
   private var hasTranscript: Bool {
-    detail.snapshots.contains {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-        && !$0.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    VideoTranscriptScope(detail).hasCurrentTranscript
   }
 
   var body: some View {

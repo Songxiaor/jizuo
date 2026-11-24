@@ -70,6 +70,57 @@ final class KnowledgeVaultRendererTests: XCTestCase {
     XCTAssertTrue(text.contains("has_transcript: true"))
   }
 
+  /// 作者在同一链接下换过视频：旧视频的转写不能进知识库，只留新视频的配文，
+  /// 并说明较早的评论可能针对旧视频。
+  func testChangedVideoKeepsOldTranscriptOutOfTheVault() {
+    let taskID = TaskID()
+    let oldCapture = ContentSnapshotID()
+    let oldTranscript = ContentSnapshotID()
+    let newCapture = ContentSnapshotID()
+
+    func snapshot(_ id: ContentSnapshotID, sequence: Int, kind: String, text: String, label: String) -> ContentSnapshot {
+      ContentSnapshot(
+        id: id, taskID: taskID, sequence: sequence,
+        envelopeCreatedAtMilliseconds: Int64(sequence), capturedAtMilliseconds: Int64(sequence),
+        sourceKind: kind, sourceURL: "https://www.xiaohongshu.com/explore/1", title: "示例标题",
+        platform: "xiaohongshu", captureMethod: "manual_link", completeness: "complete",
+        bodyText: text, characterCount: text.count, bodySHA256: String(repeating: "a", count: 64),
+        sourceLabel: label, usedCookie: false
+      )
+    }
+    let task = HistoryTask(
+      id: taskID, canonicalURL: "https://www.xiaohongshu.com/explore/1",
+      canonicalizationVersion: 1, createdAtMilliseconds: 1, updatedAtMilliseconds: 2
+    )
+    let projection = HistoryExportProjection(
+      task: task,
+      snapshots: [
+        snapshot(oldCapture, sequence: 2, kind: "manual_link", text: "旧文案", label: "小红书"),
+        snapshot(oldTranscript, sequence: 3, kind: "local_transcription", text: "旧视频转写", label: "本机转写"),
+        snapshot(newCapture, sequence: 7, kind: "manual_link", text: "新文案", label: "小红书"),
+      ],
+      runs: []
+    )
+    func media(_ snapshotID: ContentSnapshotID, sha: Character, createdAt: Int64) -> MediaAsset {
+      MediaAsset(
+        taskID: taskID, snapshotID: snapshotID, relativePath: "\(String(repeating: String(sha), count: 64)).mp4",
+        contentSHA256: String(repeating: String(sha), count: 64), byteSize: 1,
+        durationSeconds: 150, platform: "xiaohongshu", transcriptionStatus: .none,
+        createdAtMilliseconds: createdAt
+      )
+    }
+    let text = KnowledgeVaultRenderer.render(
+      projection,
+      mediaAssets: [media(newCapture, sha: "b", createdAt: 700), media(oldCapture, sha: "a", createdAt: 100)],
+      timeZone: fixtureTimeZone
+    ).text
+
+    XCTAssertTrue(text.contains("新文案"))
+    XCTAssertFalse(text.contains("旧视频转写"), "旧视频的转写不能当作当前正文同步")
+    XCTAssertTrue(text.contains("has_transcript: false"))
+    XCTAssertTrue(text.contains("首次抓到新视频"))
+  }
+
   func testSummaryAbsentWhenNoCompletedSummarizeRun() {
     let text = KnowledgeVaultRenderer.render(fixture(status: .failed), timeZone: fixtureTimeZone).text
 

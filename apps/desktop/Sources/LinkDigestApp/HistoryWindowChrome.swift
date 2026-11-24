@@ -212,7 +212,9 @@ struct PendingCaptureRow: View {
           .truncationMode(.middle)
         switch pending.phase {
         case .queued: Text("排队中").themedFont(.caption2).foregroundStyle(.tertiary)
-        case .fetching: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
+        case .fetching:
+          Text(pending.isBrowserRelaying ? "正在用浏览器抓取…" : "正在保存…")
+            .themedFont(.caption2).foregroundStyle(.tertiary)
         case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
         case let .failed(message):
           // 失败原因必须完整可读。窄侧栏里若按理想宽度排成一行，List 会把后半句裁成省略号。

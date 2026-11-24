@@ -14,11 +14,16 @@ final class KnowledgeVaultSettingsViewModelTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestApp/LinkDigestApp.swift"),
       encoding: .utf8
     )
-    XCTAssertEqual(
-      source.components(separatedBy: "scheduleAutoSync()").count - 1,
-      2,
-      "浏览器接收与手动链接入库都必须安排知识库同步"
-    )
+    // 两条入库路径各在自己的 captureSink 里安排同步；转写完成、启动补排是另外的触发点，
+    // 不能再把「总次数等于 2」写死，否则合理的新触发点一加，这条就假红。
+    let sinks = source.components(separatedBy: "captureSink: { value in").dropFirst()
+    XCTAssertEqual(sinks.count, 2, "浏览器接收与手动链接各有一个 captureSink")
+    for sink in sinks {
+      XCTAssertTrue(
+        String(sink.prefix(4_000)).contains("scheduleAutoSync()"),
+        "浏览器接收与手动链接入库都必须安排知识库同步"
+      )
+    }
   }
 
   func testAutomaticSyncFailureIsVisibleAndClearsAfterSuccessfulRetry() async throws {

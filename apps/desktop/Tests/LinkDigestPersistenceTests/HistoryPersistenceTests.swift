@@ -1019,6 +1019,111 @@ final class HistoryRepositoryRunTests: XCTestCase {
     }
   }
 
+  /// 同一链接重抓换过视频：当前视频没转写就仍在「待转写」，列表行也不能亮「已转写」。
+  /// 旧视频的稿子留在库里，但不能冒充当前视频。
+  func testChangedVideoUsesCurrentVideoForUntranscribedAndHasTranscript() throws {
+    try withRepository { repository, _ in
+      func insertMedia(_ taskID: TaskID, snapshotID: ContentSnapshotID?, sha: String, at: Int64, seconds: Double) throws {
+        try repository.database.write { db in
+          try db.execute(sql: """
+            INSERT INTO media_assets
+              (id, task_id, snapshot_id, relative_path, content_sha256, byte_size, duration_seconds, platform, transcription_status, created_at_ms)
+            VALUES (?, ?, ?, ?, ?, 10, ?, 'douyin', 'none', ?)
+            """, arguments: [UUID().uuidString.lowercased(), taskID.rawValue, snapshotID?.rawValue, sha + ".mp4", sha, seconds, at])
+        }
+      }
+      func insertTranscript(_ taskID: TaskID, sequence: Int, body: String) throws {
+        try repository.database.write { db in
+          try db.execute(sql: """
+            INSERT INTO content_snapshots (
+              id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title,
+              platform, capture_method, completeness, body_text, character_count, body_sha256, source_label,
+              used_cookie, used_cookie_v2
+            ) VALUES (?, ?, ?, ?, ?, 'local_transcription', ?, '转写', 'douyin', 'speech_analyzer_local', 'complete', CAST(? AS TEXT), ?, ?, '本机视频转写', 0, 0)
+            """, arguments: [
+              ContentSnapshotID().rawValue, taskID.rawValue, sequence, sequence, sequence,
+              "https://example.test/cv", Data(body.utf8), body.unicodeScalars.count,
+              SHA256CaptureFingerprinter().bodySHA256(body),
+            ])
+        }
+      }
+      let oldSHA = String(repeating: "a", count: 64)
+      let newSHA = String(repeating: "b", count: 64)
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "cv-a", key: "cv-a", url: "https://example.test/cv"),
+        receivedAtMilliseconds: 1
+      ))
+      try insertMedia(first.taskID, snapshotID: first.snapshotID, sha: oldSHA, at: 1, seconds: 150)
+      try insertTranscript(first.taskID, sequence: 2, body: "旧视频的转写正文")
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "cv-b", key: "cv-b", url: "https://example.test/cv", body: "新文案"),
+        receivedAtMilliseconds: 2
+      ))
+      try insertMedia(first.taskID, snapshotID: second.snapshotID, sha: newSHA, at: 3, seconds: 156)
+
+      let row = try XCTUnwrap(try repository.historyPage(limit: 20, after: nil).rows.first { $0.taskID == first.taskID })
+      XCTAssertEqual(row.hasTranscript, false, "旧视频的转写不能算当前视频已转写")
+      XCTAssertEqual(try repository.navigationCounts().untranscribed, 1)
+      XCTAssertEqual(
+        try repository.historyPage(limit: 20, after: nil, filter: .init(scope: .untranscribed)).rows.map(\.taskID),
+        [first.taskID]
+      )
+
+      try insertTranscript(first.taskID, sequence: 4, body: "新视频的转写正文")
+      let after = try XCTUnwrap(try repository.historyPage(limit: 20, after: nil).rows.first { $0.taskID == first.taskID })
+      XCTAssertEqual(after.hasTranscript, true)
+      XCTAssertEqual(try repository.navigationCounts().untranscribed, 0)
+    }
+  }
+
+  /// 换过视频后，「待校对」也只看当前视频：旧视频的机器稿/校对稿都不算。
+  func testChangedVideoUsesCurrentVideoForUntidiedScope() throws {
+    try withRepository { repository, _ in
+      func insertMedia(_ taskID: TaskID, snapshotID: ContentSnapshotID?, sha: String, at: Int64) throws {
+        try repository.database.write { db in
+          try db.execute(sql: """
+            INSERT INTO media_assets
+              (id, task_id, snapshot_id, relative_path, content_sha256, byte_size, duration_seconds, platform, transcription_status, created_at_ms)
+            VALUES (?, ?, ?, ?, ?, 10, 150, 'douyin', 'none', ?)
+            """, arguments: [UUID().uuidString.lowercased(), taskID.rawValue, snapshotID?.rawValue, sha + ".mp4", sha, at])
+        }
+      }
+      func insertTranscript(_ taskID: TaskID, sequence: Int, body: String, method: String) throws {
+        try repository.database.write { db in
+          try db.execute(sql: """
+            INSERT INTO content_snapshots (
+              id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title,
+              platform, capture_method, completeness, body_text, character_count, body_sha256, source_label,
+              used_cookie, used_cookie_v2
+            ) VALUES (?, ?, ?, ?, ?, 'local_transcription', ?, '转写', 'douyin', ?, 'complete', CAST(? AS TEXT), ?, ?, '本机视频转写', 0, 0)
+            """, arguments: [
+              ContentSnapshotID().rawValue, taskID.rawValue, sequence, sequence, sequence,
+              "https://example.test/tidy", method, Data(body.utf8), body.unicodeScalars.count,
+              SHA256CaptureFingerprinter().bodySHA256(body),
+            ])
+        }
+      }
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "cv-tidy-a", key: "cv-tidy-a", url: "https://example.test/tidy"),
+        receivedAtMilliseconds: 1
+      ))
+      try insertMedia(first.taskID, snapshotID: first.snapshotID, sha: String(repeating: "a", count: 64), at: 1)
+      try insertTranscript(first.taskID, sequence: 2, body: "00:00 旧视频的机器听写正文", method: "speech_analyzer_local")
+      try insertTranscript(first.taskID, sequence: 3, body: "00:00 旧视频的校对稿正文", method: "openai_compatible_chat_tidy")
+      XCTAssertEqual(try repository.navigationCounts().untidied, 0, "旧视频已经校对过")
+
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "cv-tidy-b", key: "cv-tidy-b", url: "https://example.test/tidy", body: "新文案"),
+        receivedAtMilliseconds: 2
+      ))
+      try insertMedia(first.taskID, snapshotID: second.snapshotID, sha: String(repeating: "b", count: 64), at: 3)
+
+      XCTAssertEqual(try repository.navigationCounts().untidied, 0, "当前视频还没有机器稿，不算待校对")
+      try insertTranscript(first.taskID, sequence: 5, body: "00:00 新视频的机器听写正文", method: "speech_analyzer_local")
+      XCTAssertEqual(try repository.navigationCounts().untidied, 1, "旧视频的校对稿不能让新视频算已校对")
+    }
+  }
+
   func testTwoPoolsPreserveRunConflictSemanticsUnderRace() throws {
     try withTemporaryLocation { location in
       let first = try GRDBHistoryRepository.open(at: location)

@@ -45,6 +45,34 @@ struct CaptureIngestService: Sendable {
     }
   }
 
+  /// 浏览器代抓：内容来自扩展，但要按抓取队列的意图（下载、不抢当前阅读、批量导入）
+  /// 入库。provenance 必须按 envelope 记成浏览器抓取，不能走本机文档那条。
+  func ingest(
+    document: CapturedDocument,
+    envelope: CaptureWireEnvelope,
+    requestedAction: CaptureRequestedAction? = nil,
+    suppressesAutomaticEnrichment: Bool = false,
+    navigationIntent: CaptureNavigationIntent = .reveal
+  ) async throws -> CurrentCapture {
+    let command: AcceptCaptureCommand
+    switch envelope {
+    case let .v1(value):
+      command = try AcceptCaptureCommand(envelope: value, receivedAtMilliseconds: nowMilliseconds())
+    case let .v2(value):
+      command = try AcceptCaptureCommand(envelope: value, receivedAtMilliseconds: nowMilliseconds())
+    }
+    return try await commitAndPublish(command: command, document: document) { accepted in
+      CurrentCapture(
+        document: document,
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        requestedAction: requestedAction,
+        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment,
+        navigationIntent: navigationIntent
+      )
+    }
+  }
+
   func ingest(
     _ document: CapturedDocument,
     requestedAction: CaptureRequestedAction? = nil,

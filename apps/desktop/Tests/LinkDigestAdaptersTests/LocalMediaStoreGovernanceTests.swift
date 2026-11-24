@@ -36,7 +36,8 @@ final class LocalMediaStoreGovernanceTests: XCTestCase {
     lastUsed: Int64,
     bytes: Int64 = 0,
     userSelected: Bool = false,
-    mediaID: String = UUID().uuidString.lowercased()
+    mediaID: String = UUID().uuidString.lowercased(),
+    transcribed: Bool = false
   ) -> MediaStorageEntry {
     .init(
       mediaID: mediaID,
@@ -44,7 +45,8 @@ final class LocalMediaStoreGovernanceTests: XCTestCase {
       relativePath: relativePath,
       usesUserSelectedFile: userSelected,
       byteSize: bytes,
-      lastUsedMilliseconds: lastUsed
+      lastUsedMilliseconds: lastUsed,
+      isTranscribed: transcribed
     )
   }
 
@@ -148,6 +150,44 @@ final class LocalMediaStoreGovernanceTests: XCTestCase {
     )
     // 需要腾出 150：最旧的两条正好够，第三条不能跟着删。
     XCTAssertEqual(plan.map(\.relativePath), [hashedName(11), hashedName(12)])
+  }
+
+  /// 2026-11-20：补下载一条就挤掉一条还在用的旧视频。先删已转写的（最久没碰的先删），
+  /// 没转写的哪怕更旧也排在后面；同一文件被多条引用、其中一条没转写，就按没转写算。
+  func testEvictionPlanRemovesTranscribedVideosBeforeUntranscribedOnes() {
+    let oldUntranscribed = hashedName(41), newTranscribed = hashedName(42), oldTranscribed = hashedName(43), shared = hashedName(44)
+    let plan = LocalMediaStore.evictionPlan(
+      inventory: [
+        entry(oldUntranscribed, lastUsed: 1),
+        entry(newTranscribed, lastUsed: 500, transcribed: true),
+        entry(oldTranscribed, lastUsed: 10, transcribed: true),
+        entry(shared, lastUsed: 2, transcribed: true),
+        entry(shared, lastUsed: 3, transcribed: false),
+      ],
+      fileSizes: [oldUntranscribed: 100, newTranscribed: 100, oldTranscribed: 100, shared: 100],
+      currentBytes: 400,
+      incomingBytes: 100,
+      limitBytes: 250
+    )
+    XCTAssertEqual(plan.map(\.relativePath), [oldTranscribed, newTranscribed, oldUntranscribed])
+  }
+
+  /// 「已转写」只认保存之后的转写：换过视频/刚重下回来的按没转写算；最近保存的（一批补下载）一律不删。
+  func testEvictionPlanTreatsStaleTranscriptAsUntranscribedAndProtectsRecentDownloads() {
+    let stale = hashedName(51), fresh = hashedName(52), recent = hashedName(53)
+    let entries = [
+      MediaStorageEntry(mediaID: "s", taskID: TaskID(), relativePath: stale, usesUserSelectedFile: false, byteSize: 0,
+                        lastUsedMilliseconds: 1, createdAtMilliseconds: 1, isTranscribed: true, transcribedAfterSaving: false),
+      MediaStorageEntry(mediaID: "f", taskID: TaskID(), relativePath: fresh, usesUserSelectedFile: false, byteSize: 0,
+                        lastUsedMilliseconds: 50, createdAtMilliseconds: 50, isTranscribed: true, transcribedAfterSaving: true),
+      MediaStorageEntry(mediaID: "r", taskID: TaskID(), relativePath: recent, usesUserSelectedFile: false, byteSize: 0,
+                        lastUsedMilliseconds: 900, createdAtMilliseconds: 900, isTranscribed: false),
+    ]
+    let plan = LocalMediaStore.evictionPlan(
+      inventory: entries, fileSizes: [stale: 100, fresh: 100, recent: 100],
+      currentBytes: 300, incomingBytes: 300, limitBytes: 100, protectedSinceMilliseconds: 800
+    )
+    XCTAssertEqual(plan.map(\.relativePath), [fresh, stale])
   }
 
   func testEvictionPlanIsEmptyWhenItAlreadyFitsOrTheLimitIsOff() {

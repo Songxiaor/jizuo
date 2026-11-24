@@ -79,17 +79,18 @@ extension GRDBHistoryRepository: MaterialCardStoring {
 
   public func materialCardCandidates() throws -> [MaterialCardCandidate] {
     try database.read { db in
-      // 只看听写层（source_kind = local_transcription）；每条取最新一份转写稿的字数。
+      // 只看当前视频的听写层；每条取它最新一份转写稿的字数。
+      // 作者换过视频时，旧视频的稿子既不算候选，也不该拿它的字数去生成新视频的卡。
       let rows = try Row.fetchAll(db, sql: """
         SELECT t.id AS id,
           (SELECT LENGTH(s.body_text) FROM content_snapshots s
-            WHERE s.task_id = t.id AND s.source_kind = 'local_transcription'
+            WHERE s.task_id = t.id
+              AND \(GRDBHistoryRepository.currentVideoTranscriptCondition("s"))
             ORDER BY s.sequence DESC LIMIT 1) AS characters
         FROM tasks t
         WHERE t.deleted_at_ms IS NULL
           AND t.content_kind <> '\(TaskClassificationSQL.draftKind)'
-          AND EXISTS (SELECT 1 FROM content_snapshots s
-            WHERE s.task_id = t.id AND s.source_kind = 'local_transcription')
+          AND \(GRDBHistoryRepository.currentVideoTranscriptSQL())
           AND NOT EXISTS (SELECT 1 FROM task_material_cards c WHERE c.task_id = t.id)
         ORDER BY t.created_at_ms DESC
         """)

@@ -7,6 +7,8 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
   public var author: String?
   public var published: String?
   public var coverImage: String?
+  /// 本地导入/录制条目的原始网页。身份仍是本机地址，这里只记「这条从哪来」。
+  public var sourcePage: String?
   /// Parsed for backward compatibility with older captures; UI no longer surfaces it.
   public var description: String?
   /// Douyin/social engagement stats extracted from __INITIAL_STATE__ or DOM.
@@ -25,6 +27,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     author: String? = nil,
     published: String? = nil,
     coverImage: String? = nil,
+    sourcePage: String? = nil,
     description: String? = nil,
     likes: String? = nil,
     comments: String? = nil,
@@ -38,6 +41,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     self.author = author
     self.published = published
     self.coverImage = coverImage
+    self.sourcePage = sourcePage
     self.description = description
     self.likes = likes
     self.comments = comments
@@ -166,6 +170,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     var author: String?
     var published: String?
     var coverImage: String?
+    var sourcePage: String?
     var description: String?
     var likes: String?
     var views: String?
@@ -188,6 +193,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       case "author": author = value
       case "published": published = value
       case "cover_image": coverImage = value
+      case "source_page": sourcePage = value
       case "description": description = value
       case "likes": likes = value
       case "comments": comments = value
@@ -209,6 +215,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       author: author,
       published: published,
       coverImage: coverImage,
+      sourcePage: sourcePage,
       description: description,
       likes: likes,
       comments: comments,
@@ -231,6 +238,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     append("author", author, to: &lines)
     append("published", published, to: &lines)
     append("cover_image", coverImage, to: &lines)
+    append("source_page", sourcePage, to: &lines)
     append("description", description, to: &lines)
     append("original_title", originalTitle, to: &lines)
     append("likes", likes, to: &lines)
@@ -253,6 +261,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
   /// 正文里合法的水平分隔线之间夹着 `key: value` 样式文字并不罕见。
   private static let knownKeys: Set<String> = [
     "account_name", "author", "published", "cover_image", "description", "original_title",
+    "source_page",
     "likes", "comments", "replies", "shares", "reposts", "collects", "views"
   ]
 

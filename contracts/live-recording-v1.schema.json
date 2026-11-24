@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syc.local/linkdigest/live-recording-v1.schema.json",
+  "title": "LinkDigest Live Recording V1",
+  "description": "Keyboard-free handoff for live-stream recording. Stream URLs are short-lived signed addresses: they stay in process memory, are never persisted, logged, exported or committed as fixtures. The App records in the background; the browser tab may be closed.",
+  "type": "object",
+  "required": ["kind", "version", "requestId", "createdAt", "platform", "pageURL", "quality", "variants"],
+  "additionalProperties": true,
+  "properties": {
+    "kind": {"const": "liveRecording"},
+    "version": {"const": 1},
+    "requestId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "platform": {"type": "string", "enum": ["douyin", "xiaohongshu"]},
+    "pageURL": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https://"},
+    "roomID": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "anchorName": {"type": ["string", "null"], "maxLength": 80},
+    "anchorID": {"type": ["string", "null"], "maxLength": 256},
+    "anchorAvatarURL": {"type": ["string", "null"], "format": "uri", "maxLength": 2048, "pattern": "^https://"},
+    "anchorProfileURL": {"type": ["string", "null"], "format": "uri", "maxLength": 2048, "pattern": "^https://"},
+    "title": {"type": ["string", "null"], "maxLength": 200},
+    "quality": {"type": "string", "enum": ["origin", "hd", "sd", "ld"]},
+    "variants": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/Variant"}
+    },
+    "requestHeaders": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "referer": {"type": "string", "maxLength": 2048},
+        "userAgent": {"type": "string", "maxLength": 512}
+      }
+    }
+  },
+  "$defs": {
+    "Variant": {
+      "type": "object",
+      "required": ["quality", "container", "url"],
+      "additionalProperties": true,
+      "properties": {
+        "quality": {"type": "string", "enum": ["origin", "hd", "sd", "ld"]},
+        "container": {"type": "string", "enum": ["flv", "hls"]},
+        "url": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https?://"},
+        "resolution": {"type": ["string", "null"], "maxLength": 32},
+        "label": {"type": ["string", "null"], "maxLength": 32}
+      }
+    }
+  },
+  "x-semantic-invariants": [
+    "douyin origin quality must be recorded from an HLS variant (its FLV original is a private H.265 packaging); xiaohongshu origin is H.264 FLV and may use FLV",
+    "variant URLs are process-memory-only and excluded from persistence, logs, exports, errors and persistent fingerprints",
+    "the App records only streams whose pageURL host belongs to the declared platform",
+    "anchor fields describe the streamer at recording start; anchorAvatarURL and anchorProfileURL are public page metadata and may be persisted, while variant URLs never are"
+  ]
+}

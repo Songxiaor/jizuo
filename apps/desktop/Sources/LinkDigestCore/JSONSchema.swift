@@ -164,6 +164,7 @@ enum CaptureWireContractSchema {
   static let schemaRelativePath = "Resources/contracts/capture-envelope-v1.schema.json"
   static let schemaV2RelativePath = "Resources/contracts/capture-envelope-v2.schema.json"
   static let xProfileCandidatesRelativePath = "Resources/contracts/x-profile-candidates-v1.schema.json"
+  static let liveRecordingRelativePath = "Resources/contracts/live-recording-v1.schema.json"
 
   enum ResourceMode: Equatable {
     case application(resourceURL: URL?)
@@ -256,6 +257,14 @@ enum CaptureWireContractSchema {
       }
       return schemaURL
     }
+
+    func liveRecordingSchemaURL(fileManager: FileManager = .default) throws -> URL {
+      try resourceURL(
+        relativePath: liveRecordingRelativePath,
+        testRelativePath: "contracts/live-recording-v1.schema.json",
+        fileManager: fileManager
+      )
+    }
   }
 
   static func runtimeLocator(
@@ -295,6 +304,15 @@ enum CaptureWireContractSchema {
     let url = try locator.xProfileCandidatesSchemaURL()
     guard let data = try? Data(contentsOf: url) else {
       throw JSONSchemaValidationError.invalid("bundled x-profile-candidates schema is missing")
+    }
+    return try JSONSchemaValidator(schemaData: data)
+  }
+
+  static func liveRecordingValidator(locator: ResourceLocator? = nil) throws -> JSONSchemaValidator {
+    let locator = locator ?? runtimeLocator()
+    let url = try locator.liveRecordingSchemaURL()
+    guard let data = try? Data(contentsOf: url) else {
+      throw JSONSchemaValidationError.invalid("bundled live-recording schema is missing")
     }
     return try JSONSchemaValidator(schemaData: data)
   }

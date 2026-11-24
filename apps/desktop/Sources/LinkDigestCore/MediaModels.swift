@@ -203,9 +203,9 @@ public enum MediaDownloadError: Error, Sendable, Equatable {
     switch self {
     case .invalidURL: "视频地址无效，请回到网页重新保存一次。"
     case .unsafeURL: "为保护本机网络，\(ProductDisplay.name)不能下载这个视频地址。可以在浏览器中打开原网页观看。"
-    case .responseStatus: "视频暂时无法下载，请稍后重试。"
+    case .responseStatus: "视频服务器拒绝了这次下载（播放地址可能失效或被限制），请稍后重试；仍不行可在浏览器中打开原网页观看。"
     case .unsupportedContainer: "只能保存 mp4 或 mov 格式的视频，这个视频可以在浏览器中打开原网页观看。"
-    case .responseTooLarge: "视频超过 200 MB 上限，没有保存。可以在浏览器中打开原网页观看。"
+    case .responseTooLarge: "视频超过单条大小上限，没有保存。可以在设置的视频存储里调大「单个上限」后重试。"
     case .insufficientDiskSpace: "磁盘空间不足，视频没有保存。清理一些空间后再试。"
     case .emptyBody: "下载到的视频是空的，请稍后重试。"
     case .timedOut: "下载视频超时，请稍后重试。"

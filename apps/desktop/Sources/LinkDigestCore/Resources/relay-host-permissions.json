@@ -1,0 +1,22 @@
+{
+  "formatVersion": 1,
+  "comment": "浏览器代抓能自动抓的站点。App（BrowserCaptureHostPolicy）与扩展（wxt.config.ts 生成 host_permissions）共用这一份，改名单只改这里。其余网页走 optional_host_permissions，未授权时代抓直接失败并说明原因。",
+  "hosts": [
+    "douyin.com",
+    "iesdouyin.com",
+    "xiaohongshu.com",
+    "xhslink.com",
+    "xhslink.cn",
+    "x.com",
+    "twitter.com",
+    "bilibili.com",
+    "b23.tv",
+    "mp.weixin.qq.com",
+    "youtube.com",
+    "youtu.be",
+    "zhihu.com",
+    "reddit.com",
+    "github.com",
+    "medium.com"
+  ]
+}

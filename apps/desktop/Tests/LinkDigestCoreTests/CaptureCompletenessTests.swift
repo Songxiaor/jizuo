@@ -144,7 +144,9 @@ final class CaptureCompletenessTests: XCTestCase {
     let message = CaptureRouteGuidance.failureMessage(for: .verificationRequired, url: zhihu)
     XCTAssertTrue(message.contains("知乎"))
     XCTAssertTrue(message.contains("网站登录"))
-    XCTAssertTrue(message.contains("浏览器扩展"))
+    // 2026-11-19 起，抓取失败会自动在用户浏览器里代抓，不再让用户手动用扩展保存。
+    XCTAssertFalse(message.contains("请在浏览器里打开"))
+    XCTAssertFalse(message.contains("用浏览器扩展保存"))
     XCTAssertEqual(
       CaptureRouteGuidance.failureMessage(for: .network, url: zhihu),
       ManualLinkError.network.userMessage

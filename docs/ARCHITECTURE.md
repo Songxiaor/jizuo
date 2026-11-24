@@ -104,6 +104,37 @@ Chrome/Brave shared default target，或 Edge 独立 default target
 
 这仍不是签名、公证、浏览器扩展安装器或真实 profile 兼容性的发布承诺。Loop 8 的自动证据证明的是已覆盖的 current-user 文件所有权与隔离 HOME 事务；Syc 的真实 HOME 产品安装留给最终人工总检。
 
+### 3.2.2 浏览器代抓（2026-11-19）
+
+「链接丢进汲作后就该存下来」：App 直读、登录会话、WebKit 渲染都读不到时（要登录、验证页、超时、只拿到 SPA 壳、正文为空、页面内容没认出来），不再把「请在浏览器里打开，再用浏览器扩展保存」交给用户，而是自动借用户浏览器里已登录的汲作扩展抓一次。
+
+```text
+ManualLinkViewModel 抓取失败（BrowserCaptureRelayPolicy 判定可代抓）
+  ↓ 登记一次性 job（id + 链接 + 排队项，90s 超时、3 分钟作废）
+BrowserCaptureRelay ──open -g -a "ego lite" <url>（缺 ego 用 Chrome）
+  ↓                                          ↓
+扩展 tabs.onUpdated(complete)          CaptureReceiver.process
+  只有带 #jizuo-relay 的标签才问          browserCaptureJob → claimJob(tabID)
+  「这些地址有待抓任务吗」                 （同一 job 只交给发问的那个标签）
+  （只问运行中的 App）                     ↓
+  命中 → 用现有抓取链路抓这一页          deliver(jobID, envelope) → 唤醒等待
+  连同 captureJobID 送回，再关自己刚开的标签  ↓
+                                    按浏览器来源入库、下载、转写（原链路）
+```
+
+- 标签识别：App 打开代抓标签时在地址后加固定片段 `#jizuo-relay`（已有锚点就接在后面；短链重定向会继承片段）。**普通页面加载一次 native message 都不发**；带标记的标签才查询，并且只关「创建时间在 3 分钟内、带标记」的标签，绝不碰用户自己的标签。
+- 标签回收：job 作废/过期/被取消、站点权限被收回、或 App 消失超过 10 分钟时，扩展 1 分钟一次的 alarm 清扫会关掉这些标签；App 暂时联系不上时先留着，等它回来。
+- 一次性认领：查询带 `tabID`，job 被某标签认领后其他标签再问不再返回；带作废 job id 的抓取回 `CAPTURE_JOB_EXPIRED` 并丢弃，绝不落成第二次普通抓取。
+
+- 合同：`capture-envelope-v1/v2` 新增可选顶层 `captureJobID`（`additionalProperties: true`，旧 App 当普通抓取、旧扩展不发）；新消息类型 `browserCaptureJob`（`BrowserCaptureJobRequest` → `NativeResponse.browserCaptureJob`），Host 只转发给运行中的 App，不为它冷启动。
+- 安全：只为汲作自己排队里的链接开标签；job 一次性、过期作废、按链接或平台作品编号对号；扩展只在命中 job 时才动手，未命中的页面行为不变；不读 Cookie 数据库、不绕过访问控制、不记录带 token 的完整 URL。
+- 扩展权限：`host_permissions` 只声明实际支持的平台（名单唯一来源是 `LinkDigestCore/Resources/relay-host-permissions.json`，`wxt.config.ts` 与 `BrowserCaptureHostPolicy` 共用）；泛网页放在 `optional_host_permissions`。仍不申请 cookies、webRequest、declarativeNetRequest，也不含 `<all_urls>`/文件页面；新增 `alarms` 只用于回收代抓标签。
+- 失败口径：`browser_capture_unavailable`（没装 ego/Chrome 或扩展通道）、`browser_capture_permission_missing`（站点不在名单里或扩展没有该站点权限，立即失败、不开标签）、`browser_extension_unreachable`（90 秒内扩展一次都没来问过）、`browser_capture_target_unmatched`（扩展来问过，但落地地址对不上任何排队项，消息带 host+path）、`browser_capture_timeout`（认领了但页面没抓到）。除「页面打不开」外都属于环境问题，MCP 重新提交时照常重试，不要求换链接。
+- 页面打不开：扩展落地到平台自己的错误页/登录页（小红书 `/404?error_code=…`、`/website-login`，抖音验证页等）时带 job 回报一次 `browserCaptureJobOutcome`，App 立即按真实抓取错误失败——小红书裸链接记 `shareLinkMissingToken`（needs_new_link），带访问码的记 `shareLinkExpired`，不登录/验证分别记 `loginRequired` / `verificationRequired`，不再干等 90 秒。
+- 调试开关：`defaults write com.syc.linkdigest LinkDigestForceBrowserRelayHosts -array zhihu.com` 让命中的 host 跳过直读直接代抓（默认空、不在界面暴露），用于验证代抓成功链路；验证完 `defaults delete`。
+- 诊断：`AppLog` 的 capture 分类以 **notice 级**记录 `browser_relay_job_registered / query / claimed / query_unmatched / blocked / delivered / finished`，字段只有 job 前缀、tab、host+path、错误码；不记 query 串、不记正文、不记 cookie。notice 级默认落进系统日志，`log show --last 15m --predicate 'subsystem == "com.syc.linkdigest"'` 就能查（info 级默认只在内存里，`--info` 也未必查得到，所以诊断不要用 info）。
+- Host 放行表：每种新的 native 消息（`browserCaptureJob`、`browserCaptureJobOutcome`）都必须在 `LinkDigestNativeHost/main.swift` 里单独识别并转发；漏掉一种的表现是「消息被当成坏 envelope 拒掉、另一方只能等到超时」，有进程级测试盯着（真起 Host、喂帧、断言转发并让 App 失败）。
+
 ### 3.3 macOS APP
 
 ```text

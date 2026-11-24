@@ -79,6 +79,35 @@ const xProfileOutput = [
   "",
 ].join("\n");
 
+const liveRecordingSchemaPath = resolve(packageRoot, "../../contracts/live-recording-v1.schema.json");
+const liveRecordingOutputPath = resolve(packageRoot, "src/generated/live-recording-validator.mjs");
+const liveRecordingSchema = JSON.parse(await readFile(liveRecordingSchemaPath, "utf8"));
+const liveRecordingAjv = new Ajv2020({
+  allErrors: true,
+  strict: false,
+  code: { source: true, esm: true, lines: true },
+});
+addFormats(liveRecordingAjv);
+let liveRecordingGenerated = standaloneCode(liveRecordingAjv, liveRecordingAjv.compile(liveRecordingSchema));
+liveRecordingGenerated = liveRecordingGenerated.replace(
+  /const (\w+) = require\("ajv\/dist\/runtime\/ucs2length"\)\.default;/g,
+  "const $1 = (value) => [...value].length;",
+);
+liveRecordingGenerated = liveRecordingGenerated.replace(
+  /const (\w+) = require\("ajv-formats\/dist\/formats"\)\.fullFormats(\[[^\n;]+\]|\.\w+);/g,
+  "const $1 = __ajvFormats.fullFormats$2;",
+);
+if (liveRecordingGenerated.includes("require(")) {
+  throw new Error("Standalone live-recording validator contains an unexpected runtime require()");
+}
+const liveRecordingOutput = [
+  "/* eslint-disable */",
+  "// Generated from live-recording-v1.schema.json. Do not edit by hand.",
+  'import * as __ajvFormats from "ajv-formats/dist/formats.js";',
+  liveRecordingGenerated.trimEnd(),
+  "",
+].join("\n");
+
 if (process.argv.includes("--check")) {
   const current = await readFile(outputPath, "utf8").catch(() => "");
   if (current !== output) {
@@ -92,10 +121,18 @@ if (process.argv.includes("--check")) {
     process.exit(1);
   }
   console.log("x-profile-validator: OK");
+  const currentLive = await readFile(liveRecordingOutputPath, "utf8").catch(() => "");
+  if (currentLive !== liveRecordingOutput) {
+    console.error("live-recording-validator: OUT OF DATE; run pnpm --filter @linkdigest/browser-extension generate:validator");
+    process.exit(1);
+  }
+  console.log("live-recording-validator: OK");
 } else {
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, output);
   console.log("capture-validator: generated");
   await writeFile(xProfileOutputPath, xProfileOutput);
   console.log("x-profile-validator: generated");
+  await writeFile(liveRecordingOutputPath, liveRecordingOutput);
+  console.log("live-recording-validator: generated");
 }

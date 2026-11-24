@@ -253,7 +253,11 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
         let projection = try history.exportProjection(taskID: taskID)
         // 笔记、稿件、成品留在汲作里，不进知识库。
         guard KnowledgeVaultRenderer.isSyncable(projection) else { continue }
-        documents.append(KnowledgeVaultRenderer.render(projection))
+        // 导出投影不带媒体；转写归属要另取全部媒体，免得把旧视频的转写同步出去。
+        documents.append(KnowledgeVaultRenderer.render(
+          projection,
+          mediaAssets: try history.mediaAssets(taskID: taskID)
+        ))
       } catch {
         AppLog.error(.storage, "vault_sync_item_read_failed", code: "VAULT_SYNC_ITEM_READ_FAILED", ["error": String(describing: error)])
         failures.append(

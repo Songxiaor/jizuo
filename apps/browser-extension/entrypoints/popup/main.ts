@@ -19,6 +19,7 @@ import {
   popupSavedAtLabel,
   popupTranslationNote,
   commentLoginWallNote,
+  liveRecordingDefaultNote,
   type ChainKey,
   type CommentPlan,
   type StepProgressRow,
@@ -38,8 +39,11 @@ import {
 } from "../../src/popup-connection";
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
+import { isDouyinLiveURL, type LiveQualityKey } from "../../src/content/douyin-live";
+import { isXiaohongshuLiveURL } from "../../src/content/xiaohongshu-live";
 import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
 import type { CommentCollectResult, CommentSendMode } from "../../src/entrypoints/background";
+import type { LiveRecordingStartResult, LiveRoomInfo } from "../../src/entrypoints/background";
 import {
   isXProfileURL,
   profileCollectFailureCopy,
@@ -154,6 +158,13 @@ const dupSteps = document.querySelector<HTMLDivElement>("#dup-steps")!;
 const savedSteps = document.querySelector<HTMLDivElement>("#saved-steps")!;
 const saveAgain = document.querySelector<HTMLButtonElement>("#save-again")!;
 const closePopup = document.querySelector<HTMLButtonElement>("#close-popup")!;
+const liveCard = document.querySelector<HTMLElement>("#live-card")!;
+const livePlatform = document.querySelector<HTMLHeadingElement>("#live-platform")!;
+const liveHint = document.querySelector<HTMLSpanElement>("#live-hint")!;
+const liveTitle = document.querySelector<HTMLParagraphElement>("#live-title")!;
+const liveQuality = document.querySelector<HTMLSelectElement>("#live-quality")!;
+const liveStart = document.querySelector<HTMLButtonElement>("#live-start")!;
+const liveNote = document.querySelector<HTMLParagraphElement>("#live-note")!;
 closePopup.addEventListener("click", () => window.close());
 
 let selectedAction: PopupCaptureAction = "save";
@@ -333,6 +344,91 @@ function offerOpenAndRetry(run: () => Promise<void>): void {
 
 const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
 const tabId = tab?.id;
+
+const liveErrorCopy: Readonly<Record<string, string>> = {
+  NOT_LIVE_PAGE: "请在抖音或小红书直播间页面打开这个弹窗。",
+  LIVE_STREAM_NOT_FOUND: "页面上没读到直播流。刷新直播间、等画面出来后重试。",
+  LIVE_FFMPEG_NOT_FOUND: "汲作里找不到录制组件（ffmpeg）。请更新或重装汲作，或在本机安装 ffmpeg 后重试。",
+  LIVE_DISK_FULL: "磁盘空间不足，录制没有开始。",
+  LIVE_ALREADY_RECORDING: "这个直播间已经在录了，去汲作里看。",
+  LIVE_DISK_UNAVAILABLE: "存放录制的磁盘空间不足（至少需要 2 GB）。清理空间或在汲作里换一个文件夹后再试。",
+  LIVE_ORIGIN_UNPLAYABLE: "这场直播的原画地址暂时不能用。刷新直播间后再试，或先选其他清晰度。",
+  CAPTURE_SCHEMA_INVALID: "汲作和扩展的版本对不上，请更新扩展和汲作后重试。",
+  NATIVE_HOST_NOT_FOUND: connectionCopy.needsApp,
+  APP_UNAVAILABLE: connectionCopy.needsApp,
+  NATIVE_MESSAGE_TIMEOUT: "汲作没有及时回应。请确认它已经打开，再试一次。",
+  PROTOCOL_VERSION_UNSUPPORTED: connectionCopy.upgrade,
+};
+
+async function setupLiveRecording(): Promise<void> {
+  if (tabId === undefined || !tab?.url) return;
+  const platform = isDouyinLiveURL(tab.url)
+    ? "douyin"
+    : isXiaohongshuLiveURL(tab.url) ? "xiaohongshu" : null;
+  if (!platform) return;
+  liveCard.hidden = false;
+  livePlatform.textContent = platform === "douyin" ? "抖音直播" : "小红书直播";
+  liveHint.textContent = "后台录制";
+  liveStart.disabled = true;
+  liveNote.textContent = "正在读取这场的清晰度…";
+  liveQuality.replaceChildren();
+  let info: LiveRoomInfo | undefined;
+  try {
+    info = await browser.runtime.sendMessage({ type: "live-room-info", tabId }) as LiveRoomInfo | undefined;
+  } catch {
+    info = undefined;
+  }
+  if (!info?.ok) {
+    liveNote.textContent = liveErrorCopy[info?.code ?? ""] ?? "没读到直播流，刷新页面后重试。";
+    return;
+  }
+  const heading = [info.anchorName, info.title].filter((part): part is string => Boolean(part && part.trim())).join(" · ");
+  liveTitle.textContent = heading;
+  liveTitle.hidden = heading.length === 0;
+  for (const option of info.options) {
+    const element = document.createElement("option");
+    element.value = option.quality;
+    element.textContent = option.label;
+    liveQuality.append(element);
+  }
+  liveQuality.value = info.recommended;
+  liveStart.disabled = false;
+  liveStart.textContent = "开始录制";
+  liveStart.classList.remove("done");
+  liveNote.textContent = liveRecordingDefaultNote({
+    recommended: info.recommended,
+    options: info.options,
+  });
+}
+
+liveStart.onclick = async () => {
+  if (tabId === undefined) return;
+  liveStart.disabled = true;
+  liveStart.classList.remove("done");
+  liveStart.textContent = "正在开始…";
+  liveNote.textContent = "";
+  try {
+    const result = await browser.runtime.sendMessage({
+      type: "start-live-recording",
+      tabId,
+      quality: liveQuality.value as LiveQualityKey,
+    }) as LiveRecordingStartResult | undefined;
+    if (result?.ok) {
+      liveStart.textContent = "✓ 已开始录制";
+      liveStart.classList.add("done");
+      liveNote.textContent = `清晰度：${result.qualityLabel}。到汲作的「直播录制」里可以看进度或手动停止。`;
+      return;
+    }
+    liveStart.textContent = "开始录制";
+    liveStart.disabled = false;
+    liveNote.textContent = liveErrorCopy[result?.code ?? ""] ?? "录制没有开始，请重试。";
+  } catch (cause) {
+    liveStart.textContent = "开始录制";
+    liveStart.disabled = false;
+    liveNote.textContent = popupCaughtFailure(cause, "录制没有开始，请重试。");
+  }
+};
+
 if (tabId === undefined) {
   status.textContent = "无法读取当前标签页";
   send.disabled = true;
@@ -683,6 +779,7 @@ if (tabId === undefined) {
     void browser.runtime.sendMessage({ type: "open-app" });
   });
 } else {
+  void setupLiveRecording();
   let previewTitle = "";
   let previewPageURL: string | undefined;
   // App 的自动设置：和预览并行读，读到就重画工序链。旧版 App/Host 没有这项时按「不知道」显示。

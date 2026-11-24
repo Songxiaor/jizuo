@@ -128,8 +128,21 @@ struct CaptureReceiver: Sendable {
     let acceptedCount: Int
   }
   typealias ProfileCandidatesSink = @Sendable (XProfileCandidatesRequest) async -> ProfileCandidatesOutcome
+  /// 直播录制受理：返回 recordingID 表示已经在后台开录；rejected 带错误码（如
+  /// LIVE_FFMPEG_NOT_FOUND），扩展按码给用户一句可执行的话。
+  enum LiveRecordingAcceptance: Sendable, Equatable {
+    case accepted(recordingID: String)
+    case rejected(code: String)
+  }
+  typealias LiveRecordingSink = @Sendable (LiveRecordingRequest) async -> LiveRecordingAcceptance
   /// 扩展弹窗查「这页存过没有、做到哪了」。nil 时回错，扩展按「不知道」显示。
   typealias PageStatusSink = @Sendable (PageStatusRequest) async -> PageStatusPayload
+  /// 扩展问「这个地址有待代抓任务吗」。返回 job id；nil 表示没有，扩展什么也不做。
+  typealias BrowserCaptureJobSink = @Sendable (BrowserCaptureJobRequest) async -> String?
+  /// 扩展把代抓内容送回：按 job id 认回排队项。返回 false = job 已作废，按普通抓取入库。
+  typealias BrowserCaptureDeliverySink = @Sendable (String, CaptureWireEnvelope) async -> Bool
+  /// 扩展发现落地页是平台错误页/登录页：带 job 回报，让 App 立刻按真实原因失败。
+  typealias BrowserCaptureOutcomeSink = @Sendable (BrowserCaptureJobOutcomeRequest) async -> Bool
 
   private let history: HistoryApplicationService?
   private let storageWriteGate: StorageWriteGate
@@ -137,7 +150,11 @@ struct CaptureReceiver: Sendable {
   private let captureSink: CaptureSink
   private let bookmarksSink: BookmarksSink?
   private let profileCandidatesSink: ProfileCandidatesSink?
+  private let liveRecordingSink: LiveRecordingSink?
   private let pageStatusSink: PageStatusSink?
+  private let browserCaptureJobSink: BrowserCaptureJobSink?
+  private let browserCaptureDeliverySink: BrowserCaptureDeliverySink?
+  private let browserCaptureOutcomeSink: BrowserCaptureOutcomeSink?
 
   init(
     history: HistoryApplicationService?,
@@ -146,7 +163,11 @@ struct CaptureReceiver: Sendable {
     captureSink: @escaping CaptureSink,
     bookmarksSink: BookmarksSink? = nil,
     profileCandidatesSink: ProfileCandidatesSink? = nil,
-    pageStatusSink: PageStatusSink? = nil
+    liveRecordingSink: LiveRecordingSink? = nil,
+    pageStatusSink: PageStatusSink? = nil,
+    browserCaptureJobSink: BrowserCaptureJobSink? = nil,
+    browserCaptureDeliverySink: BrowserCaptureDeliverySink? = nil,
+    browserCaptureOutcomeSink: BrowserCaptureOutcomeSink? = nil
   ) {
     self.history = history
     self.storageWriteGate = storageWriteGate
@@ -154,7 +175,11 @@ struct CaptureReceiver: Sendable {
     self.captureSink = captureSink
     self.bookmarksSink = bookmarksSink
     self.profileCandidatesSink = profileCandidatesSink
+    self.liveRecordingSink = liveRecordingSink
     self.pageStatusSink = pageStatusSink
+    self.browserCaptureJobSink = browserCaptureJobSink
+    self.browserCaptureDeliverySink = browserCaptureDeliverySink
+    self.browserCaptureOutcomeSink = browserCaptureOutcomeSink
   }
 
   func process(_ data: Data) async -> NativeResponse {
@@ -172,6 +197,17 @@ struct CaptureReceiver: Sendable {
           ))
         }
         return .pageStatus(version: 1, requestId: request.requestId, status: await pageStatusSink(request))
+      }
+      if let outcome = try BrowserCaptureJobOutcomeRequest.decode(data) {
+        // 回包沿用查询的形状：扩展并不关心内容，只是确认消息已经送达。
+        _ = await browserCaptureOutcomeSink?(outcome)
+        return .browserCaptureJob(version: 1, requestId: outcome.requestId, jobID: nil)
+      }
+      if let request = try BrowserCaptureJobRequest.decode(data) {
+        // 没有 sink 说明这台机器没接入代抓（例如只读/存储不可用）：如实回「没有任务」，
+        // 扩展就保持原行为，不抓用户自己打开的页面。
+        let jobID = await browserCaptureJobSink?(request)
+        return .browserCaptureJob(version: 1, requestId: request.requestId, jobID: jobID)
       }
       if let lookup = try XBookmarksLookupRequest.decode(data) {
         // 勾选前查重：只读历史，不入队。按推文 id 认，不拿 /i/status 整串去比。
@@ -224,6 +260,33 @@ struct CaptureReceiver: Sendable {
           acceptedCount: accepted
         )
       }
+      if let request = try LiveRecordingRequest.decode(data) {
+        guard let liveRecordingSink else {
+          return .error(appError(
+            requestID: request.requestId,
+            category: "protocol",
+            code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
+            retryable: false,
+            action: "upgrade_app"
+          ))
+        }
+        switch await liveRecordingSink(request) {
+        case let .accepted(recordingID):
+          return .liveRecordingAccepted(
+            version: 1,
+            requestId: request.requestId,
+            recordingID: recordingID
+          )
+        case let .rejected(code):
+          return .error(appError(
+            requestID: request.requestId,
+            category: "storage",
+            code: code,
+            retryable: code == "LIVE_FFMPEG_NOT_FOUND" ? false : true,
+            action: "retry"
+          ))
+        }
+      }
     } catch let issue as CaptureValidationError {
       return protocolError(from: data, issue: issue)
     } catch {
@@ -240,6 +303,23 @@ struct CaptureReceiver: Sendable {
     }
 
     let requestID = wire.requestId
+    // 浏览器代抓：扩展带回 job id，说明这条内容是为了某个排队项才抓的。
+    // 认领成功就把内容交给等待中的抓取流程（入库、下载、转写都还按原链路走），
+    // 不再在这里入库——否则同一条会存两遍。
+    if let jobID = CaptureWireEnvelope.captureJobID(in: data) {
+      // 带 job id 的内容只属于那次代抓：认领成功就交回排队流程；job 已作废就丢弃，
+      // 绝不落成一次普通抓取——否则同一篇会被存第二遍。
+      if let delivery = browserCaptureDeliverySink, await delivery(jobID, wire) {
+        return .taskAccepted(version: 1, requestId: requestID, characterCount: wire.characterCount)
+      }
+      return .error(appError(
+        requestID: requestID,
+        category: "protocol",
+        code: "CAPTURE_JOB_EXPIRED",
+        retryable: false,
+        action: "none"
+      ))
+    }
     do {
       let ingestor = CaptureIngestService(
         history: history,

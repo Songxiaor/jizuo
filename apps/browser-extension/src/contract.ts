@@ -1,4 +1,6 @@
 import validateWireSchema, { type SchemaValidationError } from "./generated/capture-validator.mjs";
+import validateLiveRecordingSchema from "./generated/live-recording-validator.mjs";
+import type { LiveQualityKey, LiveVariant } from "./content/douyin-live";
 
 export const MAX_CAPTURE_TEXT_SCALARS = 2_000_000;
 /** Native Messaging 硬上限是 4 MiB；字数校验按 UTF-8 字节，不按 JS 字符串长度。 */
@@ -62,6 +64,8 @@ export type MediaDescriptor = {
 export type CaptureEnvelopeV1 = {
   version: 1; requestId: string; createdAt: string; idempotencyKey?: string;
   requestedAction?: CaptureRequestedAction;
+  /** 浏览器代抓任务编号：App 打开标签时登记，扩展把抓到的内容按它送回。 */
+  captureJobID?: string;
   source: { kind: "browser_capture"; url: string; title: string | null; platform: CapturePlatform; faviconURL?: string };
   capture: { method: "rendered_dom" | "selection"; text: string; characterCount: number; completeness: "full_article" | "visible_only" | "selection_only" | "unknown"; capturedAt: string };
   evidence: { sourceLabel: string; usedCookie: false };
@@ -71,6 +75,7 @@ export type CaptureEnvelopeV1 = {
 export type CaptureEnvelopeV2 = {
   version: 2; requestId: string; createdAt: string; idempotencyKey?: string;
   requestedAction?: CaptureRequestedAction;
+  captureJobID?: string;
   source: CaptureEnvelopeV1["source"];
   capture: CaptureEnvelopeV1["capture"];
   evidence: { sourceLabel: string; usedCookie: boolean };
@@ -89,8 +94,32 @@ export type AppError = {
 };
 export type NativeResponse =
   | { kind: "taskAccepted"; version: 1; requestId: string; characterCount: number }
+  | { kind: "liveRecordingAccepted"; version: 1; requestId: string; recordingID: string }
   | { kind: "openAppAccepted"; version: 1; requestId: string; supportedVersions: number[] }
   | { kind: "error"; error: AppError };
+
+/**
+ * 直播录制请求。`variants[].url` 是限时签名地址，只在本进程内存里交接，
+ * 不落盘、不记日志、不进导出。
+ */
+export type LiveRecordingMessage = {
+  kind: "liveRecording";
+  version: 1;
+  requestId: string;
+  createdAt: string;
+  platform: "douyin" | "xiaohongshu";
+  pageURL: string;
+  roomID?: string;
+  anchorName?: string | null;
+  /** 平台的主播 id（抖音 sec_uid / 小红书 hostId），只用于在 App 里归到已有博主。 */
+  anchorID?: string | null;
+  anchorAvatarURL?: string | null;
+  anchorProfileURL?: string | null;
+  title?: string | null;
+  quality: LiveQualityKey;
+  variants: LiveVariant[];
+  requestHeaders?: { referer?: string; userAgent?: string };
+};
 
 const categories = new Set<AppError["category"]>(["protocol", "permission", "network", "extraction", "storage", "unknown"]);
 const actions = new Set<AppError["action"]>(["retry", "open_app", "open_install_guide", "open_in_browser", "grant_permission", "upgrade_app", "none"]);
@@ -123,6 +152,13 @@ export function isWireNativeResponse(value: unknown): value is NativeResponse {
       && candidate.supportedVersions.length > 0
       && candidate.supportedVersions.every((value) => Number.isInteger(value) && value >= 1);
   }
+  if (candidate.kind === "liveRecordingAccepted") {
+    return candidate.version === 1
+      && typeof candidate.requestId === "string"
+      && candidate.requestId.length > 0
+      && typeof candidate.recordingID === "string"
+      && /^[A-Za-z0-9-]{8,64}$/u.test(candidate.recordingID);
+  }
   if (candidate.kind !== "error" || !candidate.error || typeof candidate.error !== "object") return false;
   const error = candidate.error as Record<string, unknown>;
   return error.version === 1
@@ -145,7 +181,50 @@ export function normalizeNativeResponse(value: unknown, expectedRequestId: strin
   if (value.kind === "openAppAccepted" && value.requestId !== expectedRequestId) {
     return { kind: "error", error: makeAppError(expectedRequestId, "protocol", "NATIVE_RESPONSE_INVALID", false, "retry") };
   }
+  if (value.kind === "liveRecordingAccepted" && value.requestId !== expectedRequestId) {
+    return { kind: "error", error: makeAppError(expectedRequestId, "protocol", "NATIVE_RESPONSE_INVALID", false, "retry") };
+  }
   return value;
+}
+
+const LIVE_HOSTS: Record<LiveRecordingMessage["platform"], (url: URL) => boolean> = {
+  douyin: (url) => url.hostname.toLowerCase() === "live.douyin.com",
+  xiaohongshu: (url) => /(^|\.)xiaohongshu\.com$/u.test(url.hostname.toLowerCase()),
+};
+
+/**
+ * 返回 null 表示可以发。错误码沿用合同里的那几个，扩展只按码给一句话。
+ * 原画必须带 HLS：原画 FLV 是抖音私有 H.265 封装，ffmpeg 只能读出音频。
+ */
+export function validateLiveRecording(value: unknown): string | null {
+  if (!validateLiveRecordingSchema(value)) return "CAPTURE_SCHEMA_INVALID";
+  const message = value as LiveRecordingMessage;
+  let page: URL;
+  try {
+    page = new URL(message.pageURL);
+  } catch {
+    return "CAPTURE_URL_UNSUPPORTED";
+  }
+  if (!LIVE_HOSTS[message.platform](page) || page.protocol !== "https:") return "CAPTURE_URL_UNSUPPORTED";
+  if (message.variants.length === 0) return "CAPTURE_CONTENT_EMPTY";
+  for (const variant of message.variants) {
+    let url: URL;
+    try {
+      url = new URL(variant.url);
+    } catch {
+      return "CAPTURE_SCHEMA_INVALID";
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "CAPTURE_SCHEMA_INVALID";
+    const expected = variant.container === "hls" ? ".m3u8" : ".flv";
+    if (!url.pathname.toLowerCase().endsWith(expected)) return "CAPTURE_SCHEMA_INVALID";
+  }
+  // 抖音原画 FLV 是私有 H.265 封装，只能走 HLS；小红书原画是 H.264 FLV，可直接录。
+  if (message.platform === "douyin"
+      && message.quality === "origin"
+      && !message.variants.some((variant) => variant.quality === "origin" && variant.container === "hls")) {
+    return "LIVE_ORIGIN_UNPLAYABLE";
+  }
+  return null;
 }
 
 export function validateCapture(value: unknown, declaredSchema?: string): string | null {

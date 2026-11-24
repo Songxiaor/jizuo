@@ -111,6 +111,21 @@ final class XiaohongshuLinkClassificationTests: XCTestCase {
     await expect(.shareLinkExpired, url: URL(string: short)!, fetcher: fetcher)
   }
 
+  // MARK: - 空访问码等于没有访问码
+
+  /// 自动化送来的链接常见 `?xsec_token=`：参数在、值是空的。它和裸链接一样读不到笔记，
+  /// 不能因为「有这个名字」就当成带码链接去走「过期」分支。
+  func testEmptyXsecTokenIsTreatedAsMissingToken() async {
+    let emptyToken = URL(string: "https://www.xiaohongshu.com/explore/\(noteID)?xsec_token=&xsec_source=pc_feed")!
+    XCTAssertFalse(XiaohongshuURL.hasXsecToken(emptyToken))
+    XCTAssertTrue(XiaohongshuURL.isBareNoteLink(emptyToken))
+    await expect(
+      .shareLinkMissingToken,
+      url: emptyToken,
+      fetcher: ClassificationStaticFetcher(resultURL: expiredPageURL, html: expiredHTML)
+    )
+  }
+
   // MARK: - 裸链接识别（MCP 提前警告就靠它）
 
   func testBareNoteLinkRecognitionCoversDiscoveryAndExcludesShortLinks() {

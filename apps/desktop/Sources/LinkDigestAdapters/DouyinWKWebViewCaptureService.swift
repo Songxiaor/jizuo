@@ -2,6 +2,29 @@ import Foundation
 import LinkDigestCore
 import WebKit
 
+/// 抖音渲染兜底的尝试策略。
+///
+/// 实测（同款 UA + 同一段提取脚本，匿名）：一条视频页要 12–15 秒才渲染出可保存的内容。
+/// 原来的 20 秒窗口在白天刚够；凌晨自动化时段汲作在后台，App Nap 会把页面加载拖慢，
+/// 差一点就永远失败。这里放宽到 35 秒，并且截止时还没有可保存页面就换一个新会话再试一次
+/// ——后台被降速时，第二次多半落在新预算里。
+public enum DouyinCaptureRetryPolicy {
+  public static let maximumAttempts = 2
+  public static let videoTimeout: Duration = .seconds(35)
+  public static let noteTimeout: Duration = .seconds(35)
+
+  public static func timeout(for url: URL) -> Duration {
+    if DouyinURL.awemeID(from: url) != nil, !DouyinURL.isNotePath(url) { return videoTimeout }
+    return noteTimeout
+  }
+
+  /// 只有「页面没在时限内加载出来」值得自动重试：跳到别的站、要验证、被取消，
+  /// 再开一次会话结果一样，重试只会把失败时间拖长一倍。
+  public static func shouldRetry(after error: ManualLinkError, attempt: Int) -> Bool {
+    attempt < maximumAttempts && error == .timedOut
+  }
+}
+
 /// Rendered fallback for a manually submitted Douyin URL.
 ///
 /// 公开 HTML 先走适配器。图文桌面页往往只是空 SPA，这里用设置里同一份
@@ -24,26 +47,37 @@ public final class DouyinWKWebViewCaptureService: DouyinWebCapturing {
 
   public func capture(url: URL) async throws -> CapturedDocument {
     try DouyinWebCapturePolicy.validateNavigationURL(url)
-    let session = DouyinWKWebViewCaptureSession(
-      initialURL: url,
-      dataStore: dataStore,
-      userAgent: userAgent,
-      now: now
-    )
-    return try await withTaskCancellationHandler {
-      try await session.run()
-    } onCancel: {
-      Task { @MainActor in session.cancel() }
+    var attempt = 0
+    while true {
+      attempt += 1
+      let session = DouyinWKWebViewCaptureSession(
+        initialURL: url,
+        dataStore: dataStore,
+        userAgent: userAgent,
+        now: now
+      )
+      do {
+        return try await withTaskCancellationHandler {
+          try await session.run()
+        } onCancel: {
+          Task { @MainActor in session.cancel() }
+        }
+      } catch let error as ManualLinkError {
+        guard !Task.isCancelled,
+              DouyinCaptureRetryPolicy.shouldRetry(after: error, attempt: attempt)
+        else { throw error }
+        AppLog.notice(.capture, "douyin_capture_retry", [
+          "attempt": String(attempt),
+          "code": "timedOut",
+          "timeout_s": String(DouyinCaptureRetryPolicy.timeout(for: url).components.seconds),
+        ])
+      }
     }
   }
 }
 
 @MainActor
 private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUIDelegate {
-  // Video fallback stays under the playback-refresh budget. Note share
-  // pages need longer for the mobile SPA to hydrate gallery images.
-  private static let videoTimeout: Duration = .seconds(20)
-  private static let noteTimeout: Duration = .seconds(35)
   private static let pollInterval: Duration = .milliseconds(250)
 
   /// Installed before page scripts. It observes only responses already loaded
@@ -73,8 +107,11 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
         if (!id || value.length > 8000000) return;
         const hit = value.indexOf(id);
         if (hit < 0) return;
-        const lower = Math.max(0, hit - 119000);
-        const upper = Math.min(value.length, hit + id.length + 119000);
+        // 长视频的详情响应里清晰度档位多，常有十几万字；原来只截 id 前后各 11.9 万字，
+        // 会把 JSON 尾巴截掉、解析失败，退回播放器里下不了的临时地址。整段放得下就整段留。
+        const whole = value.length <= 900000;
+        const lower = whole ? 0 : Math.max(0, hit - 450000);
+        const upper = whole ? value.length : Math.min(value.length, hit + id.length + 450000);
         const snippet = value.slice(lower, upper);
         if (/play_addr|playAddr|playApi|url_list|urlList|aweme_images|image_post|tplv-dy-aweme-images/.test(snippet)) {
           window.__linkdigestCapturedAwemeState = snippet;
@@ -128,6 +165,22 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       .replace(/[ \t\r\n]+/g, ' ')
       .trim();
     const href = String(document.location.href || '');
+    // 诊断用：截止时要知道页面停在哪一步。只取 host 与路径形状（长数字换成 {id}），
+    // 标题只回答「空不空」，正文一个字都不带出页面。
+    const probe = () => {
+      let host = '';
+      let path = '';
+      try {
+        const current = new URL(href);
+        host = current.hostname.toLowerCase();
+        path = current.pathname;
+      } catch (_) {}
+      return {
+        pageHost: host,
+        pagePathShape: path.replace(/[0-9]{4,}/g, '{id}'),
+        titleEmpty: !normalize(document.title)
+      };
+    };
     let awemeID = '';
     try {
       const url = new URL(href);
@@ -140,7 +193,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
         awemeID = match && match[1] ? match[1] : '';
       }
     } catch (_) {}
-    if (!awemeID) return { status: 'loading' };
+    if (!awemeID) return { status: 'loading', ...probe() };
     let pathLooksLikeNote = false;
     try { pathLooksLikeNote = /\/(?:share\/)?note\//.test(new URL(href).pathname); } catch (_) {}
 
@@ -218,11 +271,11 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     const verification = verificationTitle
       || /请完成安全验证|滑动验证|异常访问|验证码|登录后继续/.test(bodyText);
     if (verificationTitle) {
-      return { status: 'verification' };
+      return { status: 'verification', ...probe() };
     }
     const placeholderTitle = !title || title === '抖音';
     if (placeholderTitle && !pathLooksLikeNote) {
-      return { status: verification ? 'verification' : 'loading' };
+      return { status: verification ? 'verification' : 'loading', ...probe() };
     }
 
     const descriptionNode = document.querySelector(
@@ -361,8 +414,9 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       const value = String(raw || '');
       const hit = value.indexOf(awemeID);
       if (hit < 0) return '';
-      const lower = Math.max(0, hit - 119000);
-      const upper = Math.min(value.length, hit + awemeID.length + 119000);
+      const whole = value.length <= 900000;
+      const lower = whole ? 0 : Math.max(0, hit - 450000);
+      const upper = whole ? value.length : Math.min(value.length, hit + awemeID.length + 450000);
       const snippet = value.slice(lower, upper);
       return /play_addr|playAddr|playApi|url_list|urlList|aweme_images|image_post|tplv-dy-aweme-images/.test(snippet) ? snippet : '';
     };
@@ -428,7 +482,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       }
     }
     if (placeholderTitle && imageURLs.length === 0) {
-      return { status: verification ? 'verification' : 'loading' };
+      return { status: verification ? 'verification' : 'loading', ...probe() };
     }
     const resolvedTitle = placeholderTitle ? (imageURLs.length > 0 ? '抖音图文' : title) : title;
     const isImagePost = imageURLs.length > 0;
@@ -507,6 +561,21 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
   private var generation: UInt64 = 0
   private var latestReadyPage: DouyinRenderedPage?
   private var isFinished = false
+  private var startedAt: Date?
+  private var navigationCount = 0
+  private var pollCount = 0
+  private var verificationSeen = false
+  private var lastProbe: PageProbe?
+  /// 主框被跳到别的站点时记下它，诊断里才有「跳到哪」而不是只有「失败」。
+  private var blockedHost: String?
+
+  /// 截止时用得上的最后状态。只放「卡在哪」的事实：host、路径形状、标题是否为空。
+  private struct PageProbe {
+    let host: String
+    let pathShape: String
+    let titleEmpty: Bool?
+    let status: String
+  }
 
   init(
     initialURL: URL,
@@ -548,8 +617,9 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
         return
       }
       self.continuation = continuation
+      startedAt = now()
       timeoutTask = Task { @MainActor [weak self] in
-        try? await Task.sleep(for: self?.captureTimeout ?? Self.noteTimeout)
+        try? await Task.sleep(for: self?.captureTimeout ?? DouyinCaptureRetryPolicy.noteTimeout)
         guard let self, !Task.isCancelled else { return }
         self.finishAtDeadline()
       }
@@ -564,10 +634,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
   }
 
   private var captureTimeout: Duration {
-    if DouyinURL.awemeID(from: initialURL) != nil, !DouyinURL.isNotePath(initialURL) {
-      return Self.videoTimeout
-    }
-    return Self.noteTimeout
+    DouyinCaptureRetryPolicy.timeout(for: initialURL)
   }
 
   func cancel() {
@@ -623,7 +690,15 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
           let status = dictionary["status"] as? String
     else { throw ManualLinkError.invalidPageResult }
 
+    pollCount += 1
+    lastProbe = PageProbe(
+      host: dictionary["pageHost"] as? String ?? AppLog.host(currentURL),
+      pathShape: dictionary["pagePathShape"] as? String ?? Self.pathShape(currentURL),
+      titleEmpty: dictionary["titleEmpty"] as? Bool,
+      status: status
+    )
     if status == "verification" {
+      verificationSeen = true
       throw ManualLinkError.verificationRequired
     }
     guard status == "ready" else { return .notReady }
@@ -738,8 +813,11 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
 
   private func finishAtDeadline() {
     guard !isFinished else { return }
+    recordDeadlineDiagnostic()
     guard let page = latestReadyPage else {
-      finish(.failure(ManualLinkError.extensionCaptureRequired))
+      // 整段时限里都没渲染出可保存内容：这是「页面没加载出来」，不是「要开扩展」。
+      // 报成 extensionCaptureRequired 既误导用户，也让自动化停在这里不再重试。
+      finish(.failure(ManualLinkError.timedOut))
       return
     }
     do {
@@ -755,6 +833,44 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     } catch {
       finish(.failure(ManualLinkError.invalidPageResult))
     }
+  }
+
+  /// 截止时的一条本地诊断（只进 os_log / 诊断导出）：
+  /// 页面停在哪、标题是不是空的、有没有出现验证页、花了多久。
+  /// 不写正文、查询串、cookie；路径里的长数字换成 `{id}`。
+  private func recordDeadlineDiagnostic() {
+    let elapsed = startedAt.map { now().timeIntervalSince($0) } ?? 0
+    let titleEmpty: String
+    switch lastProbe?.titleEmpty {
+    case .some(true): titleEmpty = "yes"
+    case .some(false): titleEmpty = "no"
+    case .none: titleEmpty = "unknown"
+    }
+    var fields = [
+      "kind": DouyinURL.isNotePath(initialURL) ? "note" : "video",
+      "elapsed_s": String(format: "%.1f", elapsed),
+      "timeout_s": String(DouyinCaptureRetryPolicy.timeout(for: initialURL).components.seconds),
+      "polls": String(pollCount),
+      "navigations": String(navigationCount),
+      "verification": verificationSeen ? "yes" : "no",
+      "ready_page": latestReadyPage == nil ? "no" : "yes",
+      "last_status": lastProbe?.status ?? "none",
+      "last_host": AppLog.host(lastProbe?.host ?? webView?.url?.host),
+      "last_path": lastProbe?.pathShape ?? webView.map { Self.pathShape($0.url) } ?? "none",
+      "title_empty": titleEmpty,
+    ]
+    if let blockedHost { fields["blocked_host"] = AppLog.host(blockedHost) }
+    AppLog.notice(.capture, "douyin_capture_deadline", fields)
+  }
+
+  /// 路径形状：保留路由，长数字换成 `{id}`，作品编号不进日志。
+  private static func pathShape(_ url: URL?) -> String {
+    guard let url, !url.path.isEmpty else { return "none" }
+    return url.path.replacingOccurrences(
+      of: #"[0-9]{4,}"#,
+      with: "{id}",
+      options: .regularExpression
+    )
   }
 
   private func makeDocument(from page: DouyinRenderedPage) throws -> CapturedDocument {
@@ -817,6 +933,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
 
   func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
     guard !isFinished else { return }
+    navigationCount += 1
     generation &+= 1
     latestReadyPage = nil
     pollingTask?.cancel()
@@ -858,7 +975,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       decisionHandler(.cancel)
     case .failCapture:
       decisionHandler(.cancel)
-      finish(.failure(ManualLinkError.extensionCaptureRequired))
+      finishAtBlockedNavigation(navigationAction.request.url)
     }
   }
 
@@ -877,8 +994,19 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       decisionHandler(.cancel)
     case .failCapture:
       decisionHandler(.cancel)
-      finish(.failure(ManualLinkError.extensionCaptureRequired))
+      finishAtBlockedNavigation(navigationResponse.response.url)
     }
+  }
+
+  /// 主框被拦下时收尾：记下跳去的网站，并按「跳到别的站」还是「页面没认出来」给准确错误。
+  private func finishAtBlockedNavigation(_ url: URL?) {
+    guard !isFinished else { return }
+    blockedHost = url?.host
+    AppLog.notice(.capture, "douyin_capture_blocked", [
+      "host": AppLog.host(url?.host),
+      "path": Self.pathShape(url),
+    ])
+    finish(.failure(DouyinWebCapturePolicy.navigationFailure(url: url)))
   }
 
   func webView(

@@ -204,6 +204,27 @@ enum RemoteMarkdownImageStagingPolicy {
   }
 }
 
+/// 抓取队列运行期间的系统活动声明。
+///
+/// 抓取在后台（凌晨自动化、屏幕熄灭、窗口不在前台）时，App Nap 会把进程降到低优先级，
+/// WKWebView 的页面加载随之变慢：20 秒的抖音渲染兜底经常就在这个时段差一点没渲染完。
+/// 队列有活时声明一次 `.userInitiated`（含阻止空闲睡眠），队列清空立即释放，
+/// 不会让一个空队列永久按住系统不休眠。
+struct CaptureQueueActivity {
+  let begin: @MainActor () -> NSObjectProtocol
+  let end: @MainActor (NSObjectProtocol) -> Void
+
+  static let live = CaptureQueueActivity(
+    begin: {
+      ProcessInfo.processInfo.beginActivity(
+        options: [.userInitiated],
+        reason: "Saving queued links"
+      )
+    },
+    end: { ProcessInfo.processInfo.endActivity($0) }
+  )
+}
+
 @MainActor
 final class ManualLinkViewModel: ObservableObject {
   @Published var input = ""
@@ -261,6 +282,8 @@ final class ManualLinkViewModel: ObservableObject {
     var failureCode: String?
     /// 原样重试不会有不同结果（缺访问码、分享链接已失效）：界面不给「重试」，给「换链接」。
     var needsNewLink = false
+    /// 这一条正在等浏览器扩展代抓（不是汲作自己在读）。MCP 据此说「正在用浏览器抓取」。
+    var isBrowserRelaying = false
 
     init(
       id: UUID,
@@ -296,6 +319,9 @@ final class ManualLinkViewModel: ObservableObject {
   /// 批量/AI 加入的视频下载落地后调用（只传任务编号）。是否自动转写由接收方按用户设置决定。
   var onBatchVideoDownloaded: (@MainActor (TaskID) -> Void)?
 
+  /// 浏览器代抓。为 nil 时（测试/未接线）抓取失败就是失败，行为与以前一致。
+  var browserRelay: (any BrowserCaptureRelaying)?
+
   private var allowsDuplicateSubmit = false
   private var queueWorker: Task<Void, Never>?
   private var activeCaptureID: UUID?
@@ -314,6 +340,7 @@ final class ManualLinkViewModel: ObservableObject {
   private let makeRenderedCapture: (@MainActor () -> any RenderedPageCapturing)?
   private let onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)?
   private let profileImportJournal: (any ProfileImportBatchJournalStoring)?
+  private let captureQueueActivity: CaptureQueueActivity
   /// 笔记写作窗口复用同一个 ingestor：两条路都是「往库里加一条记录」，
   /// 没有理由维护两套落库逻辑。
   private(set) var ingestor: CaptureIngestService?
@@ -338,6 +365,7 @@ final class ManualLinkViewModel: ObservableObject {
     makeRenderedCapture: (@MainActor () -> any RenderedPageCapturing)? = nil,
     onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)? = nil,
     profileImportJournal: (any ProfileImportBatchJournalStoring)? = nil,
+    captureQueueActivity: CaptureQueueActivity = .live,
     userDefaults: UserDefaults = .standard
   ) {
     self.captureService = captureService
@@ -350,6 +378,7 @@ final class ManualLinkViewModel: ObservableObject {
     self.makeRenderedCapture = makeRenderedCapture
     self.onMediaCaptured = onMediaCaptured
     self.profileImportJournal = profileImportJournal
+    self.captureQueueActivity = captureQueueActivity
     self.defaults = userDefaults
     profileImportBatches = (try? profileImportJournal?.load()) ?? []
   }
@@ -760,22 +789,67 @@ final class ManualLinkViewModel: ObservableObject {
       if let id = savedID, (try? history?.detail(taskID: id)) != nil {
         results.append(["url": value, "status": "already_saved", "task_id": id.rawValue]); continue
       }
-      if pendingCaptures.contains(where: { $0.urlString == value }) {
-        results.append(["url": value, "status": "already_queued"]); continue
+      if let index = pendingCaptureIndex(matching: value) {
+        let pending = pendingCaptures[index]
+        guard case let .failed(reason) = pending.phase else {
+          results.append(["url": value, "status": "already_queued"]); continue
+        }
+        // 原样重试不会有不同结果的失败（缺访问码、分享链接已失效）：不重排队，
+        // 把真实错误码交回调用方，让它换链接，而不是在同一个链接上反复空转。
+        guard !pending.needsNewLink else {
+          var entry = [
+            "url": value,
+            "status": "failed",
+            "error_code": pending.failureCode ?? "unknown",
+            "needs_new_link": "true",
+            "message": reason,
+          ]
+          appendAccessTokenHint(&entry, for: value)
+          results.append(entry)
+          continue
+        }
+        // 其余失败（超时、网络、被拦）在 MCP 重新提交时等同用户在界面上点「重试」：
+        // 复用原排队项重新跑。以前这里一律返回 already_queued，一条失败条目就把
+        // 同一条链接永久堵死，每天重送也永远存不进来。
+        pendingCaptures[index].phase = .queued
+        pendingCaptures[index].failureCode = nil
+        pendingCaptures[index].needsNewLink = false
+        if let batchID = pending.profileImportBatchID,
+           let location = profileImportItemLocation(batchID: batchID, itemID: pending.id) {
+          profileImportBatches[location.batch].items[location.item].phase = .queued
+          persistProfileImportBatches()
+        }
+        var entry = ["url": value, "status": "queued", "retried": "true"]
+        appendAccessTokenHint(&entry, for: value)
+        results.append(entry)
+        continue
       }
       pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued,
         requestedAction: .save, downloadsVideo: downloadsVideo, suppressesAutomaticEnrichment: true))
       var entry = ["url": value, "status": "queued"]
-      // 小红书裸链接（没有 xsec_token）未登录时多半打不开。登录态下能不能抓没验证过，
-      // 所以照常排队，但提前告诉调用方：失败时不要原样重试，改用博主页发现 + 保存。
-      if let url = URL(string: value), XiaohongshuURL.isBareNoteLink(url) {
-        entry["warning"] = "missing_access_token"
-        entry["hint"] = "这个小红书链接没有访问码（xsec_token），很可能保存失败。请改用 jizuo_discover_creator 找到博主主页作品再 jizuo_save_works，或让用户复制 App 里的完整分享链接。"
-      }
+      appendAccessTokenHint(&entry, for: value)
       results.append(entry)
     }
     kickCaptureQueue()
     return results
+  }
+
+  /// 小红书裸链接（没有 xsec_token，或 `xsec_token=` 是空值）未登录时多半打不开。
+  /// 登录态下能不能抓没验证过，所以照常排队，但提前告诉调用方：失败时不要原样重试，
+  /// 改用博主页发现 + 保存。
+  private func appendAccessTokenHint(_ entry: inout [String: String], for value: String) {
+    guard let url = URL(string: value), XiaohongshuURL.isBareNoteLink(url) else { return }
+    entry["warning"] = "missing_access_token"
+    entry["hint"] = "这个小红书链接没有访问码（xsec_token），很可能保存失败。请改用 jizuo_discover_creator 找到博主主页作品再 jizuo_save_works，或让用户复制 App 里的完整分享链接。"
+  }
+
+  /// 同一链接的排队项：原字符串相同，或规范化后相同（MCP 常给带参数/不带参数的变体）。
+  private func pendingCaptureIndex(matching value: String) -> Int? {
+    let canonical = try? CanonicalURL(value)
+    return pendingCaptures.firstIndex { pending in
+      pending.urlString == value
+        || (canonical != nil && (try? CanonicalURL(pending.urlString)) == canonical)
+    }
   }
 
   func confirmDuplicateSubmit() {
@@ -886,7 +960,8 @@ final class ManualLinkViewModel: ObservableObject {
       pending.profileImportSeed?.canonicalURL
         ?? URL(string: pending.urlString).flatMap(ProfileImportPlatform.canonicalWork)
     })
-    queuedURLs.formUnion(profileImportBatches.flatMap { $0.items.map(\.seed.canonicalURL) })
+    // 只有还活着的卡片挡住重复提交；失败/已取消/中断的卡片要能被重新提交放回队列。
+    queuedURLs.formUnion(profileImportBatches.flatMap { $0.items.filter { !$0.phase.canRetry }.map(\.seed.canonicalURL) })
     let batchID = UUID()
     var items: [ProfileImportBatchItem] = []
     var pending: [PendingCapture] = []
@@ -908,6 +983,17 @@ final class ManualLinkViewModel: ObservableObject {
          let value = try? CanonicalURL(canonical),
          (try? history.containsCanonicalURL(value)) == true {
         skipped += 1
+        continue
+      }
+      // 同一作品已经有失败/取消的卡片：重新提交等于在卡片上点「重试」，复用那张卡，
+      // 不再建一张新的失败卡（旧行为会永久跳过，自动化每天重送也存不进来）。
+      if let location = retryableProfileImportLocation(canonicalURL: canonical) {
+        enqueueProfileImportRetry(
+          batchIndex: location.batch,
+          itemIndex: location.item,
+          startsWorker: false
+        )
+        queued += 1
         continue
       }
       let captureURL: String = {
@@ -958,9 +1044,24 @@ final class ManualLinkViewModel: ObservableObject {
       ), at: 0)
       pendingCaptures.append(contentsOf: pending)
       persistProfileImportBatches()
-      kickCaptureQueue()
     }
+    if queued > 0 { kickCaptureQueue() }
     return .init(queued: queued, skipped: skipped)
+  }
+
+  /// 批次里同一作品的可重试卡片（失败、已取消、中断）。
+  /// 因缺访问码/链接失效而失败的卡不复用：旧卡里的抓取链接原样重跑还是失败，
+  /// 这次重新提交带来的是新发现的链接，应建新卡用新链接。
+  private func retryableProfileImportLocation(canonicalURL: String) -> (batch: Int, item: Int)? {
+    for batchIndex in profileImportBatches.indices {
+      if let itemIndex = profileImportBatches[batchIndex].items.firstIndex(where: {
+        $0.seed.canonicalURL == canonicalURL && $0.phase.canRetry
+          && !profileImportItemsNeedingNewLink.contains($0.id)
+      }) {
+        return (batchIndex, itemIndex)
+      }
+    }
+    return nil
   }
 
   func ensureProfileCreator(authorID: String, profileURL: String, displayName: String?) -> CreatorID? {
@@ -974,6 +1075,24 @@ final class ManualLinkViewModel: ObservableObject {
     displayName: String?,
     avatarURL: String? = nil,
     platform: String = "douyin.com"
+  ) -> CreatorID? {
+    ensureCreator(
+      platform: platform,
+      authorID: authorID,
+      profileURL: profileURL,
+      displayName: displayName,
+      avatarURL: avatarURL
+    )
+  }
+
+  /// 跨平台共用的博主落库入口：同一平台 + 主播 id 已有博主时复用那条，
+  /// 这次给的名字和头像会更新它的资料。
+  func ensureCreator(
+    platform: String,
+    authorID: String,
+    profileURL: String,
+    displayName: String?,
+    avatarURL: String? = nil
   ) -> CreatorID? {
     guard let history,
           let identity = CreatorIdentity(platform: platform, authorID: authorID),
@@ -1302,8 +1421,14 @@ final class ManualLinkViewModel: ObservableObject {
   /// 串行处理：微信捕获走同一个 WKWebView 服务，不做并发。
   private func kickCaptureQueue() {
     guard queueWorker == nil else { return }
+    // 队列存活期间声明一次活动（阻止 App Nap 把页面加载拖慢），队列空了立刻释放。
+    let activity = captureQueueActivity
+    let handle = activity.begin()
     queueWorker = Task { [weak self] in
-      defer { self?.queueWorker = nil }
+      defer {
+        self?.queueWorker = nil
+        activity.end(handle)
+      }
       while let self, let next = self.pendingCaptures.first(where: { $0.phase == .queued }) {
         self.updatePendingPhase(next.id, .fetching)
         self.activeCaptureID = next.id
@@ -1330,6 +1455,17 @@ final class ManualLinkViewModel: ObservableObject {
             self.persistProfileImportBatches()
           }
           self.pendingCaptures.removeAll { $0.id == next.id }
+        } catch let failure as BrowserCaptureRelayFailure {
+          self.recordCaptureFailure(urlString: next.urlString, code: failure.code)
+          // 页面在浏览器里落地成平台错误页时，真正该告诉调用方的是那次抓取的错误码
+          // （例如小红书缺访问码），这样 needs_new_link 和重试策略才是对的。
+          let underlying = failure.underlyingCaptureError
+          self.updatePendingPhase(next.id, .failed(failure.userMessage))
+          if let index = self.pendingCaptures.firstIndex(where: { $0.id == next.id }) {
+            self.pendingCaptures[index].failureCode = underlying.map { String(describing: $0) } ?? failure.code
+            self.pendingCaptures[index].needsNewLink = underlying?.needsDifferentLink ?? false
+            self.pendingCaptures[index].isBrowserRelaying = false
+          }
         } catch let error as ManualLinkError {
           if error != .cancelled { self.recordCaptureFailure(urlString: next.urlString, code: String(describing: error)) }
           self.updatePendingPhase(next.id, .failed(
@@ -1381,44 +1517,36 @@ final class ManualLinkViewModel: ObservableObject {
     guard let ingestor else { throw ManualLinkError.network }
     var capturedDocument: CapturedDocument?
     var transcriptNotice: String?
+    var browserRelayed = false
+    var relayedEnvelope: CaptureWireEnvelope?
     do {
-      let document: CapturedDocument?
-      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let xResolver, let tweetID = XTweetResolver.tweetID(from: trimmed) {
-        // X 直抓只有 SPA 外壳；改用公开端点取回整条推文（正文/图片/视频直链）。
-        guard let tweet = await xResolver.resolveTweet(id: tweetID) else {
-          throw ManualLinkError.network
+      let document: CapturedDocument
+      let notice: String?
+      do {
+        // 调试开关：默认空数组，命令行写入命中的 host 时直接走代抓，用来验真实链路。
+        if browserRelay != nil, BrowserCaptureDebugSwitch(defaults: defaults).forcesRelay(value) {
+          throw ManualLinkError.extensionCaptureRequired
         }
-        document = tweet.capturedDocument(createdAt: ISO8601DateFormatter().string(from: Date()))
-      } else if let url = URL(string: trimmed),
-                WeChatWebCapturePolicy.isCandidate(url) {
-        document = try await weChatCapture.capture(url: url)
-      } else if let url = URL(string: trimmed),
-                DouyinURL.matches(url),
-                let douyinCapture {
+        (document, notice) = try await readCapturedDocument(value: value)
+      } catch let error as ManualLinkError
+        where browserRelay != nil && BrowserCaptureRelayPolicy.shouldRelay(error) {
+        // 汲作自己读不到（要登录、被验证页挡住、超时、只拿到壳）：不再让用户手动来，
+        // 换成在用户浏览器里后台开一个标签，由扩展把这一页抓回来。
+        setBrowserRelayActive(pendingID, true)
+        let relayed: RelayedCapture
         do {
-          document = try await captureService.capture(urlString: value)
-        } catch ManualLinkError.extensionCaptureRequired {
-          // Public Douyin HTML is often only a client-rendered shell. Keep the
-          // public adapter first, then fall back to the App's isolated WebKit
-          // session instead of saving shell chrome or making the user repeat
-          // the same URL through the extension.
-          document = try await douyinCapture.capture(url: url)
+          relayed = try await browserRelay!.capture(urlString: value, pendingID: pendingID)
+        } catch {
+          setBrowserRelayActive(pendingID, false)
+          throw error
         }
-      } else if let url = URL(string: trimmed),
-                RenderedPageExtraction.isYouTubeWatch(url),
-                let makeRenderedCapture {
-        let result = try await youTubeCapture(url: url, value: value, makeRendered: makeRenderedCapture)
-        document = result.document
-        transcriptNotice = result.notice
-      } else if let url = URL(string: trimmed),
-                RenderedPageCapturePolicy.prefersRendering(url),
-                let makeRenderedCapture {
-        document = try await renderedOrDirectCapture(url: url, value: value, rendered: makeRenderedCapture())
-      } else {
-        document = try await captureService.capture(urlString: value)
+        setBrowserRelayActive(pendingID, false)
+        document = relayed.document
+        relayedEnvelope = relayed.envelope
+        notice = nil
+        browserRelayed = true
       }
-      guard let document else { throw ManualLinkError.emptyContent }
+      transcriptNotice = notice
       capturedDocument = document
       try Task.checkCancellation()
       // Substantive WeChat articles keep their inline images even when they
@@ -1448,12 +1576,24 @@ final class ManualLinkViewModel: ObservableObject {
       try Task.checkCancellation()
       // A committed SQLite write cannot honestly be reported as cancelled.
       updatePendingPhase(pendingID, .saving)
-      let accepted = try await ingestor.ingest(
-        document,
-        requestedAction: requestedAction,
-        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment,
-        navigationIntent: navigationIntent
-      )
+      let accepted: CurrentCapture
+      if let relayedEnvelope {
+        // 代抓内容的「来源」要按浏览器抓取记，入库仍用队列的意图（下载/不抢焦点）。
+        accepted = try await ingestor.ingest(
+          document: document,
+          envelope: relayedEnvelope,
+          requestedAction: requestedAction,
+          suppressesAutomaticEnrichment: suppressesAutomaticEnrichment,
+          navigationIntent: navigationIntent
+        )
+      } else {
+        accepted = try await ingestor.ingest(
+          document,
+          requestedAction: requestedAction,
+          suppressesAutomaticEnrichment: suppressesAutomaticEnrichment,
+          navigationIntent: navigationIntent
+        )
+      }
       if let creatorID {
         do {
           guard let history else { throw RepositoryFailure.unavailable }
@@ -1482,13 +1622,21 @@ final class ManualLinkViewModel: ObservableObject {
         let stored = try? history?.detail(taskID: accepted.taskID).media
         captureDownloadStatuses[value] = stored?.snapshotID == accepted.snapshotID ? "completed" : "failed"
         // 批量/AI 加入的条目不走「新内容自动处理」，这里单独把落地的视频交给本机转写队列。
-        if suppressesAutomaticEnrichment || requestedAction == .save,
-           captureDownloadStatuses[value] == "completed" {
+        // 同一链接重抓换过视频时管线也不会再跑，走同一条队列。
+        // 入队前先按当前视频判一次：已经有当前转写（同一视频重下）就不排，
+        // 否则队列里会闪一下「已转写」。
+        if captureDownloadStatuses[value] == "completed",
+           let detail = try? history?.detail(taskID: accepted.taskID),
+           !VideoTranscriptScope(detail).hasCurrentTranscript,
+           suppressesAutomaticEnrichment || requestedAction == .save
+             || VideoTranscriptScope(detail).videoChanged {
           onBatchVideoDownloaded?(accepted.taskID)
         }
       }
+      // 扩展代抓时评论已按同一份设置一起送回来了，不再由 App 重读一遍覆盖它。
       // 短链（v.douyin.com）认不出平台，换成抓到的页面地址再认。
-      if let pageURL = [value, document.url].lazy.compactMap(URL.init(string:)).first(where: { CommentCapture.platform(for: $0) != nil }),
+      if !browserRelayed,
+         let pageURL = [value, document.url].lazy.compactMap(URL.init(string:)).first(where: { CommentCapture.platform(for: $0) != nil }),
          let limit = commentLimitAfterSave(pageURL: pageURL, includesComments: includesComments, followsAutoSave: followsCommentAutoSave) {
         await attachComments(pageURL: pageURL, limit: limit, taskID: accepted.taskID, snapshotID: accepted.snapshotID)
       }
@@ -1499,6 +1647,52 @@ final class ManualLinkViewModel: ObservableObject {
       if let capturedDocument { imageCache?.discardStaged(captureID: capturedDocument.requestID) }
       throw error
     }
+  }
+
+  /// 从链接读出页面。App 自己的直读/渲染路径都在这；全部失败时由调用方决定要不要代抓。
+  private func readCapturedDocument(value: String) async throws -> (document: CapturedDocument, notice: String?) {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let xResolver, let tweetID = XTweetResolver.tweetID(from: trimmed) {
+      // X 直抓只有 SPA 外壳；改用公开端点取回整条推文（正文/图片/视频直链）。
+      guard let tweet = await xResolver.resolveTweet(id: tweetID) else {
+        throw ManualLinkError.network
+      }
+      return (tweet.capturedDocument(createdAt: ISO8601DateFormatter().string(from: Date())), nil)
+    }
+    if let url = URL(string: trimmed),
+       WeChatWebCapturePolicy.isCandidate(url) {
+      return (try await weChatCapture.capture(url: url), nil)
+    }
+    if let url = URL(string: trimmed),
+       DouyinURL.matches(url),
+       let douyinCapture {
+      do {
+        return (try await captureService.capture(urlString: value), nil)
+      } catch ManualLinkError.extensionCaptureRequired {
+        // Public Douyin HTML is often only a client-rendered shell. Keep the
+        // public adapter first, then fall back to the App's isolated WebKit
+        // session instead of saving shell chrome or making the user repeat
+        // the same URL through the extension.
+        return (try await douyinCapture.capture(url: url), nil)
+      }
+    }
+    if let url = URL(string: trimmed),
+       RenderedPageExtraction.isYouTubeWatch(url),
+       let makeRenderedCapture {
+      let result = try await youTubeCapture(url: url, value: value, makeRendered: makeRenderedCapture)
+      return (result.document, result.notice)
+    }
+    if let url = URL(string: trimmed),
+       RenderedPageCapturePolicy.prefersRendering(url),
+       let makeRenderedCapture {
+      return (try await renderedOrDirectCapture(url: url, value: value, rendered: makeRenderedCapture()), nil)
+    }
+    return (try await captureService.capture(urlString: value), nil)
+  }
+
+  private func setBrowserRelayActive(_ id: UUID, _ active: Bool) {
+    guard let index = pendingCaptures.firstIndex(where: { $0.id == id }) else { return }
+    pendingCaptures[index].isBrowserRelaying = active
   }
 
   /// YouTube：字幕是视频的主要内容。视频有字幕却没取到（字幕接口被拦、文字记录面板没加载出来）

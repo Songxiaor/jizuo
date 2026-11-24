@@ -1639,6 +1639,15 @@ final class ManualLinkViewModelTests: XCTestCase {
     model.retryPendingCapture(item.id)
     guard case .failed = model.pendingCaptures.first?.phase else { return XCTFail("needsNewLink 时重试应被拦住") }
 
+    // MCP 每天重送同一条裸链接时也一样：不重排，把真实错误码交回去让它换链接，
+    // 而不是反复重抓或在 already_queued 上空转。
+    let resubmitted = try model.enqueueMCPLinks([bare], downloadsVideo: false)
+    XCTAssertEqual(resubmitted.first?["status"], "failed")
+    XCTAssertEqual(resubmitted.first?["error_code"], "shareLinkMissingToken")
+    XCTAssertEqual(resubmitted.first?["needs_new_link"], "true")
+    XCTAssertEqual(resubmitted.first?["warning"], "missing_access_token")
+    XCTAssertEqual(model.pendingCaptures.count, 1, "重提不能重复建项")
+
     // 「换链接」：窗口能打开才移除条目，并带上原链接。
     // （添加窗口现在不会停在 fetching/saving，遇忙保留条目的分支只做防御，测试里造不出来。）
     model.replacePendingCaptureLink(item.id)
@@ -1731,6 +1740,285 @@ final class ManualLinkViewModelTests: XCTestCase {
       likes: "0",
       comments: nil,
       collects: "12"
+    )
+  }
+
+  // MARK: - MCP 重新提交：失败条目不堵死重试
+
+  /// 每天自动化重送同一条链接时，服务曾经对失败条目也返回 already_queued，
+  /// 于是那一条永远存不进来。重新提交必须等同「重试」：真的再抓一次。
+  @MainActor
+  func testMCPResubmissionRequeuesFailedLinkInsteadOfBlockingIt() async throws {
+    let fetcher = ManualVMCountingTimeoutFetcher()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: fetcher),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    let link = "https://example.org/mcp-retry-fixture"
+    XCTAssertEqual(try model.enqueueMCPLinks([link], downloadsVideo: false).first?["status"], "queued")
+    try await waitUntil { model.pendingCaptures.first.map { if case .failed = $0.phase { true } else { false } } == true }
+    XCTAssertEqual(model.pendingCaptures.first?.failureCode, "timedOut")
+    XCTAssertEqual(fetcher.fetches, 1)
+
+    let again = try model.enqueueMCPLinks([link], downloadsVideo: false)
+    XCTAssertEqual(again.first?["status"], "queued", "失败条目重提必须重新排队")
+    XCTAssertEqual(again.first?["retried"], "true")
+    XCTAssertEqual(model.pendingCaptures.count, 1, "重提不能重复建项")
+
+    // 重排之后 worker 真的又跑了一次（这里仍然失败，所以停在第二次失败）。
+    try await waitUntil { fetcher.fetches == 2 && model.pendingCaptures.first.map { if case .failed = $0.phase { true } else { false } } == true }
+    XCTAssertEqual(fetcher.fetches, 2)
+  }
+
+  /// 抓取队列存活期间持有系统活动声明（阻止 App Nap 把页面加载拖过超时），队列空了释放。
+  @MainActor
+  func testCaptureQueueHoldsActivityAssertionUntilItDrains() async throws {
+    let spy = ManualVMQueueActivitySpy()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: ManualVMClipboard(nil),
+      captureQueueActivity: spy.activity
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    _ = try model.enqueueMCPLinks(["https://example.org/activity-fixture"], downloadsVideo: false)
+    XCTAssertEqual(spy.begins, 1)
+    XCTAssertEqual(spy.ends, 0)
+
+    try await waitUntil { model.pendingCaptures.isEmpty }
+    XCTAssertEqual(spy.begins, 1)
+    XCTAssertEqual(spy.ends, 1, "队列清空后必须释放，不能一直按住系统不睡")
+  }
+
+  @MainActor
+  private func waitUntil(
+    timeout: Duration = .seconds(5),
+    _ condition: @MainActor () -> Bool
+  ) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while !condition(), clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+  }
+  // MARK: - 浏览器代抓
+
+  /// 汲作自己读不到时，自动改用浏览器扩展抓一次，并把内容照常入库；
+  /// 排队项应完成，而不是停在「请手动用扩展保存」。
+  @MainActor
+  func testTimedOutFetchFallsBackToBrowserCaptureAndSaves() async throws {
+    let repository = ManualVMRepository()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFailingFetcher(error: .timedOut)),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+    let relay = ManualVMFakeRelay(result: .success(try relayedCapture()))
+    model.browserRelay = relay
+
+    _ = try model.enqueueMCPLinks(["https://example.test/slow"], downloadsVideo: false)
+    await waitForEmptyQueue(model)
+
+    XCTAssertEqual(relay.requestedURLs, ["https://example.test/slow"])
+    XCTAssertTrue(model.pendingCaptures.isEmpty, "代抓成功后排队项应完成，而不是留在失败里：\(model.pendingCaptures.map { "\($0.phase) code=\($0.failureCode ?? "-")" })")
+    XCTAssertEqual(repository.acceptedDocuments.count, 1)
+    XCTAssertEqual(repository.acceptedDocuments.first?.text, "浏览器里抓回来的正文")
+  }
+
+  /// 扩展没连上时，失败原因要指名道姓，且不能再让用户手动操作；
+  /// 这类失败和链接无关，下次提交仍应允许重试。
+  @MainActor
+  func testMissingExtensionFailsWithItsOwnReasonNotManualInstructions() async throws {
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFailingFetcher(error: .emptyContent)),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    model.browserRelay = ManualVMFakeRelay(result: .failure(BrowserCaptureRelayFailure.extensionNotConnected))
+
+    _ = try model.enqueueMCPLinks(["https://example.test/slow"], downloadsVideo: false)
+    await waitForEmptyQueue(model)
+
+    let pending = try XCTUnwrap(model.pendingCaptures.first)
+    XCTAssertEqual(pending.failureCode, "browser_extension_unreachable")
+    XCTAssertFalse(pending.needsNewLink, "扩展没连上是环境问题，下次提交仍应重试")
+    guard case let .failed(message) = pending.phase else {
+      return XCTFail("应停在失败阶段")
+    }
+    XCTAssertTrue(message.contains("浏览器扩展没有连上"), message)
+    XCTAssertFalse(message.contains("请在浏览器里打开"), message)
+  }
+
+  /// 链接本身不合法时不该去开浏览器标签：那不是环境问题，多开一个也无济于事。
+  @MainActor
+  func testErrorsOutsideRelayPolicyKeepTheirOwnFailure() async throws {
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFailingFetcher(error: .unsafeURL)),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    let relay = ManualVMFakeRelay(result: .success(try relayedCapture()))
+    model.browserRelay = relay
+
+    _ = try model.enqueueMCPLinks(["https://example.test/slow"], downloadsVideo: false)
+    await waitForEmptyQueue(model)
+
+    XCTAssertTrue(relay.requestedURLs.isEmpty, "链接本身不合法时不该再开浏览器标签")
+    XCTAssertEqual(model.pendingCaptures.first?.failureCode, "unsafeURL")
+  }
+
+  /// 小红书在浏览器里也打不开时，错误码要回到 shareLinkMissingToken，并允许换链接；
+  /// 文案说清「换带访问码的链接」，不能再报「扩展没连上」。
+  @MainActor
+  func testRelayBlockedPageKeepsTheRealCaptureError() async throws {
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFailingFetcher(error: .shareLinkMissingToken)),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    model.browserRelay = ManualVMFakeRelay(
+      result: .failure(BrowserCaptureRelayFailure.blocked(.shareLinkMissingToken, landing: "www.xiaohongshu.com/404"))
+    )
+
+    _ = try model.enqueueMCPLinks(
+      ["https://www.xiaohongshu.com/explore/6af1824c000000003402b751"], downloadsVideo: false
+    )
+    await waitForEmptyQueue(model)
+
+    let pending = try XCTUnwrap(model.pendingCaptures.first)
+    XCTAssertEqual(pending.failureCode, "shareLinkMissingToken")
+    XCTAssertTrue(pending.needsNewLink)
+    guard case let .failed(message) = pending.phase else { return XCTFail("应停在失败阶段") }
+    XCTAssertTrue(message.contains("访问码"), message)
+    XCTAssertFalse(message.contains("扩展没有连上"), message)
+  }
+
+  /// 调试开关：pinned 的 host 跳过直读，直接走代抓。
+  @MainActor
+  func testDebugSwitchForcesRelayForPinnedHosts() async throws {
+    let suiteName = "relay-debug-switch-\(UUID().uuidString)"
+    let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { suite.removePersistentDomain(forName: suiteName) }
+    suite.set(["example.test"], forKey: BrowserCaptureDebugSwitch.defaultsKey)
+
+    let fetcher = ManualVMTrackingFetcher()
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: fetcher),
+      clipboard: ManualVMClipboard(nil),
+      userDefaults: suite
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    let relay = ManualVMFakeRelay(result: .success(try relayedCapture()))
+    model.browserRelay = relay
+
+    _ = try model.enqueueMCPLinks(["https://example.test/forced"], downloadsVideo: false)
+    await waitForEmptyQueue(model)
+
+    XCTAssertTrue(fetcher.fetchedURLs.isEmpty, "命中调试开关时不应再走 App 直读")
+    XCTAssertEqual(relay.requestedURLs, ["https://example.test/forced"])
+  }
+
+  /// 开关默认空：没写这个键时行为与以前一致（直读优先）。
+  @MainActor
+  func testDebugSwitchDefaultsToOff() async throws {
+    let suiteName = "relay-debug-default-\(UUID().uuidString)"
+    let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { suite.removePersistentDomain(forName: suiteName) }
+
+    XCTAssertFalse(BrowserCaptureDebugSwitch(defaults: suite).forcesRelay("https://example.test/x"))
+    let switchOn = BrowserCaptureDebugSwitch(defaults: suite)
+    suite.set(["example.test"], forKey: BrowserCaptureDebugSwitch.defaultsKey)
+    XCTAssertTrue(switchOn.forcesRelay("https://sub.example.test/x"), "应包含子域")
+    XCTAssertFalse(switchOn.forcesRelay("https://notexample.test/x"))
+  }
+
+  private func relayedCapture() throws -> RelayedCapture {
+    let envelope = try CaptureEnvelopeV1(
+      version: 1,
+      requestId: "relay-capture",
+      createdAt: "2026-11-19T00:00:00Z",
+      source: .init(kind: "browser_capture", url: "https://example.test/relayed", title: "浏览器代抓", platform: "generic"),
+      capture: .init(method: "rendered_dom", text: "浏览器里抓回来的正文", characterCount: 10, completeness: "full_article", capturedAt: "2026-11-19T00:00:00Z"),
+      evidence: .init(sourceLabel: "test", usedCookie: false)
+    )
+    return RelayedCapture(document: CapturedDocument(wire: envelope), envelope: .v1(envelope))
+  }
+
+  @MainActor
+  private func waitForEmptyQueue(_ model: ManualLinkViewModel) async {
+    for _ in 0..<300 where !model.pendingCaptures.isEmpty {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+  }
+
+}
+
+/// 每次抓取都超时失败；计数用来确认「重新排队」真的又跑了一次。
+private final class ManualVMCountingTimeoutFetcher: WebPageFetcher, @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+
+  func fetch(url _: URL) async throws -> WebPageFetchResult {
+    lock.withLock { value += 1 }
+    throw ManualLinkError.timedOut
+  }
+
+  var fetches: Int { lock.withLock { value } }
+}
+
+/// 记录抓取队列开始/结束过几次活动声明。
+@MainActor
+private final class ManualVMQueueActivitySpy {
+  private(set) var begins = 0
+  private(set) var ends = 0
+
+  var activity: CaptureQueueActivity {
+    CaptureQueueActivity(
+      begin: { [weak self] in
+        self?.begins += 1
+        return NSObject()
+      },
+      end: { [weak self] _ in self?.ends += 1 }
     )
   }
 }
@@ -1883,4 +2171,19 @@ final class ExplicitWebLinkCJKAdjacencyTests: XCTestCase {
   }
 }
 
+private struct ManualVMFailingFetcher: WebPageFetcher {
+  let error: ManualLinkError
+  func fetch(url _: URL) async throws -> WebPageFetchResult { throw error }
+}
 
+private final class ManualVMFakeRelay: BrowserCaptureRelaying {
+  let result: Result<RelayedCapture, Error>
+  private(set) var requestedURLs: [String] = []
+
+  init(result: Result<RelayedCapture, Error>) { self.result = result }
+
+  func capture(urlString: String, pendingID _: UUID) async throws -> RelayedCapture {
+    requestedURLs.append(urlString)
+    return try result.get()
+  }
+}

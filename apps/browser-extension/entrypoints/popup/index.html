@@ -270,6 +270,27 @@
   .action-option input:focus-visible + span { outline: 2px solid var(--accent-line); outline-offset: 1px; }
   #action-detail { margin: 0; color: var(--secondary); font-size: 12px; line-height: 1.5; }
 
+  /* 直播录制卡：和保存卡同一套白卡 + 强调色按钮，不另起一套视觉。 */
+  #live-card { gap: 8px; }
+  #live-title { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink); overflow-wrap: anywhere; }
+  #live-title:empty { display: none; }
+  .live-row { display: flex; align-items: center; gap: 8px; }
+  .live-row label { font-size: 12px; color: var(--secondary); }
+  #live-quality {
+    flex: 1; min-width: 0; appearance: none; border: 1px solid var(--hairline); border-radius: var(--radius-control);
+    background: var(--card); color: var(--ink); font-size: 12px; padding: 6px 8px;
+  }
+  #live-start {
+    appearance: none; border: 0; border-radius: var(--radius-control); padding: 8px 12px; min-height: 36px;
+    font-size: 13px; font-weight: 600; background: var(--accent); color: var(--on-accent); cursor: pointer;
+  }
+  #live-start:hover { background: var(--accent-hover); }
+  #live-start:active { background: var(--accent-pressed); }
+  #live-start:disabled { background: var(--disabled-fill); color: var(--disabled-text); cursor: default; }
+  #live-start.done { background: var(--success-tint); color: var(--success); }
+  #live-note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--secondary); }
+  #live-note:empty { display: none; }
+
   /*
     工序印：图片由 App 的 SealMark 渲染导出（public/seals，见 ExtensionSealAssetTests），
     和 App 同一套画法，小印不另画简化版。
@@ -407,6 +428,16 @@
     <div id="stats"></div>
     <p id="source-note" hidden>用了浏览器里的登录状态读取</p>
     <p id="translation-note" hidden></p>
+  </section>
+  <section class="card" id="live-card" hidden>
+    <div class="section-head"><h2 id="live-platform">直播</h2><span class="hint" id="live-hint"></span></div>
+    <p id="live-title"></p>
+    <div class="live-row">
+      <label for="live-quality">清晰度</label>
+      <select id="live-quality"></select>
+    </div>
+    <button type="button" id="live-start" disabled>开始录制</button>
+    <p id="live-note"></p>
   </section>
   <section class="card" id="dup-view" hidden>
     <div class="section-head"><h2 id="dup-title">这一页已经在汲作里</h2><span class="hint" id="dup-date"></span></div>

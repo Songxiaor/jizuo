@@ -80,13 +80,14 @@ struct ProcessStepRecord: Equatable, Identifiable {
   /// 这条内容做过的工序，按先后。题跋上的章和扩展弹窗的「做到哪了」共用这一处判断。
   static func completed(in detail: HistoryDetailProjection, mindMap: TaskMindMapRecord?) -> [ProcessStepRecord] {
     func date(_ milliseconds: Int64) -> Date { Date(timeIntervalSince1970: Double(milliseconds) / 1_000) }
-    let transcriptKind = CapturedDocument.Origin.localTranscription.rawValue
+    let transcripts = VideoTranscriptScope(detail).currentTranscriptSnapshots()
     var records: [ProcessStepRecord] = []
     // 取最近一次：重新转写、重新抓评论后时间跟着变，盖章那一刻也靠它认出「刚重做完」。
-    if let machine = detail.snapshots.last(where: { $0.sourceKind == transcriptKind && $0.captureMethod != tidyCaptureMethod }) {
+    // 只认当前视频的转写：作者换过视频后，旧稿上的日期不是这一版的工序。
+    if let machine = transcripts.last(where: { $0.captureMethod != tidyCaptureMethod }) {
       records.append(.init(step: .record, date: date(machine.capturedAtMilliseconds), note: nil))
     }
-    if let tidy = detail.snapshots.last(where: { $0.captureMethod == tidyCaptureMethod }) {
+    if let tidy = transcripts.last(where: { $0.captureMethod == tidyCaptureMethod }) {
       records.append(.init(step: .proof, date: date(tidy.capturedAtMilliseconds), note: nil))
     }
     if let withComments = detail.snapshots.last(where: { $0.bodyText.contains("\n## 评论") }) {

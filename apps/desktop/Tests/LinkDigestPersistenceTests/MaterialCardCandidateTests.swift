@@ -41,8 +41,10 @@ final class MaterialCardCandidateTests: XCTestCase {
   }
 
   /// 听写快照；`length` 是正文字符数，`sourceKind` 可换成别的层来验证筛选口径。
-  private func insertSnapshot(taskID: String, length: Int, sequence: Int = 1, sourceKind: String = "local_transcription") throws {
+  @discardableResult
+  private func insertSnapshot(taskID: String, length: Int, sequence: Int = 1, sourceKind: String = "local_transcription") throws -> String {
     let text = String(repeating: "讲", count: length)
+    let id = UUID().uuidString.lowercased()
     let hex = String(sequence * 100_000 + length, radix: 16)
     let hash = String(repeating: "0", count: 64 - hex.count) + hex
     try repository.database.write { db in
@@ -54,7 +56,21 @@ final class MaterialCardCandidateTests: XCTestCase {
           VALUES (?, ?, ?, 1, 1, ?, 'https://example.test/x', NULL,
                   'web', 'fixture', 'complete', ?, ?, ?, 'fixture', 0)
           """,
-        arguments: [UUID().uuidString.lowercased(), taskID, sequence, sourceKind, text, length, hash]
+        arguments: [id, taskID, sequence, sourceKind, text, length, hash]
+      )
+    }
+    return id
+  }
+
+  private func insertMedia(taskID: String, snapshotID: String, sha: String, createdAt: Int64) throws {
+    try repository.database.write { db in
+      try db.execute(
+        sql: """
+          INSERT INTO media_assets
+            (id, task_id, snapshot_id, relative_path, content_sha256, byte_size, duration_seconds, platform, transcription_status, created_at_ms)
+          VALUES (?, ?, ?, ?, ?, 10, 150, 'douyin', 'none', ?)
+          """,
+        arguments: [UUID().uuidString.lowercased(), taskID, snapshotID, sha + ".mp4", sha, createdAt]
       )
     }
   }
@@ -112,6 +128,21 @@ final class MaterialCardCandidateTests: XCTestCase {
     try insertSnapshot(taskID: latestLong, length: 321, sequence: 2)
 
     XCTAssertEqual(try candidateIDs(), [latestLong: 321])
+  }
+
+  /// 作者换过视频：旧视频的稿子不能把新视频带进候选，字数也按当前视频的稿子算。
+  func testChangedVideoCandidatesUseOnlyTheCurrentVideoTranscript() throws {
+    let id = try insertTask()
+    let oldCapture = try insertSnapshot(taskID: id, length: 20, sequence: 1, sourceKind: "web_capture")
+    try insertMedia(taskID: id, snapshotID: oldCapture, sha: String(repeating: "a", count: 64), createdAt: 1)
+    try insertSnapshot(taskID: id, length: 500, sequence: 2)
+
+    let newCapture = try insertSnapshot(taskID: id, length: 20, sequence: 3, sourceKind: "web_capture")
+    try insertMedia(taskID: id, snapshotID: newCapture, sha: String(repeating: "b", count: 64), createdAt: 3)
+    XCTAssertTrue(try candidateIDs().isEmpty, "旧视频的稿子不能给新视频当候选")
+
+    try insertSnapshot(taskID: id, length: 100, sequence: 4)
+    XCTAssertEqual(try candidateIDs(), [id: 100], "字数按当前视频的稿子算，不拿旧视频的 500")
   }
 
   func testDeletingCardMakesTaskCandidateAgain() throws {

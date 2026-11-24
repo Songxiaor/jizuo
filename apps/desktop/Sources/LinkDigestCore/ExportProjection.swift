@@ -293,6 +293,11 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
   public let tags: [HistoryTag]
   /// Optional local video asset for Loop V captures. Absent for pure-text history.
   public let media: MediaAsset?
+  /// 该记录名下**全部**媒体，最新一条在前（与仓库查询顺序一致）。
+  ///
+  /// 同一链接重抓后作者可能换过视频，判断「当前转写属于哪个视频」必须看到全部
+  /// 媒体；`media` 仍保留为最新一条，供既有调用点使用。
+  public let mediaAssets: [MediaAsset]
   /// True when any capture delivery for this task used contract V2.
   /// V2 envelopes always carry a `MediaDescriptor` (ephemeral URLs are not
   /// persisted); the flag is derived from existing `capture_deliveries` rows,
@@ -306,6 +311,7 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
     runs: [RunDetail],
     tags: [HistoryTag] = [],
     media: MediaAsset? = nil,
+    mediaAssets: [MediaAsset] = [],
     hadMediaDescriptor: Bool = false,
     isFavorite: Bool = false
   ) {
@@ -314,6 +320,7 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
     self.runs = runs
     self.tags = tags
     self.media = media
+    self.mediaAssets = mediaAssets
     self.hadMediaDescriptor = hadMediaDescriptor
     self.isFavorite = isFavorite
   }

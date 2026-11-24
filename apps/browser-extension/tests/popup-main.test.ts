@@ -52,6 +52,7 @@ function popupDOM(): Record<string, FakeElement> {
       "#comments-picker", "#comments-count", "#comments-list", "#comments-note",
       "#comments-select-all", "#comments-select-none",
     "#step-chain", "#dup-view", "#dup-date", "#dup-steps", "#saved-steps", "#save-again",
+      "#live-card", "#live-platform", "#live-hint", "#live-title", "#live-quality", "#live-start", "#live-note",
     ].map((id) => [id, element()])),
   };
 }

@@ -782,7 +782,8 @@ final class AppViewModel {
   private func prepareHistoryCapture(_ detail: HistoryDetailProjection) -> Bool {
     guard canStartRun(from: detail), let snapshot = detail.snapshots.last else { return false }
     // 配文和转写同时存在时，发给模型的是两层拼在一起的正文，不能只用 last。
-    let composed = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    // 作者换过视频时，旧视频的转写不能混进当前视频的总结/翻译输入。
+    let composed = LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail))
     guard !composed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
     // 缓存键必须带上**正文内容**，不能只看 snapshot 身份。
     //
@@ -1281,6 +1282,7 @@ struct MainWindowLaunchGuard: ViewModifier {
   @State private var companionNoteSync = CompanionNoteSyncCoordinator()
   @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
   @StateObject private var localImport: LocalImportController
+  @StateObject private var liveRecording: LiveRecordingController
   @StateObject private var quickCapture = QuickCaptureController()
   @State private var didBootstrap = false
   /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
@@ -1566,6 +1568,10 @@ struct MainWindowLaunchGuard: ViewModifier {
       },
       profileImportJournal: cacheRoot.map(ProfileImportBatchJournal.init(applicationSupportRoot:))
     )
+    // 浏览器代抓：汲作自己读不到时，用用户浏览器里已登录的扩展再抓一次。
+    // 失败之后才用它，正常抓取完全不受影响。
+    let browserCaptureRelay = BrowserCaptureRelay()
+    manualLink.browserRelay = browserCaptureRelay
     historyModel.beginBootstrapLoading()
     let nowMilliseconds: @Sendable () -> Int64 = {
       Int64((Date().timeIntervalSince1970 * 1_000).rounded())
@@ -1576,6 +1582,14 @@ struct MainWindowLaunchGuard: ViewModifier {
       availabilitySink: { available in await model.setBrowserReceiverAvailable(available) }
     )
     let serverStarter = makeUnixSocketServerStarter(lifecycle: socketServerLifecycle)
+    // 直播录制：默认存到资料目录下的「直播录制」，路径可在录制面板里改。
+    let liveRecordingRoot = (try? applicationSupportRoot())
+      ?? FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support", isDirectory: true)
+    let liveRecordingController = LiveRecordingController(
+      preferences: LiveRecordingPreferences(applicationSupportRoot: liveRecordingRoot)
+    )
+    _liveRecording = StateObject(wrappedValue: liveRecordingController)
     let injectSmokeOpenFailure = AppApplicationSupportRoot.shouldInjectOpenFailure()
     let composition = AppComposition(dependencies: .init(
       applicationSupportRoot: applicationSupportRoot,
@@ -1644,6 +1658,7 @@ struct MainWindowLaunchGuard: ViewModifier {
                 snapshotID: snapshotID,
                 pageURL: pageURL
               )
+              await historyModel.enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: taskID)
             }
           }
         } else if value.allowsAutomaticEnrichment,
@@ -1660,6 +1675,7 @@ struct MainWindowLaunchGuard: ViewModifier {
               snapshotID: snapshotID,
               pageURL: pageURL
             )
+            await historyModel.enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: taskID)
           }
         }
         // X 用 MSE 播放，抓取侧只能拿到 blob: 地址，捕获结果因此停在「只能在原
@@ -1683,6 +1699,7 @@ struct MainWindowLaunchGuard: ViewModifier {
               snapshotID: snapshotID,
               pageURL: pageURL
             )
+            await historyModel.enqueueAutomaticTranscriptionForNewlyCapturedVideo(taskID: taskID)
           }
         }
         // Substantive WeChat articles keep their inline images even when they
@@ -1724,12 +1741,20 @@ struct MainWindowLaunchGuard: ViewModifier {
         let accepted = await MainActor.run { manualLink.presentProfileCandidates(request) }
         return .init(acceptedCount: accepted)
       },
+      liveRecordingSink: { request in
+        await MainActor.run { liveRecordingController.start(request) }
+      },
       // 扩展弹窗查重与看进度：只读历史和此刻的运行状态。
       pageStatusSink: { request in
         let outputLanguage = (try? await preferencesStore.load())?.outputLanguage
           ?? ModelPreferences.default.outputLanguage
         return await historyModel.pageStatus(url: request.url, outputLanguage: outputLanguage)
-      }
+      },
+      // 浏览器代抓：扩展问「这个地址有待抓任务吗」，以及把内容按 job id 送回来。
+      // 三条接线见 BrowserCaptureRelayWiring：有测试盯着，别在这里另写一份。
+      browserCaptureJobSink: BrowserCaptureRelayWiring.jobSink(browserCaptureRelay),
+      browserCaptureDeliverySink: BrowserCaptureRelayWiring.deliverySink(browserCaptureRelay),
+      browserCaptureOutcomeSink: BrowserCaptureRelayWiring.outcomeSink(browserCaptureRelay)
     ))
 
     self.configurationService = configurationService
@@ -1745,14 +1770,20 @@ struct MainWindowLaunchGuard: ViewModifier {
       try? transcriptionTempStore?.cleanupAll()
       // 退出时停掉每日备份：正在写的那一份会被取消并删掉半成品，不记成功时间。
       // willTerminate 在主线程投递，所以这里可以安全地按主 actor 执行。
-      MainActor.assumeIsolated { dailyBackupScheduler.stop() }
+      MainActor.assumeIsolated {
+        dailyBackupScheduler.stop()
+        liveRecordingController.shutdown()
+      }
     }
     let terminationSignalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     Darwin.signal(SIGTERM, SIG_IGN)
     terminationSignalSource.setEventHandler {
       socketServerLifecycle.stop()
       try? transcriptionTempStore?.cleanupAll()
-      MainActor.assumeIsolated { dailyBackupScheduler.stop() }
+      MainActor.assumeIsolated {
+        dailyBackupScheduler.stop()
+        liveRecordingController.shutdown()
+      }
       Darwin.signal(SIGTERM, SIG_DFL)
       _ = Darwin.kill(getpid(), SIGTERM)
     }
@@ -1777,6 +1808,9 @@ struct MainWindowLaunchGuard: ViewModifier {
     _manualLink = StateObject(wrappedValue: manualLink)
     let localImportController = LocalImportController(mediaStore: mediaStore, imageCache: imageCache)
     localImportController.autoTranscriptionJournal = cacheRoot.map { AutoTranscriptionJournal(applicationSupportRoot: $0) }
+    liveRecordingController.ingest = { payload in
+      try await localImportController.ingestLiveRecording(payload)
+    }
     _localImport = StateObject(wrappedValue: localImportController)
     let providerSettings = ProviderSettingsViewModel(
       configurationService: configurationService,
@@ -1821,6 +1855,9 @@ struct MainWindowLaunchGuard: ViewModifier {
         .sheet(isPresented: $localImport.isPresented) {
           LocalImportStatusSheet(controller: localImport)
         }
+        .sheet(isPresented: $liveRecording.isPanelPresented) {
+          LiveRecordingPanelView(controller: liveRecording)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .companionNoteSyncDidFinish)) { _ in
           historyModel.reload()
         }
@@ -1857,6 +1894,11 @@ struct MainWindowLaunchGuard: ViewModifier {
           historyModel.semanticSearch?.configure(history: result.history)
           await settingsLoad.value
           knowledgeVaultSettings.configure(history: result.history)
+          historyModel.onTranscriptSaved = { [weak knowledgeVaultSettings] in
+            Task { await knowledgeVaultSettings?.scheduleAutoSync() }
+          }
+          // 启动时补排一次：上次运行里转写/校对晚于同步的条目，在这里补写进知识库。
+          await knowledgeVaultSettings.scheduleAutoSync()
           mediaInventory.bind(result.history)
           // 阅读位置现在存在库里（Migration023）。接上之前详情页照常能开，
           // 只是拿不到上次读到哪——接上之后第一次打开就恢复了。
@@ -1947,6 +1989,11 @@ struct MainWindowLaunchGuard: ViewModifier {
               localImport?.enqueueAutomaticTranscription(taskID: taskID, name: "批量保存的视频")
             }
             localImport.isAutomaticTranscriptionEnabled = { providerSettings.autoTranscribeNewCaptures }
+            // 浏览器代抓同一链接重抓、作者换了视频：和批量/手动重抓共用这条本机转写队列。
+            // 只排转写，不触发总结/脑图等付费步骤；同一视频重下不会走到这里。
+            historyModel.onNewCapturedVideoNeedsTranscription = { [weak localImport] taskID in
+              localImport?.enqueueAutomaticTranscription(taskID: taskID, name: "浏览器重抓的视频")
+            }
             providerSettings.onAutoTranscribeNewCapturesTurnedOff = { [weak localImport] in
               localImport?.automaticTranscriptionTurnedOff()
             }
@@ -1973,6 +2020,12 @@ struct MainWindowLaunchGuard: ViewModifier {
               frequentTags: historyModel.frequentTagStore
             )
             model.installModelRunOrchestrator(orchestrator)
+          }
+          MCPController.shared.fetchVideoDescriptor = { [weak sessionMediaPlayback] taskID, context in
+            guard let sessionMediaPlayback else { throw SessionMediaRefreshError.networkOrParse }
+            return try await sessionMediaPlayback.fetchDescriptor(
+              taskID: taskID, platform: context.platform, sourceURL: context.sourceURL, author: context.author
+            )
           }
           MCPController.shared.configure(history: result.history, historyModel: historyModel, manual: manualLink,
                                          appModel: model, preferences: providerSettings, writable: result.availability.isWriteReady)
@@ -2015,7 +2068,12 @@ struct MainWindowLaunchGuard: ViewModifier {
     // 整体漂到列表列上方。「汲作」两个字落在列表列顶上是这一取舍的代价。
     .windowToolbarStyle(.unified(showsTitle: true))
     .commands {
-      LinkDigestCommands(manualLink: manualLink, localImport: localImport, quickCapture: quickCapture)
+      LinkDigestCommands(
+        manualLink: manualLink,
+        localImport: localImport,
+        quickCapture: quickCapture,
+        liveRecording: liveRecording
+      )
       AppUpdateCommands(updater: appUpdateController.updaterController.updater)
     }
 
@@ -2236,6 +2294,7 @@ private struct LinkDigestCommands: Commands {
   @ObservedObject var manualLink: ManualLinkViewModel
   @ObservedObject var localImport: LocalImportController
   @ObservedObject var quickCapture: QuickCaptureController
+  @ObservedObject var liveRecording: LiveRecordingController
   /// 新建笔记的动作由承载列表的视图提供——只有它知道建完要选中哪一条。
   @FocusedValue(\.newNote) private var newNote
   @FocusedValue(\.todayNote) private var todayNote
@@ -2300,6 +2359,7 @@ private struct LinkDigestCommands: Commands {
         .disabled(newCollection == nil)
       Button("从语音备忘录同步") { localImport.syncVoiceMemos() }
       Button("从备忘录同步") { localImport.syncAppleNotes() }
+      Button("直播录制…") { liveRecording.isPanelPresented = true }
     }
     CommandGroup(after: .textEditing) {
       Button("搜索内容") { focusHistorySearch?.run() }

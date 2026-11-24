@@ -218,6 +218,45 @@ do {
     exit(0)
   }
 
+  // 浏览器代抓：扩展发现落地页是平台错误/登录页时带 job 回报一次。
+  // 必须在这里识别并转发——漏掉这个分支，消息会被当成坏的 capture envelope 拒掉，
+  // App 那边只能等到超时，用户看到的还是「没连上」这种错的原因。
+  do {
+    if let outcome = try BrowserCaptureJobOutcomeRequest.decode(body) {
+      writeDebugLog("browser_capture_outcome job=\(outcome.jobID) reason=\(outcome.reason.rawValue)")
+      let result = deliverToApp(body, requestId: outcome.requestId)
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+  } catch let issue as CaptureValidationError {
+    try ChromiumFramer.writeFrame(
+      try JSONEncoder().encode(
+        errorResponse(issue.rawValue, requestId: NativeRequestIdentity.requestId(from: body) ?? "native-host")
+      ),
+      to: .standardOutput
+    )
+    exit(0)
+  }
+
+  // 浏览器代抓：扩展问「这个地址有待抓任务吗」。只问正在运行的 App，不为它冷启动：
+  // App 没开时本来也不可能有排队中的代抓任务。
+  do {
+    if let request = try BrowserCaptureJobRequest.decode(body) {
+      writeDebugLog("browser_capture_job requestId=\(request.requestId) urls=\(request.urls.count)")
+      let result = deliverToRunningApp(body, requestId: request.requestId)
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+  } catch let issue as CaptureValidationError {
+    try ChromiumFramer.writeFrame(
+      try JSONEncoder().encode(
+        errorResponse(issue.rawValue, requestId: NativeRequestIdentity.requestId(from: body) ?? "native-host")
+      ),
+      to: .standardOutput
+    )
+    exit(0)
+  }
+
   do {
     if let status = try PageStatusRequest.decode(body) {
       writeDebugLog("page_status requestId=\(status.requestId)")
@@ -297,6 +336,27 @@ do {
     writeDebugLog("bookmarks_decode_failed=\(issue.rawValue)")
     try ChromiumFramer.writeFrame(
       try JSONEncoder().encode(errorResponse(issue.rawValue)),
+      to: .standardOutput
+    )
+    exit(0)
+  }
+
+  // 直播录制：带的是限时流地址，不是页面正文，所以不能过 capture envelope 的
+  // schema。识别出来就直接转给 App；App 没开时按既有冷启动流程拉起它。
+  do {
+    if let live = try LiveRecordingRequest.decode(body) {
+      writeDebugLog("live_recording requestId=\(live.requestId)")
+      let result = deliverToApp(body, requestId: live.requestId)
+      recordDeliveryIfSucceeded(result)
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+  } catch let issue as CaptureValidationError {
+    writeDebugLog("live_recording_decode_failed=\(issue.rawValue)")
+    try ChromiumFramer.writeFrame(
+      try JSONEncoder().encode(
+        errorResponse(issue.rawValue, requestId: NativeRequestIdentity.requestId(from: body) ?? "native-host")
+      ),
       to: .standardOutput
     )
     exit(0)

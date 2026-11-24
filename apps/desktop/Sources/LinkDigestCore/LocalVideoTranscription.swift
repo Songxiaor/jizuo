@@ -44,7 +44,12 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
   /// 与 `apply` 同一套合并逻辑，但不重算全文。流式识别每秒推送几十条
   /// volatile 结果，逐条全量重排是 UI 卡顿源；调用方节流后再取 `displayText`。
   public mutating func merge(range: CMTimeRange, text: String, isFinal: Bool) {
-    let segment = Segment(range: range, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    // 中文识别器按 token 输出，标点前会留一个空格：「呃 ，但是」「不像吗 ？」。
+    // 在每一段进累加器时就收掉，正文、段落、时间码都从这里派生，改一处就全干净（2026-11-11）。
+    let normalized = ChinesePunctuationSpacing.removingSpacesBeforePunctuation(
+      text.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+    let segment = Segment(range: range, text: normalized)
     volatile.removeAll { Self.overlaps($0.range, range) }
     if isFinal {
       finalized.removeAll { Self.overlaps($0.range, range) }
@@ -258,6 +263,33 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
     guard lhsStart.isFinite, rhsStart.isFinite, lhsEnd.isFinite, rhsEnd.isFinite else { return false }
     if lhsStart == lhsEnd || rhsStart == rhsEnd { return lhsStart == rhsStart }
     return max(lhsStart, rhsStart) < min(lhsEnd, rhsEnd)
+  }
+}
+
+/// 中文标点前的多余空格。
+///
+/// 系统中文识别器（SpeechTranscriber）按 token 输出，标点常自成一段并带着前面的空格；
+/// 落库后读起来就是「呃 ，但是她不上班」「不像吗 ？」。中文排版里标点前不留空格，
+/// 所以在进累加器（正文、段落、时间码都从它派生）之前收掉。
+///
+/// 只处理全角标点，半角的一概不碰：英文句点、逗号前本来就该有空格。
+/// 只影响之后新产生的转写，已有数据的正文原样不动。
+public enum ChinesePunctuationSpacing {
+  /// 需要收空格的标点：中文逗号、句号、问号、叹号、冒号、分号、顿号。
+  public static let punctuation: Set<Character> = ["，", "。", "？", "！", "：", "；", "、"]
+
+  public static func removingSpacesBeforePunctuation(_ text: String) -> String {
+    guard text.contains(" ") || text.contains("\u{3000}") else { return text }
+    var result = ""
+    result.reserveCapacity(text.count)
+    for character in text {
+      if punctuation.contains(character) {
+        // 连续多个空格也一并收掉，只去掉紧贴标点的那一串。
+        while result.last == " " || result.last == "\u{3000}" { result.removeLast() }
+      }
+      result.append(character)
+    }
+    return result
   }
 }
 

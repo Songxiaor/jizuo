@@ -89,6 +89,42 @@ final class LocalImportControllerFolderTests: XCTestCase {
     XCTAssertTrue(condition(), file: file, line: line)
   }
 
+  func testLiveRecordingIngestAttachesCreatorAndRecordsOriginalPage() async throws {
+    let wiring = try wire()
+    wiring.controller.isAutomaticTranscriptionEnabled = { false }
+    let file = try write("直播录制/示例主播_2026-11-11_20-53-10.mp4", "not-a-real-video")
+    let avatar = "https://p3-pc.douyinpic.com/aweme/100x100/test-avatar.jpeg"
+    let payload = LiveRecordingIngestPayload(
+      fileURL: file,
+      platform: .douyin,
+      anchorName: "示例主播",
+      anchorID: "SEC_demo",
+      anchorAvatarURL: avatar,
+      anchorProfileURL: "https://www.douyin.com/user/SEC_demo",
+      title: "示例主播的抖音直播间 - 抖音直播",
+      pageURL: "https://live.douyin.com/427518068747",
+      roomID: "427518068747",
+      startedAt: Date(timeIntervalSince1970: 1_762_872_000),
+      durationSeconds: 60,
+      quality: .hd
+    )
+    let taskID = try await wiring.controller.ingestLiveRecording(payload)
+
+    let creators = try repository.creatorPage(limit: 10, after: nil, searchText: "")
+    let creator = try XCTUnwrap(creators.rows.first)
+    XCTAssertEqual(creator.displayName, "示例主播")
+    XCTAssertEqual(creator.avatarURL, avatar)
+    XCTAssertEqual(creator.savedWorkCount, 1)
+
+    let detail = try repository.detail(taskID: taskID)
+    XCTAssertTrue(detail.task.canonicalURL.hasPrefix("linkdigest-local://douyinlive/"))
+    let body = try XCTUnwrap(detail.snapshots.first?.bodyText)
+    XCTAssertTrue(body.contains("主播：示例主播"))
+    XCTAssertTrue(body.contains("清晰度：高清"))
+    XCTAssertTrue(body.contains("直播间：https://live.douyin.com/427518068747"))
+    XCTAssertFalse(body.contains("示例主播的抖音直播间"), "平台模板标题不进正文")
+  }
+
   private func finishedSummary(_ controller: LocalImportController) -> LocalImportController.Summary? {
     if case let .finished(_, summary, _) = controller.phase { return summary }
     return nil

@@ -232,7 +232,8 @@ public enum DouyinPlayableURL {
 }
 
 public enum DouyinPageParser {
-  static let maximumStateSnippetScalars = 240_000
+  /// 与 WebKit 侧截取窗口一致：整段 ≤ 90 万字，超出时 id 前后各 45 万字。
+  static let maximumStateSnippetScalars = 1_000_000
 
   public static let riskControlMarkers = [
     "验证码",

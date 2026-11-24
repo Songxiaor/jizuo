@@ -11,7 +11,9 @@ import os
 /// 而不是导出的时候——导出时再洗一遍等于承认曾经写进过系统日志。
 ///
 /// 具体做法：
-/// - URL 只记 host（`AppLog.host(_:)`），path / query / fragment 一律不进日志；
+/// - URL 只记 host（`AppLog.host(_:)`），query / fragment 一律不进日志；path 默认也不记，
+///   唯一的例外是浏览器代抓的 `landing`（host+path）：判断「落地到哪个页面」必须看 path，
+///   而 path 里不会有访问码或查询参数；
 /// - 每个字段值都过 `AppLog.redact(_:)`，密钥形状、`Bearer`、`key=value` 形式的
 ///   敏感键、以及任何看起来像不透明凭据的长串都被替换成 `[redacted]`；
 /// - 错误一律带错误码（`code=`），因为这是唯一能跨版本对齐的东西。

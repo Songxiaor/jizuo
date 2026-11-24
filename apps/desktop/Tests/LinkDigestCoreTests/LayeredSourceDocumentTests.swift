@@ -354,6 +354,30 @@ final class LayeredSourceDocumentTests: XCTestCase {
     XCTAssertTrue(parts.quotes.contains("第2条"))
   }
 
+  // MARK: 直播录制的占位配文
+
+  /// 直播录制入库时的正文只有文件名、主播、开播时间和「点转写」提示，
+  /// 转写完成后不该再占一个「文案」页签（否则详情会停在那里，而不是转写稿）。
+  func testLiveRecordingPlaceholderDropsOutOnceTranscribed() {
+    let taskID = TaskID()
+    let placeholder = snapshot(
+      taskID: taskID, sequence: 1,
+      sourceKind: CapturedDocument.Origin.localImport.rawValue,
+      body: "从本机导入的视频：a.mp4\n\n抖音直播录制：某某 直播 2026-11-11 23:41\n\n点「转写」即可在本机把声音转成文字。",
+      captureMethod: "live_recording"
+    )
+    XCTAssertFalse(LayeredSourceDocument.isSupersededPlaceholder(placeholder, in: [placeholder]))
+
+    let transcript = snapshot(
+      taskID: taskID, sequence: 2,
+      sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+      body: "00:00 这是一场直播。"
+    )
+    let all = [placeholder, transcript]
+    XCTAssertTrue(LayeredSourceDocument.isSupersededPlaceholder(placeholder, in: all))
+    XCTAssertEqual(LayeredSourceDocument.modelInput(from: all), "00:00 这是一场直播。")
+  }
+
   /// 没有收尾标记的残缺块不当引用拆：宁可多显示，也不能把后面的正文吞掉。
   func testSplittingQuotesIgnoresAnUnterminatedBlock() {
     let body = "开头\n\n<!--LDQUOTE author=\"@a\" url=\"u\"-->\n没有收尾\n\n后面的正文"

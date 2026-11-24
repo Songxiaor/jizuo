@@ -240,6 +240,7 @@ struct HistoryContentView: View {
         let summaryBusyModel = appModel
         model.startAutoPipeline(
           taskID: taskID,
+          snapshotID: appModel.currentCapture?.snapshotID,
           expectsMedia: appModel.currentCapture?.shouldAutomaticallyPersistLegacyMedia == true,
           transcribe: settings.autoTranscribeNewCaptures,
           tidy: settings.autoTidyTranscription,
@@ -1646,6 +1647,10 @@ struct HistoryContentView: View {
     case (.own, HistoryPlatformDisplay.noteHost): "自己在汲作里写的笔记（⇧⌘N 新建）"
     case (.own, LocalImportSource.files.rawValue): "自己的本地文件（\(row.count) 条）：拖进来、没有下载标记的"
     case (.external, LocalImportSource.files.rawValue): "外部的本地文件（\(row.count) 条）：从网上、微信下载后拖进来的"
+    // 直播录制也是 `linkdigest-local://` 进来的，但它不是「判错的网站」，不该套那两句模板，
+    // 否则侧栏悬停会写成「改成「外部」的抖音直播（1 条）」（2026-11-11 走查）。
+    // 返回 nil，走 UIReadingPlatformNavigation 默认的「平台名（N 条）」。
+    case (_, _) where row.isLiveRecording: nil
     case (.own, _) where !row.isLocal:
       "改成「自有」的\(HistoryPlatformDisplay.shortName(forHost: row.key))内容（\(row.count) 条）"
     case (.external, _) where row.isLocal:
@@ -4456,7 +4461,18 @@ struct PlatformNavigationIcon: View {
   /// 商标抢走。列表行里仍用彩色 logo 保持辨识度。颜色由调用方的 foregroundStyle 给。
   var monochrome: Bool = false
 
+  @Environment(\.appTheme) private var appTheme
+
   var body: some View {
+    mark.overlay(alignment: .bottomTrailing) {
+      // 直播录制和同平台的普通内容共用一个 logo，光看图标分不出来（2026-11-11）。
+      if HistoryPlatformRegistry.isLiveRecordingHost(host) {
+        LiveRecordingIconDot(color: appTheme.danger)
+      }
+    }
+  }
+
+  @ViewBuilder private var mark: some View {
     if host == HistoryPlatformDisplay.miscHost {
       // 杂项来源没有 logo 可取，用收件盘符号——它表达的正是「还没归类」。
       // List 会盖掉环境字号；resizable + 16 框避免 SF Symbol 按 18pt 被裁。
@@ -4535,6 +4551,22 @@ struct PlatformNavigationIcon: View {
       .foregroundStyle(PlatformIconCatalog.fallbackBadgeForeground(for: host))
       .frame(width: 16, height: 16)
       .background(PlatformIconCatalog.fallbackBadgeBackground(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+  }
+}
+
+/// 直播录制图标的小角标：右下角一枚 3.5pt 圆点，用主题的状态色（`danger`）。
+///
+/// 不用固定红：暖褐、深色、高对比几套主题的底色差得很远，写死的红在其中几套上
+/// 要么发黑要么刺眼。也不用「朱」——那个颜色只归印章和朱批（见 AppearanceTheme）。
+struct LiveRecordingIconDot: View {
+  let color: Color
+  var diameter: CGFloat = 3.5
+
+  var body: some View {
+    Circle()
+      .fill(color)
+      .frame(width: diameter, height: diameter)
+      .accessibilityHidden(true)
   }
 }
 
@@ -5039,8 +5071,10 @@ private struct HistoryDetailView: View, Equatable {
   private var latestSourceSnapshot: ContentSnapshot? {
     LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
   }
+  /// 「当前视频」的转写口径。作者换过视频后，旧视频的稿子不参与转写页、评论、导出。
+  private var videoTranscriptScope: VideoTranscriptScope { VideoTranscriptScope(detail) }
   private var latestTranscriptionSnapshot: ContentSnapshot? {
-    LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+    LayeredSourceDocument.transcriptSnapshot(in: videoTranscriptScope)
   }
   private var latestSubtitleSnapshot: ContentSnapshot? {
     LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)
@@ -5093,7 +5127,8 @@ private struct HistoryDetailView: View, Equatable {
 
   private var hasPresentableCaption: Bool {
     guard let snapshot = latestSourceSnapshot,
-          !LayeredSourceDocument.isSupersededPlaceholder(snapshot, in: detail.snapshots) else { return false }
+          !LayeredSourceDocument.isSupersededPlaceholder(snapshot, in: videoTranscriptScope.scopedSnapshots())
+    else { return false }
     return !LayeredSourceDocument.body(of: snapshot).isEmpty
   }
   /// 原文层在阅读页上显示的小标题。本机导入的录音、音频没有画面，转写层叫「视频转写」
@@ -5115,7 +5150,11 @@ private struct HistoryDetailView: View, Equatable {
     if hasPresentableCaption, !captionIsSplit || !captionParts.text.isEmpty { layers.append(.caption) }
     if captionHasQuote { layers.append(.quote) }
     if latestSubtitleSnapshot != nil { layers.append(.subtitles) }
-    if latestTranscriptionSnapshot != nil { layers.append(.transcript) }
+    // 只剩旧视频的转写时也留一页：这一页要明确说「对应旧视频」，不能把稿子藏掉
+    // 让人以为没转过。
+    if latestTranscriptionSnapshot != nil || videoTranscriptScope.showsStaleTranscriptOnly {
+      layers.append(.transcript)
+    }
     // 评论排在所有页签里原文各层的最后（见 readingTabs，它还在总结、译文之后）。
     if commentsCount > 0 { layers.append(.comments) }
     return layers
@@ -5234,6 +5273,7 @@ private struct HistoryDetailView: View, Equatable {
     //
     // 配文**不是**分层的前提。字幕和听写同时在，就必须分层，不能因为配文与标题
     // 相同就把整页退回单层、只画听写稿。
+    if videoTranscriptScope.showsStaleTranscriptOnly { return true }
     if latestSubtitleSnapshot != nil, latestTranscriptionSnapshot != nil { return true }
     // 老记录里评论接在转写稿末尾的：评论是单独一页，转写稿也要走分层。
     if commentsCount > 0, latestTranscriptionSnapshot != nil { return true }
@@ -5374,6 +5414,14 @@ private struct HistoryDetailView: View, Equatable {
     derivedMemo.value("frontmatter", snapshot: latestSourceSnapshot) {
       MarkdownNoteFrontmatter.parse(latestSourceSnapshot?.bodyText ?? "")
     }
+  }
+  /// 本机导入/录制条目身上记着的原始网页。普通网页抓取没有这个字段，
+  /// 仍走快照的 `sourceURL`。
+  private var originalPageURL: String? {
+    guard let raw = sourceFrontmatter.sourcePage?.trimmingCharacters(in: .whitespacesAndNewlines),
+          Self.isWebURL(raw)
+    else { return nil }
+    return raw
   }
   private var showsCurrentCapture: Bool { appModel.currentCapture?.taskID == detail.task.id }
   private var showsVisibleRun: Bool { appModel.showsVisibleRun(for: detail.task.id) }
@@ -5685,7 +5733,7 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// 还没有旧译文时，翻译页先放的原文：和发给模型的那份相同。
   private var translationHoldSourceText: String? {
-    let text = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    let text = LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail))
     return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
   }
   /// 失败或停止后正文回到旧结果，原因仍留在正文上方这一行，不把整页换成空状态。
@@ -7449,6 +7497,7 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// 会话态回到 idle 后，仍以落库的 transcriptionStatus 判断「已经转写过」。
   private var hasCompletedTranscript: Bool {
+    // 只认当前视频：作者换过视频后，旧稿仍在库里，但当前视频是「待转写」。
     latestTranscriptionSnapshot != nil
       || model.transcriptionState(for: detail.task.id) == .completed
       || detail.media?.transcriptionStatus == .completed
@@ -8690,7 +8739,8 @@ private struct HistoryDetailView: View, Equatable {
   /// 自己画底片而不用 ControlGroup：工具栏背景是隐藏的（`HistoryWindowToolbarThemeModifier`），
   /// ControlGroup 在这里只剩几个散开的图标，看不出是一组（2026-10-09 部署后实测）。
   @ViewBuilder private var detailActionsCapsule: some View {
-    let isWeb = Self.isWebURL(sourceURL)
+    let openURL = originalPageURL ?? sourceURL
+    let isWeb = Self.isWebURL(openURL)
     let mediaFile = revealableMediaFileURL
     let favorited = model.canToggleFavorite && model.isSelectedFavorite
     HStack(spacing: 0) {
@@ -8710,7 +8760,7 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityLabel("打开原页面")
         .accessibilityIdentifier("history-source-url-open")
       sourceActionsSeparator
-      Button { CopyFeedbackController.shared.copy(sourceURL) } label: { Image(systemName: "link") }
+      Button { CopyFeedbackController.shared.copy(openURL) } label: { Image(systemName: "link") }
         .buttonStyle(AppIconButtonStyle(size: 28))
         .disabled(!isWeb)
         .help(isWeb ? "复制原文链接" : "这条没有原网页")
@@ -9592,10 +9642,21 @@ private struct HistoryDetailView: View, Equatable {
             )
           }
         case .transcript:
+          if videoTranscriptScope.showsStaleTranscriptOnly {
+            videoChangedTranscriptNotice
+          }
           if let transcript = latestTranscriptionSnapshot {
             collapsibleSourceSection(
               heading: displayHeading(LayeredSourceDocument.transcriptHeading),
               snapshot: transcript,
+              isExpanded: expansionBinding("isTranscriptExpanded"),
+              showsSpeakerBar: true
+            )
+          } else if let stale = videoTranscriptScope.staleTranscriptSnapshot() {
+            // 旧稿不删、也不冒充当前转写：只在「旧视频的转写」名下供对照。
+            collapsibleSourceSection(
+              heading: "旧视频的转写（当前视频还没转写）",
+              snapshot: stale,
               isExpanded: expansionBinding("isTranscriptExpanded"),
               showsSpeakerBar: true
             )
@@ -9644,6 +9705,26 @@ private struct HistoryDetailView: View, Equatable {
     } else {
       missingPaneNotice(for: .source)
     }
+  }
+
+  /// 作者换过视频、当前视频还没转写：说清楚旧稿对应的是哪一版，并给出转写入口。
+  @ViewBuilder private var videoChangedTranscriptNotice: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("作者换过视频，库里这份转写对应的是旧视频；当前视频还没转写。")
+        .themedFont(.callout)
+        .foregroundStyle(theme.primaryText)
+      if let action = transcribeAction, action.canStart,
+         !model.transcriptionState(for: detail.task.id).isActive {
+        Button("转写当前视频") { action.start() }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .accessibilityIdentifier("history-video-changed-transcribe")
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(RoundedRectangle(cornerRadius: 8).fill(theme.accent.opacity(0.08)))
+    .accessibilityIdentifier("history-video-changed-notice")
   }
 
   private static let sourceCollapseCharacterLimit = 800
@@ -9699,20 +9780,30 @@ private struct HistoryDetailView: View, Equatable {
   /// 仍按正文同一条规则解析，不越过这一步直接调用系统打开。
   @ViewBuilder private var commentsPage: some View {
     if let section = commentsSection {
-      CommentThreadSectionView(
-        section: section,
-        localImageURLs: localImageURLs,
-        readingFont: sourcePaneReadingFont(latestSourceSnapshot ?? detail.snapshots.last!),
-        primaryTextColor: theme.primaryText,
-        secondaryTextColor: theme.secondaryText,
-        accentColor: theme.accent,
-        onOpenURL: { url in
-          guard let resolved = try? MarkdownLinkResolver.resolve(url, sourceURL: URL(string: sourceURL)) else { return }
-          NSWorkspace.shared.open(resolved)
+      VStack(alignment: .leading, spacing: 10) {
+        // 评论挂在同一篇笔记下，没法按视频拆；只在作者换过视频时说明一句。
+        if let notice = videoTranscriptScope.commentNotice() {
+          Text(notice)
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("history-comments-video-changed")
         }
-      )
-      .environment(\.commentsInOwnTab, true)
-      .accessibilityIdentifier("history-reading-comments")
+        CommentThreadSectionView(
+          section: section,
+          localImageURLs: localImageURLs,
+          readingFont: sourcePaneReadingFont(latestSourceSnapshot ?? detail.snapshots.last!),
+          primaryTextColor: theme.primaryText,
+          secondaryTextColor: theme.secondaryText,
+          accentColor: theme.accent,
+          onOpenURL: { url in
+            guard let resolved = try? MarkdownLinkResolver.resolve(url, sourceURL: URL(string: sourceURL)) else { return }
+            NSWorkspace.shared.open(resolved)
+          }
+        )
+        .environment(\.commentsInOwnTab, true)
+        .accessibilityIdentifier("history-reading-comments")
+      }
     }
   }
 
@@ -9806,9 +9897,8 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 机器听写的那份转写稿（校对前）。朱批和「原稿」都拿它当底。
   private var machineTranscriptSnapshot: ContentSnapshot? {
-    detail.snapshots.last {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-        && $0.captureMethod != Self.tidyCaptureMethod
+    videoTranscriptScope.currentTranscriptSnapshots().last {
+      $0.captureMethod != Self.tidyCaptureMethod
     }
   }
 
@@ -10667,7 +10757,7 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private func openSourceURL() {
-    guard let url = URL(string: sourceURL) else { return }
+    guard let url = URL(string: originalPageURL ?? sourceURL) else { return }
     let policy = PublicWebURLPolicy(resolver: { _ in [] })
     guard (try? policy.validateSyntax(url)) != nil else { return }
     NSWorkspace.shared.open(url)

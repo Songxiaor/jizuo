@@ -545,6 +545,12 @@ struct UIReadingHistoryRow: View {
     } else if let image = PlatformIconCatalog.image(for: row.host) {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
         .accessibilityLabel("\(row.host) 图标")
+        // 直播录制和同平台的普通内容同一个 logo，右下角点一颗状态点（同侧栏）。
+        .overlay(alignment: .bottomTrailing) {
+          if HistoryPlatformRegistry.isLiveRecordingHost(row.host) {
+            LiveRecordingIconDot(color: theme.danger)
+          }
+        }
     } else if let url = faviconURL {
       HistoryFaviconDiskImage(url: url, host: row.host, taskID: row.taskID) {
         fallbackBadge

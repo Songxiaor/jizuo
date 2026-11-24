@@ -57,8 +57,11 @@ public enum KnowledgeVaultRenderer {
 
   public static func render(
     _ projection: HistoryExportProjection,
+    mediaAssets: [MediaAsset] = [],
     timeZone: TimeZone = .current
   ) -> KnowledgeVaultDocument {
+    // 作者可能在同一链接下换过视频：旧转写不能当作当前正文同步进知识库。
+    let scope = VideoTranscriptScope(mediaAssets: mediaAssets, snapshots: projection.snapshots)
     // 元数据取「抓取来源」那一层，不能取 `snapshots.last`。
     //
     // last 是最新追加的派生层——听写稿，或画面字幕。它们既没有 author/published，
@@ -74,9 +77,7 @@ public enum KnowledgeVaultRenderer {
     // 只看听写层，**不**把画面字幕算进来：这个字段是导出契约的一部分，下游
     // 检索按它筛选，语义扩大会悄悄改变别处的结果。要不要让它涵盖字幕层，是
     // 契约层面的决定，不该在这里顺手改掉。
-    let hasTranscript = projection.snapshots.contains {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-    }
+    let hasTranscript = scope.hasCurrentTranscript
 
     var lines: [String] = ["---", "type: digest"]
     lines.append("digest_id: \(yamlScalar(digestID.rawValue))")
@@ -99,6 +100,9 @@ public enum KnowledgeVaultRenderer {
     // 看转写。找得到却回不去，等于没找到。
     lines.append("> 回链：\(digestURL(digestID))")
     lines.append("> 原文：\(projection.task.canonicalURL)")
+    if let notice = scope.commentNotice(in: timeZone) {
+      lines.append("> \(notice)")
+    }
 
     var head = lines.joined(separator: "\n") + "\n"
 
@@ -112,7 +116,7 @@ public enum KnowledgeVaultRenderer {
     // 正文要带上**所有**层。原来只导出 `snapshots.last`：有听写稿时配文就丢了，
     // 有画面字幕时听写稿也跟着丢——导出的「原文」只剩最后追加的那一层。
     // `modelInput` 是分层正文的唯一真相源，导出、总结、翻译都该走它。
-    let layered = LayeredSourceDocument.modelInput(from: projection.snapshots)
+    let layered = LayeredSourceDocument.modelInput(from: scope)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let bodyText = layered.isEmpty
       ? (note.body.isEmpty ? (snapshot?.bodyText ?? "") : note.body)

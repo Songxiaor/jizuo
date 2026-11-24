@@ -67,6 +67,10 @@ enum PlatformIconCatalog {
     "reddit.com": "glyph-reddit",
     "substack.com": "glyph-substack",
     "xiaohongshu.com": "glyph-xiaohongshu",
+    // 直播录制复用所属平台的剪影（2026-11-11）：否则侧栏退成首字母方块，
+    // 小红书的「X」还和推特混。
+    "douyinlive": "glyph-douyin",
+    "xiaohongshulive": "glyph-xiaohongshu",
   ]
 
   /// 品牌色；黑色系品牌（X、抖音、GitHub、Discourse）返回 nil，由调用方用正文色，
@@ -78,6 +82,7 @@ enum PlatformIconCatalog {
     "reddit.com": 0xFF4500,
     "substack.com": 0xFF6719,
     "xiaohongshu.com": 0xFF2442,
+    "xiaohongshulive": 0xFF2442,
   ]
 
   static func sidebarBrandColor(for host: String) -> Color? {

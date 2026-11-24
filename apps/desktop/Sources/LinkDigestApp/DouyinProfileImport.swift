@@ -639,7 +639,7 @@ enum DouyinProfileImportStopReason: Equatable {
     case .worksTabRequired:
       return "请点「查看主页」，切换到本人作品／投稿列表后继续加载。"
     case .platformChanged:
-      return "等待后仍未识别到主页作品列表，平台页面结构可能已变化。请重试或使用浏览器扩展保存单条作品。"
+      return "等待后仍未识别到主页作品列表，平台页面结构可能已变化。请重试。"
     case .navigationFailed:
       return "主页暂时无法打开，请检查链接或网络后重试。"
     case .browserExtension:

@@ -306,7 +306,7 @@ struct ExportContentDocument: Sendable {
 
   private static func build(_ detail: HistoryDetailProjection) -> Built {
     var built = Built()
-    let source = splittingComments(from: LayeredSourceDocument.modelInput(from: detail.snapshots))
+    let source = splittingComments(from: LayeredSourceDocument.modelInput(from: VideoTranscriptScope(detail)))
     let summary = latest(detail, .summarize)
     let translation = latest(detail, .translate).map(splittingComments(from:))
 
@@ -363,13 +363,13 @@ struct ExportContentDocument: Sendable {
 
   /// 文案 / 正文、引用、转写稿、校对稿、机器原稿。只有转写、没有配文时叫「转写稿」，不叫「正文」。
   private static func sourceLayers(in detail: HistoryDetailProjection) -> [SourceLayerText] {
-    let snapshots = detail.snapshots
+    let scope = VideoTranscriptScope(detail)
+    let snapshots = scope.scopedSnapshots()
     let caption = LayeredSourceDocument.captionSnapshot(in: snapshots)
       .flatMap { LayeredSourceDocument.isSupersededPlaceholder($0, in: snapshots) ? nil : $0 }
-    let transcript = LayeredSourceDocument.transcriptSnapshot(in: snapshots)
-    let machine = snapshots.last {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-        && $0.captureMethod != ProcessStepRecord.tidyCaptureMethod
+    let transcript = scope.currentTranscriptSnapshot()
+    let machine = scope.currentTranscriptSnapshots().last {
+      $0.captureMethod != ProcessStepRecord.tidyCaptureMethod
     }
     let hasProof = transcript?.captureMethod == ProcessStepRecord.tidyCaptureMethod && machine != nil
     var layers: [SourceLayerText] = []

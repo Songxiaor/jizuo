@@ -134,10 +134,10 @@ public enum HistorySyncNoteCardMapping {
   }
 
   /// 本机转写快照 → Companion `transcript`，供手机同步回读。
+  ///
+  /// 只给当前视频的转写：作者换过视频时，旧视频的稿子不能再冒充当前内容同步出去。
   public static func latestTranscript(in detail: HistoryDetailProjection) -> String? {
-    let snapshot = detail.snapshots.reversed().first {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-    }
+    let snapshot = VideoTranscriptScope(detail).currentTranscriptSnapshot()
     guard let body = snapshot?.bodyText else { return nil }
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : body

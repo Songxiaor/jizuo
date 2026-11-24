@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { isWireNativeResponse, normalizeNativeResponse, validateCapture } from "../src/contract";
+import { isWireNativeResponse, normalizeNativeResponse, validateCapture, validateLiveRecording } from "../src/contract";
 
 type FixtureEntry = {
   file: string;
@@ -14,6 +14,43 @@ type FixtureEntry = {
 const fixtureUrl = (file: string) => new URL(`../../../contracts/fixtures/${file}`, import.meta.url);
 
 describe("browser capture contract", () => {
+  it("accepts a well-formed live-recording message and rejects unplayable origin", () => {
+    const message = {
+      kind: "liveRecording",
+      version: 1,
+      requestId: "req-live-1",
+      createdAt: "2026-11-11T12:00:00.000Z",
+      platform: "douyin",
+      pageURL: "https://live.douyin.com/427518068747",
+      quality: "origin",
+      variants: [
+        { quality: "origin", container: "hls", url: "https://pull.example.test/a.m3u8?sign=sanitized" },
+        { quality: "hd", container: "flv", url: "https://pull.example.test/a_hd.flv?sign=sanitized" },
+      ],
+    };
+    expect(validateLiveRecording(message)).toBeNull();
+    // 原画只有 FLV：原画 FLV 录不出画面，必须拒绝，让用户改选其他档。
+    expect(validateLiveRecording({
+      ...message,
+      variants: [{ quality: "origin", container: "flv", url: "https://pull.example.test/a.flv" }],
+    })).toBe("LIVE_ORIGIN_UNPLAYABLE");
+    expect(validateLiveRecording({ ...message, pageURL: "https://www.douyin.com/root/live/1" })).toBe("CAPTURE_URL_UNSUPPORTED");
+    expect(validateLiveRecording({
+      ...message,
+      variants: [{ quality: "hd", container: "hls", url: "https://pull.example.test/a.mp4" }],
+    })).toBe("CAPTURE_SCHEMA_INVALID");
+    expect(validateLiveRecording({
+      ...message,
+      anchorID: "SEC_demo",
+      anchorAvatarURL: "https://avatar.example.test/anchor.jpg",
+      anchorProfileURL: "https://www.douyin.com/user/SEC_demo",
+    })).toBeNull();
+    expect(validateLiveRecording({
+      ...message,
+      anchorAvatarURL: "http://avatar.example.test/anchor.jpg",
+    })).toBe("CAPTURE_SCHEMA_INVALID");
+  });
+
   it("validates the shared language-neutral fixtures and semantic invariants", () => {
     const manifest = JSON.parse(readFileSync(fixtureUrl("fixture-manifest.json"), "utf8")) as { schema: string; fixtures: FixtureEntry[] };
 
