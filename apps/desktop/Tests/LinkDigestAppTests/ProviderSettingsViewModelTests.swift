@@ -1564,6 +1564,44 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.connectionTestState, .success)
   }
 
+  // 密钥草稿的清空依据：保存的明确结果 + 编辑会话编号。
+  func testSaveReturnsExplicitResultAndEditorSessionAdvancesOnEachOpen() async throws {
+    let existing = try profile()
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(profile: existing),
+        secretStore: ViewModelSecretStore(values: [existing.secretReference: "old-key"]),
+        makeSecretReference: { .init(rawValue: "new-reference") }
+      ),
+      provider: SettingsTestProvider(scripts: [])
+    )
+    await model.load()
+
+    let start = model.editorSessionID
+    model.beginAddModel()
+    XCTAssertEqual(model.editorSessionID, start + 1)
+    model.baseURL = "https://other.example.test/v1"
+    model.modelName = "other-model"
+
+    // 失败：密钥为空，保存不成功，草稿应留在当前会话里。
+    let failed = await model.save(apiKey: "  \n")
+    XCTAssertFalse(failed)
+    XCTAssertEqual(model.editorSessionID, start + 1, "保存失败不开启新会话")
+    XCTAssertTrue(model.isEditorVisible)
+
+    // 成功：返回 true，视图据此清草稿。
+    let saved = await model.save(apiKey: "fresh-key")
+    XCTAssertTrue(saved)
+    XCTAssertFalse(model.isEditorVisible)
+
+    // 再开一次编辑：编号继续加，视图据此清掉上一家的草稿。
+    model.beginAddModel()
+    XCTAssertEqual(model.editorSessionID, start + 2)
+    model.closeEditor()
+    model.beginEditModel(existing.id)
+    XCTAssertEqual(model.editorSessionID, start + 3)
+  }
+
   private func profile() throws -> ProviderProfile {
     try ProviderProfile(
       baseURL: "https://example.test/v1",

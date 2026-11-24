@@ -180,10 +180,18 @@ private struct QuickCaptureView: View {
           }
         }
       }
-      if let error = controller.errorMessage {
-        Text(error).themedFont(.caption).foregroundStyle(theme.danger)
-          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+      // 错误条单独一个区域，动画只挂在这里、只动自己的透明度：不碰输入框、类型胶囊和按钮行，
+      // 行高即时到位，不位移。
+      ZStack {
+        if let error = controller.errorMessage {
+          Text(error).themedFont(.caption).foregroundStyle(theme.danger)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .transition(.opacity)
+        }
       }
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: controller.errorMessage != nil)
       HStack {
         Text("存到「我的笔记」，全局快捷键 \(QuickCaptureController.shortcutDescription)")
           .themedFont(.caption).foregroundStyle(theme.secondaryText)
@@ -196,8 +204,6 @@ private struct QuickCaptureView: View {
           .accessibilityIdentifier("quick-capture-save")
       }
     }
-    // 只在报错条出现/消失时触发；减弱动态下高度直接到位。
-    .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: controller.errorMessage != nil)
     .padding(.horizontal, DesignTokens.Space.lg)
     // 顶部让出透明标题栏的高度。
     .padding(.top, DesignTokens.Space.xxl)

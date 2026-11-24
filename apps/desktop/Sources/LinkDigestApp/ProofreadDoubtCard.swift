@@ -20,7 +20,6 @@ struct ProofreadDoubtCard: View {
 
   /// 展开收起会改高度：减弱动态时直接到位，不走 resolved 的插值。
   private var expandAnimation: Animation? { reduceMotion ? nil : DesignTokens.Motion.standard }
-  private var fadeAnimation: Animation { DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion) }
 
   var body: some View {
     let entry = isTidiedTranscript ? model.doubtEntry(taskID: taskID) : nil
@@ -136,7 +135,7 @@ struct ProofreadDoubtCard: View {
       }
     }
     .themedFont(.body)
-    .animation(fadeAnimation, value: doubt.status)
+    .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: doubt.status)
   }
 }
 

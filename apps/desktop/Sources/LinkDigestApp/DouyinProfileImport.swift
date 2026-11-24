@@ -395,6 +395,10 @@ struct DouyinProfileVisibleMetricsQueue {
 
   mutating func clearVisible() { visibleIDs.removeAll() }
 
+  /// 退回输入页（换链接）后重新开始：旧读取已取消，新主页要从干净的队列起步。
+  /// `stop()` 会把队列永久标成已停，新主页的补全会被全部挡住，所以换链接不能走 stop。
+  mutating func restart() { self = DouyinProfileVisibleMetricsQueue() }
+
   mutating func stop() {
     isStopped = true
     isPaused = false
@@ -1656,6 +1660,7 @@ struct DouyinProfileImportSheet: View {
 
   var body: some View {
     VStack(spacing: 0) {
+      Group {
       if model.sourceURL == nil {
         VStack(spacing: 0) {
           header
@@ -1703,6 +1708,13 @@ struct DouyinProfileImportSheet: View {
         }
         .transition(.opacity)
       }
+      }
+      // 输入页 ↔ 发现页：只淡入淡出，不动位置。动画只挂在这一层，不再盖住外框尺寸、
+      // WebKit、作品区和页脚；只对 sourceURL 是否为空这一个离散值动画。
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: model.sourceURL == nil
+      )
       if !model.candidates.isEmpty {
         VStack(spacing: 0) {
           Divider()
@@ -1712,19 +1724,14 @@ struct DouyinProfileImportSheet: View {
       }
     }
     .frame(width: sheetSize.width, height: sheetSize.height, alignment: .top)
-    // 只对离散阶段动画；hostWindowSize（拖动缩放主窗口）不进动画，保持跟手。
-    // 减弱动态效果时弹窗外框直接换尺寸，不插值。
-    .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: sheetStage)
-    // 输入页 ↔ 发现页：只淡入淡出，不动位置；两页同高（320），不涉及尺寸。
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-      value: model.sourceURL == nil
-    )
+    // 外框尺寸（阶段、列数、拖动缩放主窗口）一律即时更新，不挂隐式动画：首批作品到达时
+    // 尺寸、列数、拖动不能落进同一个动画事务，也不能盖住 WebKit、作品区和页脚。
     .background(theme.card)
     .background(SheetHostWindowSizeReader(size: $hostWindowSize))
     .onChange(of: metricsReader.readingID) { previous, current in
       if let previous, current == nil {
-        flashCompleted(previous)
+        // 换链接时旧读取被取消也会走到这里：已退回输入页就不再亮「数据已完整」。
+        if model.sourceURL != nil { flashCompleted(previous) }
         metricsQueue.finish(previous)
         readNextVisibleMetrics()
       }
@@ -1823,13 +1830,6 @@ struct DouyinProfileImportSheet: View {
     if !model.candidates.isEmpty { return model.candidates.count <= 3 ? 560 : 720 }
     // 输入页与「找作品」空态同高，进入发现阶段时不反缩。
     return 320
-  }
-
-  /// 弹窗尺寸的离散阶段，仅用于挂动画。
-  private var sheetStage: Int {
-    if showsHomepage { return 3 }
-    if !model.candidates.isEmpty { return model.candidates.count <= 3 ? 2 : 1 }
-    return 0
   }
 
   /// 弹窗不能比承载它的主窗口还大：小屏或缩小过的窗口里，按主窗口留边收缩。
@@ -2041,7 +2041,7 @@ struct DouyinProfileImportSheet: View {
       .accessibilityLabel(model.isScanning ? "正在加载更多" : (model.phase == .loading ? "正在打开主页" : ""))
       .accessibilityHidden(!(model.isScanning || model.phase == .loading))
       if model.candidates.isEmpty, model.sourceURL != nil, !model.isScanning {
-        Button("换链接") { stopReading(); model.backToInput() }
+        Button("换链接") { resetForNewLink() }
           .accessibilityIdentifier("douyin-profile-import-back-to-input")
           .help("退回上一步，重新贴主页链接")
       }
@@ -2124,8 +2124,7 @@ struct DouyinProfileImportSheet: View {
               .onDisappear { metricsQueue.setVisible(candidate.id, false) }
           }
         }
-        // 只在切换排序方式时重排动画；流式追加作品、滚动都不带动画。
-        .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: workSort)
+        // 排序直接切换：整张网格不挂隐式动画，流式追加作品、滚动、换排序都即时。
         .padding(DesignTokens.Space.md)
       }
     }
@@ -2310,6 +2309,15 @@ struct DouyinProfileImportSheet: View {
   private func stopReading() {
     metricsQueue.stop()
     metricsReader.cancel()
+  }
+
+  /// 「换链接」退回输入页：取消旧读取、重建队列，并清掉上一个主页遗留的视图状态。
+  private func resetForNewLink() {
+    metricsReader.cancel()
+    metricsQueue.restart()
+    showsHomepage = false
+    completedFlash = []
+    model.backToInput()
   }
 
   private func displayTitle(for candidate: DouyinProfileImportCandidate) -> String {

@@ -99,9 +99,8 @@ struct CommentPickerSheet: View {
         content
       }
       .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 420, alignment: .top)
-      .animation(
-        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-        value: phaseKind)
+      // 三态换内容时列表高度会变，减弱动态下直接切换，不插值。
+      .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: phaseKind)
 
       HStack {
         Button("取消") {

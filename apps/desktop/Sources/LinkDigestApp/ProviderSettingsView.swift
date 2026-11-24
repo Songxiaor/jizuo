@@ -665,6 +665,12 @@ struct ProviderSettingsView: View {
       // 每次打开编辑器都从「已选服务商折叠成一行」开始；添加流程本来就没有
       // 已选项，会直接展开网格（见 `showsPresetGrid`）。
       if visible { isChoosingPreset = false } else { isPresetPrefilled = false }
+      // 关闭编辑器：密钥草稿一并清掉，不留给下一次打开。
+      if !visible { apiKeyInput = "" }
+    }
+    .onChange(of: model.editorSessionID) { _, _ in
+      // 开启新编辑会话：上一家的密钥草稿不能带进来，也不能随「读取列表」发到别的地址。
+      apiKeyInput = ""
     }
     // 编辑表单改成 Sheet：原来它长在列表底下，只有一行小灰字「编辑模型：服务商」
     // 提示这是编辑区，和「模型服务」列表之间没有任何分隔，用户分不清哪些字段
@@ -1679,9 +1685,9 @@ struct ProviderSettingsView: View {
           Button("直接保存") {
             let submittedKey = apiKeyInput
             Task {
-              await model.save(apiKey: submittedKey)
-              // 失败时保留刚粘好的密钥，免得用户重新找一遍；成功后 Sheet 关闭才清。
-              if !model.isEditorVisible { apiKeyInput = "" }
+              // 失败时保留刚粘好的密钥，免得用户重新找一遍；保存成功才清。
+              // 关闭编辑器、开启新会话时另有清空（见 onChange）。
+              if await model.save(apiKey: submittedKey) { apiKeyInput = "" }
             }
           }
           .buttonStyle(.appQuiet)
@@ -1691,8 +1697,7 @@ struct ProviderSettingsView: View {
         Button(model.isAddingModelBatch ? "保存 \(model.selectedCatalogModelCount) 个模型" : "验证并保存") {
           let submittedKey = apiKeyInput
           Task {
-            await model.saveAndVerify(apiKey: submittedKey)
-            if !model.isEditorVisible { apiKeyInput = "" }
+            if await model.saveAndVerify(apiKey: submittedKey) { apiKeyInput = "" }
           }
         }
         .buttonStyle(.appProminent(settingsTheme.accent))
@@ -3181,7 +3186,7 @@ struct ProviderSettingsView: View {
       }
       Button("取消", role: .cancel) {}
     } message: {
-      Text("只把标题发给模型，排队翻，随时能停。原标题保留，会用掉少量额度。")
+      Text("一般只把标题发给模型；标题只有链接或没有意义时，会带上正文开头最多 800 字帮它判断。排队翻，随时能停。原标题保留，会用掉少量额度。")
     }
   }
 

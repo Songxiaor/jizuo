@@ -114,7 +114,7 @@ struct MediaStorageSettingsView: View {
                 .accessibilityIdentifier("media-storage-default")
               }
             }
-            .animation(quickAnimation, value: model.usesCustomDirectory)
+            .animation(layoutAnimation, value: model.usesCustomDirectory)
           }
 
           // 「上限」标签和行标题重复，去掉，步进器自己显示当前值就够。
@@ -198,7 +198,7 @@ struct MediaStorageSettingsView: View {
                   }
               }
             }
-            .animation(quickAnimation, value: hasScannedOrphans)
+            .animation(layoutAnimation, value: hasScannedOrphans)
           }
       }
 
@@ -270,6 +270,12 @@ struct MediaStorageSettingsView: View {
       }
     }
     .onAppear(perform: model.load)
+  }
+
+  /// 会改布局（按钮出现/消失、行换位）的变化用这个：减弱动态时传 nil，不插值。
+  /// `quickAnimation` 在减弱动态下仍有 0.1s 插值，只用于文字和色块的淡变。
+  private var layoutAnimation: Animation? {
+    reduceMotion ? nil : DesignTokens.Motion.quick
   }
 
   private var quickAnimation: Animation {

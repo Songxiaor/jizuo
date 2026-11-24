@@ -7,6 +7,8 @@ struct AnnotationSectionView: View {
   @Environment(\.appTheme) private var appTheme
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var hoveredExcerptID: TaskExcerpt.ID?
+  /// 键盘焦点落在哪条摘录的删除键上：焦点也要让它露出来，否则键盘用户找不到。
+  @FocusState private var focusedDeleteExcerptID: TaskExcerpt.ID?
   @State private var isNoteEditorPresented = false
   @FocusState private var isNoteEditorFocused: Bool
   /// 等待确认删除的摘录。摘录是用户亲手挑的句子，误点小叉号就没了又找不回，
@@ -38,10 +40,14 @@ struct AnnotationSectionView: View {
                 .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
-            // 悬停时才露出删除键（平时不抢摘录文字的注意力）；不可见时也不接收点击。
-            .opacity(hoveredExcerptID == excerpt.id ? 1 : 0)
-            .allowsHitTesting(hoveredExcerptID == excerpt.id)
-            .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: hoveredExcerptID == excerpt.id)
+            // 悬停或键盘聚焦时露出删除键（平时不抢摘录文字的注意力）；
+            // 不可见时不接收点击，但仍在键盘焦点链里，聚焦即显示。
+            .focused($focusedDeleteExcerptID, equals: excerpt.id)
+            .opacity(hoveredExcerptID == excerpt.id || focusedDeleteExcerptID == excerpt.id ? 1 : 0)
+            .allowsHitTesting(hoveredExcerptID == excerpt.id || focusedDeleteExcerptID == excerpt.id)
+            .animation(
+              DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+              value: hoveredExcerptID == excerpt.id || focusedDeleteExcerptID == excerpt.id)
             .help("删除这条摘录")
             .accessibilityLabel("删除这条摘录")
           }
@@ -54,7 +60,6 @@ struct AnnotationSectionView: View {
               hoveredExcerptID = nil
             }
           }
-          .transition(DesignTokens.Transition.reveal(reduceMotion: reduceMotion))
           .accessibilityIdentifier("annotation-excerpt-row")
         }
       }
@@ -113,8 +118,7 @@ struct AnnotationSectionView: View {
         .accessibilityIdentifier("annotation-failure-banner")
       }
     }
-    // 摘录增删（高度会变）：减弱动态时直接到位；失败条只淡变。只在对应值变化时生效。
-    .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: model.taskExcerpts.count)
+    // 摘录增删在阅读流里改高度：一次到位，不动画（不挂转场、不挂隐式动画）；失败条只淡变。
     .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: model.annotationFailureMessage != nil

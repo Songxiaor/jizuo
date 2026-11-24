@@ -126,6 +126,8 @@ final class ProviderSettingsViewModel {
   /// nil while adding a new model; otherwise the library entry being edited.
   private(set) var editingProfileID: String?
   private(set) var isEditorVisible = false
+  /// 每开启一次编辑会话加一。视图据此清掉密钥草稿：前一家的密钥不能带进下一家的表单。
+  private(set) var editorSessionID = 0
   private(set) var lastSavedProfileCount = 0
 
   private let configurationService: ProviderConfigurationService
@@ -706,6 +708,7 @@ final class ProviderSettingsViewModel {
     borrowedProviderKey = nil
     editingProfileID = nil
     isEditorVisible = true
+    editorSessionID += 1
     baseURL = ""
     modelName = ""
     selectedPreset = .custom
@@ -741,6 +744,7 @@ final class ProviderSettingsViewModel {
     borrowedProviderKey = nil
     editingProfileID = id
     isEditorVisible = true
+    editorSessionID += 1
     baseURL = profile.baseURL.absoluteString
     modelName = profile.model
     selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
@@ -1033,19 +1037,23 @@ final class ProviderSettingsViewModel {
   ///
   /// 添加流程原来保存完就把编辑器关掉，测试结果没地方显示；这里保存期间先把编辑器
   /// 留着，测完再由用户自己关。
-  func saveAndVerify(apiKey: String) async {
+  @discardableResult
+  func saveAndVerify(apiKey: String) async -> Bool {
     keepsEditorOpenAfterSave = true
-    await save(apiKey: apiKey)
+    let saved = await save(apiKey: apiKey)
     keepsEditorOpenAfterSave = false
-    guard state == .configured, canTestConnection else { return }
+    guard saved, state == .configured, canTestConnection else { return saved }
     await testConnection()
+    return saved
   }
 
   @ObservationIgnored private var keepsEditorOpenAfterSave = false
 
-  func save(apiKey: String) async {
+  /// 返回是否真的写进去了。视图靠它决定清不清密钥草稿：成功才清，失败留在当前会话里。
+  @discardableResult
+  func save(apiKey: String) async -> Bool {
     guard canSaveConfiguration else {
-      return
+      return false
     }
     let apiKey = effectiveAPIKey(apiKey)
     connectionTestState = .idle
@@ -1124,10 +1132,13 @@ final class ProviderSettingsViewModel {
         editingProfileID = profile.id
         if !keepsEditorOpenAfterSave { isEditorVisible = false }
       }
+      return true
     } catch let error as ProviderConfigurationError {
       state = .failed(code: error.rawValue)
+      return false
     } catch {
       state = .failed(code: ProviderConfigurationError.profileStoreWriteFailed.rawValue)
+      return false
     }
   }
 

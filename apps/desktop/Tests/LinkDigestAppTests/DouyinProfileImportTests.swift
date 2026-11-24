@@ -1155,6 +1155,27 @@ final class DouyinProfileImportTests: XCTestCase {
     XCTAssertNil(queue.next(in: ["first", "second"]), "Scrolling must not retry previously attempted works")
   }
 
+  /// 「换链接」：stop() 会把队列永久标成已停，新主页的补全全被挡住；restart() 必须回到干净状态。
+  func testVisibleMetricsQueueRestartAfterStopAcceptsNewProfile() {
+    var queue = DouyinProfileVisibleMetricsQueue()
+    queue.setVisible("old", true)
+    XCTAssertEqual(queue.next(in: ["old"]), "old")
+    queue.stop()
+    queue.setVisible("new", true)
+    XCTAssertNil(queue.next(in: ["new"]), "stop() 之后永久挡住，这正是换链接不能走 stop 的原因")
+    XCTAssertTrue(queue.isStopped)
+
+    queue.restart()
+
+    XCTAssertFalse(queue.isStopped)
+    XCTAssertFalse(queue.isPaused)
+    XCTAssertNil(queue.activeID)
+    XCTAssertTrue(queue.visibleIDs.isEmpty)
+    XCTAssertTrue(queue.attemptedIDs.isEmpty, "旧主页的已尝试记录不带进新主页")
+    queue.setVisible("new", true)
+    XCTAssertEqual(queue.next(in: ["new"]), "new")
+  }
+
   func testVisibleMetricsQueueDropsUnstartedOffscreenWorks() {
     var queue = DouyinProfileVisibleMetricsQueue()
     queue.setVisible("first", true)
