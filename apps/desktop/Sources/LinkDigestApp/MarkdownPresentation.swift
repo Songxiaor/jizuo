@@ -2563,6 +2563,9 @@ struct MarkdownContentView: View {
   @ObservedObject private var webRenderer = ReadingWebRenderer.shared
   /// 打开了源码的流程图、打开了预览的 html 代码块（按内容区分）。
   @State private var toggledCodeBlocks: Set<String> = []
+  /// 提示框的展开 / 收起。公式、流程图排好后正文块会整体重建，卡片自己的状态会丢，
+  /// 所以记在正文这一层（2026-11-24：展开的提示框等公式排好后自己收起）。
+  @State private var calloutFolds = ReadingCalloutFoldMemory()
 
   /// 后台解析出来的正文章节，以及它属于哪一份正文。
   ///
@@ -3172,8 +3175,9 @@ struct MarkdownContentView: View {
         let trims = nextIsCard && foldToggle?.collapsed != true
         appendText(trims ? ReadingRenderCache.trimmingTrailingNewline(composed) : composed, foldToggle, pendingSpace, anchor)
       case let .code(language, content):
-        appendBlock(.full, followsText ? 10 : 0, 20, anchor, "code|\(language ?? "")|\(content)") {
-          AnyView(self.specialCodeBlock(language: language, content: content))
+        // 位置进键：同一篇里两个一模一样的流程图 / HTML 各切各的（原来按内容记，会一起切）。
+        appendBlock(.full, followsText ? 10 : 0, 20, anchor, "code|\(anchor)|\(language ?? "")|\(content)") {
+          AnyView(self.specialCodeBlock(language: language, content: content, slot: "\(anchor)"))
         }
       case let .table(headers, rows, alignments):
         appendBlock(.full, followsText ? 10 : 0, 20, anchor, "table|\(headers)|\(rows)|\(String(describing: alignments))") {
@@ -3196,7 +3200,8 @@ struct MarkdownContentView: View {
         appendBlock(.full, followsText ? 10 : 0, 20, anchor, calloutKey) {
           AnyView(ReadingCalloutCard(
             kind: kind, title: title, fold: fold,
-            accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor
+            accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor,
+            foldMemory: self.calloutFolds, foldKey: "\(anchor)|\(calloutKey)"
           ) {
             if !text.isEmpty {
               AnyView(self.structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
@@ -3281,7 +3286,7 @@ struct MarkdownContentView: View {
             // 章节开头：标题旁放收起 / 展开的小三角（对齐 Tolaria）。
             if !folding.isHeadingHidden(heading) {
               let collapsed = folding.isCollapsed(heading)
-              runView(collapsed ? entry.run.headingOnly : entry.run, trimsTrailingLine: nextIsCard && !collapsed, followsText: followsText)
+              runView(collapsed ? entry.run.headingOnly : entry.run, trimsTrailingLine: nextIsCard && !collapsed, followsText: followsText, slot: "\(segmentIndex)|\(entry.anchor)")
                 .overlay(alignment: .topLeading) {
                   SectionFoldToggle(isCollapsed: collapsed, level: level, tint: secondaryTextColor) {
                     if collapsedHeadings.contains(heading) {
@@ -3297,7 +3302,8 @@ struct MarkdownContentView: View {
             runView(
               entry.run, trimsTrailingLine: nextIsCard, followsText: followsText,
               // 全文第一段文字（不在提示框里）才当导语。
-              emphasizesLede: foldsSections && segmentIndex == 0 && entry.anchor == 0
+              emphasizesLede: foldsSections && segmentIndex == 0 && entry.anchor == 0,
+              slot: "\(segmentIndex)|\(entry.anchor)"
             )
               .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
           }
@@ -3307,18 +3313,19 @@ struct MarkdownContentView: View {
 
   @ViewBuilder
   private func runView(
-    _ run: StructuredRun, trimsTrailingLine: Bool = false, followsText: Bool = false, emphasizesLede: Bool = false
+    _ run: StructuredRun, trimsTrailingLine: Bool = false, followsText: Bool = false, emphasizesLede: Bool = false,
+    slot: String = ""
   ) -> some View {
     if case .text = run {
       runContent(run, trimsTrailingLine: trimsTrailingLine, emphasizesLede: emphasizesLede)
     } else {
-      runContent(run, trimsTrailingLine: false)
+      runContent(run, trimsTrailingLine: false, slot: slot)
         .padding(.top, followsText ? 10 : 0)
     }
   }
 
   @ViewBuilder
-  private func runContent(_ run: StructuredRun, trimsTrailingLine: Bool, emphasizesLede: Bool = false) -> some View {
+  private func runContent(_ run: StructuredRun, trimsTrailingLine: Bool, emphasizesLede: Bool = false, slot: String = "") -> some View {
     switch run {
     case let .text(textBlocks):
       let composed = ReadingRenderCache.attributed(
@@ -3348,7 +3355,9 @@ struct MarkdownContentView: View {
         title: title,
         fold: fold,
         accentColor: accentColor,
-        secondaryTextColor: secondaryTextColor
+        secondaryTextColor: secondaryTextColor,
+        foldMemory: calloutFolds,
+        foldKey: "\(slot)|callout|\(kind)|\(title)|\(text)"
       ) {
         if !text.isEmpty {
           // 按完整正文排：提示框 / 折叠块里常有代码、表格，只用文字视图会把它们丢掉。
@@ -3358,7 +3367,7 @@ struct MarkdownContentView: View {
       }
       .padding(.bottom, 20)
     case let .code(language, content):
-      specialCodeBlock(language: language, content: content)
+      specialCodeBlock(language: language, content: content, slot: slot)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 20)
     case let .table(headers, rows, alignments):
@@ -3578,7 +3587,7 @@ struct MarkdownContentView: View {
 
   /// 代码块按语言分流：公式、流程图排成图片；html 可切换预览；其余照常显示代码。
   @ViewBuilder
-  private func specialCodeBlock(language: String?, content: String) -> some View {
+  private func specialCodeBlock(language: String?, content: String, slot: String) -> some View {
     switch ReadingSpecialCode.kind(of: language) {
     case .math:
       ReadingRenderedBlock(
@@ -3589,7 +3598,7 @@ struct MarkdownContentView: View {
         codeBlock(language: language, content: content)
       }
     case .mermaid:
-      let key = "mermaid|" + content
+      let key = "mermaid|\(slot)|" + content
       let showsSource = toggledCodeBlocks.contains(key)
       VStack(alignment: .leading, spacing: 6) {
         specialBlockToolbar(title: "流程图", toggleTitle: showsSource ? "看图" : "看源码", key: key)
@@ -3606,7 +3615,7 @@ struct MarkdownContentView: View {
         }
       }
     case .html:
-      let key = "html|" + content
+      let key = "html|\(slot)|" + content
       let previews = toggledCodeBlocks.contains(key)
       VStack(alignment: .leading, spacing: 6) {
         specialBlockToolbar(title: "HTML", toggleTitle: previews ? "看代码" : "预览", key: key)
@@ -4076,6 +4085,8 @@ struct ReadingCalloutCard<Content: View>: View {
   let accentColor: Color
   let secondaryTextColor: Color
   let content: () -> Content
+  private let foldMemory: ReadingCalloutFoldMemory?
+  private let foldKey: String
   @State private var isExpanded: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.appTheme) private var appTheme
@@ -4086,15 +4097,19 @@ struct ReadingCalloutCard<Content: View>: View {
     fold: MarkdownPresentation.CalloutFold,
     accentColor: Color,
     secondaryTextColor: Color,
+    foldMemory: ReadingCalloutFoldMemory? = nil,
+    foldKey: String = "",
     @ViewBuilder content: @escaping () -> Content
   ) {
+    self.foldMemory = foldMemory
+    self.foldKey = foldKey
     self.kind = kind
     self.title = title
     self.fold = fold
     self.accentColor = accentColor
     self.secondaryTextColor = secondaryTextColor
     self.content = content
-    _isExpanded = State(initialValue: fold != .collapsed)
+    _isExpanded = State(initialValue: foldMemory?.expanded[foldKey] ?? (fold != .collapsed))
   }
 
   private var tint: Color { MarkdownPresentation.calloutColor(kind, theme: appTheme, accent: accentColor) }
@@ -4148,6 +4163,7 @@ struct ReadingCalloutCard<Content: View>: View {
     } else {
       Button {
         withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) { isExpanded.toggle() }
+        foldMemory?.expanded[foldKey] = isExpanded
       } label: {
         label.contentShape(Rectangle())
       }
@@ -4155,6 +4171,12 @@ struct ReadingCalloutCard<Content: View>: View {
       .accessibilityLabel(isExpanded ? "收起\(heading)" : "展开\(heading)")
     }
   }
+}
+
+/// 提示框展开状态的备忘：引用类型，改它不触发正文重建，只在卡片重建时读回。
+@MainActor
+final class ReadingCalloutFoldMemory {
+  var expanded: [String: Bool] = [:]
 }
 
 /// 章节折叠的判定（2026-09-24 对齐 Tolaria：标题可收起下面的内容，直到下一个同级或更高级标题）。
