@@ -609,8 +609,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(gate.contains("count"), "不能因为正文短就把停止藏掉")
     XCTAssertEqual(
       source.components(separatedBy: "frame(height: ReadingHeaderMetrics.verbRow)").count - 1,
-      2,
-      "进行中那组和整行表头都锁同一高度，静止时不能更矮"
+      3,
+      "总结/翻译进行中、转写进行中两组和整行表头都锁同一高度，静止时不能更矮"
     )
     XCTAssertEqual(ReadingHeaderMetrics.verbRow, 22)
   }
@@ -1791,7 +1791,7 @@ final class HistoryContentViewTests: XCTestCase {
       XCTAssertTrue(branch.contains("onSelectQuality: { quality in"))
       XCTAssertTrue(branch.contains("qualityOverride: quality"))
       XCTAssertTrue(branch.contains("selectedQuality: sessionMediaPlayback.chosenQuality"))
-      XCTAssertTrue(branch.contains(".id(sessionMediaPlayback.generation)"))
+      XCTAssertFalse(branch.contains(".id(sessionMediaPlayback.generation)"), "换清晰度不拆播放器卡，就地响应 descriptor")
       let select = section(
         in: branch,
         from: "onSelectQuality: { quality in",

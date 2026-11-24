@@ -2636,6 +2636,7 @@ struct MarkdownContentView: View {
         .foregroundStyle(.secondary)
     }
     .buttonStyle(.plain)
+    .hoverHighlight(radius: DesignTokens.Radius.sm, strength: 0.06)
     .help("正文章节与下方模块")
     .accessibilityLabel(outlineButtonTitle)
     .accessibilityIdentifier("history-content-outline-button")
@@ -2721,6 +2722,7 @@ struct MarkdownContentView: View {
       .padding(.vertical, 3)
     }
     .buttonStyle(.plain)
+    .hoverHighlight(radius: DesignTokens.Radius.sm, strength: 0.07)
   }
 
   /// 点击目录后要滚到的块下标。用 `ScrollViewReader` 驱动**外层**滚动容器——
@@ -3031,6 +3033,8 @@ struct MarkdownContentView: View {
           text.addAttribute(.paragraphStyle, value: style, range: headingLine)
         }
         let offset = CGPoint(x: 0, y: font.capHeight / 2 - 8)
+        // reuseKey 里带 collapsed：点一下整篇文档本来就按 collapsedHeadings 重新拼，这个小三角随之
+        // 重建，所以它的旋转过程播不出来（直接到位）。不为它动渲染缓存结构；悬停提亮仍有淡变。
         let toggle = cache.block(reuseKey: "fold|\(heading)|\(collapsed)|\(offset.y)") {
           HostedBlockAttachment(width: .fixed(CGSize(width: Self.foldGutter, height: 16), offset: offset)) {
             AnyView(InlineFoldToggle(isCollapsed: collapsed, tint: self.secondaryTextColor) {
@@ -3924,6 +3928,8 @@ struct QuotedTweetCardView: View {
               .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .hoverHighlight(radius: DesignTokens.Radius.sm, strength: 0.06)
+            .linkCursor()
             .help("在浏览器中打开被引用的这条推文")
           }
         }
@@ -3960,18 +3966,39 @@ struct QuotedTweetCardView: View {
 private struct CodeCopyButton: View {
   let content: String
   @State private var isHovered = false
+  /// 刚复制过：图标临时换成对勾，1.2 秒后恢复。
+  @State private var justCopied = false
+  @State private var resetTask: Task<Void, Never>?
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button {
       CopyFeedbackController.shared.copy(content)
+      justCopied = true
+      resetTask?.cancel()
+      resetTask = Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        guard !Task.isCancelled else { return }
+        justCopied = false
+      }
     } label: {
-      Label("复制", systemImage: "doc.on.doc")
+      Label("复制", systemImage: justCopied ? "checkmark" : "doc.on.doc")
         .labelStyle(.iconOnly)
+        .motionSymbolReplace(reduceMotion: reduceMotion)
     }
     .buttonStyle(.plain)
-    .foregroundStyle(isHovered ? .primary : .secondary)
+    .foregroundStyle(justCopied ? Color.green : (isHovered ? .primary : .secondary))
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovered
+    )
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: justCopied
+    )
     .onHover { isHovered = $0 }
-    .accessibilityLabel("复制代码")
+    .onDisappear { resetTask?.cancel() }
+    .accessibilityLabel(justCopied ? "已复制" : "复制代码")
   }
 }
 
@@ -4152,6 +4179,8 @@ struct ReadingCalloutCard<Content: View>: View {
           .font(.system(size: 10, weight: .semibold))
           .foregroundStyle(secondaryTextColor)
           .rotationEffect(.degrees(isExpanded ? 90 : 0))
+          // 旋转是纯绘制，不触发排版；减弱动态时直接到位。
+          .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: isExpanded)
       }
       Spacer(minLength: 0)
     }
@@ -4162,12 +4191,15 @@ struct ReadingCalloutCard<Content: View>: View {
       label
     } else {
       Button {
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) { isExpanded.toggle() }
+        // 正文展开 / 收起不带过程动画：提示框是嵌在整篇文字视图里的块，高度每帧一变，
+        // 整篇文字就跟着每帧重排。只让小三角转（见 label，只改绘制），内容直接到位。
+        isExpanded.toggle()
         foldMemory?.expanded[foldKey] = isExpanded
       } label: {
         label.contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .hoverHighlight(radius: DesignTokens.Radius.sm, strength: 0.05)
       .accessibilityLabel(isExpanded ? "收起\(heading)" : "展开\(heading)")
     }
   }
@@ -4216,6 +4248,7 @@ struct InlineFoldToggle: View {
   let tint: Color
   let action: () -> Void
   @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button(action: action) {
@@ -4227,6 +4260,10 @@ struct InlineFoldToggle: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(tint.opacity(isCollapsed || isHovering ? 0.9 : 0.35))
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering
+    )
     .onHover { isHovering = $0 }
     .help(isCollapsed ? "展开这一节" : "收起这一节")
     .accessibilityLabel(isCollapsed ? "展开这一节" : "收起这一节")
@@ -4239,6 +4276,7 @@ struct SectionFoldToggle: View {
   let tint: Color
   let action: () -> Void
   @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// 按 `SelectableReadingText` 里标题的字号，让三角落在标题第一行中间。
   /// 章节总是从标题起一段新的文本视图，段首的段前距不生效，这里不计。
@@ -4257,6 +4295,10 @@ struct SectionFoldToggle: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(tint.opacity(isCollapsed || isHovering ? 0.9 : 0.35))
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering
+    )
     .onHover { isHovering = $0 }
     .offset(x: -20, y: topInset)
     .help(isCollapsed ? "展开这一节" : "收起这一节")
@@ -4303,9 +4345,31 @@ struct ReadingRenderedBlock<Fallback: View>: View {
   let failureTitle: String
   @ViewBuilder let fallback: () -> Fallback
   @ObservedObject private var renderer = ReadingWebRenderer.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// 只有这个视图实例亲眼看过「正在排版」，成品才淡入；一上来就是成品（重建、复用）不闪。
+  /// 淡入只动透明度，不动尺寸，减弱动态下直接出现。
+  @State private var fadedIn = true
+
+  private var isPending: Bool {
+    if case .none = renderer.outcome(for: request) { return true }
+    return false
+  }
 
   var body: some View {
     let _ = renderer.generation
+    content
+      .opacity(!isPending && !fadedIn ? 0 : 1)
+      .onAppear { if isPending && !reduceMotion { fadedIn = false } }
+      .onChange(of: isPending) { _, pending in
+        if pending {
+          if !reduceMotion { fadedIn = false }
+        } else if !fadedIn {
+          withAnimation(DesignTokens.Motion.quick) { fadedIn = true }
+        }
+      }
+  }
+
+  @ViewBuilder private var content: some View {
     switch renderer.outcome(for: request) {
     case let .rendered(result):
       // 按排版时的原尺寸显示（缩放会让公式里的小字糊掉）；比正文还宽的图可以横向拖动。

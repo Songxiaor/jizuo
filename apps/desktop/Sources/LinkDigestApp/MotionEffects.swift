@@ -36,3 +36,38 @@ extension View {
   }
 }
 
+
+/// 悬停时给一块区域铺一层淡底色。只动颜色（透明度），不动尺寸和位置，
+/// 所以减弱动态下仍可保留 0.1 秒淡变（`resolved`）。
+///
+/// 给 `.buttonStyle(.plain)` 的行、胶囊、图标按钮补悬停反馈用；`disabled` 时不亮。
+struct HoverHighlight: ViewModifier {
+  var radius: CGFloat = DesignTokens.Radius.md
+  var strength: Double = 0.06
+  var isEnabled = true
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        Color.primary.opacity(isHovering && isEnabled ? strength : 0),
+        in: RoundedRectangle(cornerRadius: radius, style: .continuous)
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering
+      )
+      .onHover { isHovering = $0 }
+  }
+}
+
+extension View {
+  func hoverHighlight(
+    radius: CGFloat = DesignTokens.Radius.md,
+    strength: Double = 0.06,
+    isEnabled: Bool = true
+  ) -> some View {
+    modifier(HoverHighlight(radius: radius, strength: strength, isEnabled: isEnabled))
+  }
+}

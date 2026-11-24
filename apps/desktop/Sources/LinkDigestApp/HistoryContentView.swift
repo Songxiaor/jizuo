@@ -21,6 +21,9 @@ struct HistoryContentView: View {
   /// 「记一个新灵感」的输入框。
   @State private var isNewSparkPresented = false
   @State private var newSparkText = ""
+  /// 新灵感正在建草稿：建好前「开始」不可再点，免得连点建出多条草稿。
+  @State private var isCreatingSpark = false
+  @FocusState private var isNewSparkFieldFocused: Bool
   /// 「待转写 → 全部转写」确认前读出的全部条目；非 nil 时弹确认框。
   @State private var untranscribedBacklogToConfirm: [(taskID: TaskID, name: String)]?
   @State private var isLoadingUntranscribedBacklog = false
@@ -758,6 +761,7 @@ struct HistoryContentView: View {
           HStack(spacing: 7) {
             ProgressView().controlSize(.small)
             Text(model.batchSummaryProgressText)
+              .monospacedDigit()
               .lineLimit(1)
               .truncationMode(.middle)
           }
@@ -3707,20 +3711,26 @@ struct HistoryContentView: View {
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md).fill(Color(nsColor: .textBackgroundColor))
         )
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).strokeBorder(theme.hairline))
+        .focused($isNewSparkFieldFocused)
+        .disabled(isCreatingSpark)
         .onSubmit(commitNewSpark)
       HStack {
         Spacer()
+        if isCreatingSpark { ProgressView().controlSize(.small) }
         Button("取消") {
           isNewSparkPresented = false
           newSparkText = ""
         }
+        .disabled(isCreatingSpark)
         Button("开始") { commitNewSpark() }
           .buttonStyle(.borderedProminent)
-          .disabled(newSparkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          .disabled(isCreatingSpark || newSparkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
     }
     .padding(20)
     .frame(width: 420)
+    // 弹出就能直接打字：念头冒出来的那一刻不该再多点一下输入框。
+    .onAppear { isNewSparkFieldFocused = true }
   }
 
   /// 从一条选题开始写。
@@ -3738,12 +3748,15 @@ struct HistoryContentView: View {
   /// 建正文笔记 → 登记创作。两步都成了才关掉输入框。
   private func commitNewSpark() {
     let spark = newSparkText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !spark.isEmpty else { return }
+    guard !spark.isEmpty, !isCreatingSpark else { return }
+    isCreatingSpark = true
     manualLink.createPieceDraft(title: PieceDocument.noteTitle(forSpark: spark)) { taskID in
       model.registerPiece(spark: spark, noteTaskID: taskID)
+      isCreatingSpark = false
       isNewSparkPresented = false
       newSparkText = ""
     } onFailure: { message in
+      isCreatingSpark = false
       model.reportFailure(message)
     }
   }
@@ -4165,6 +4178,7 @@ struct HistoryContentView: View {
           Image(systemName: "xmark").font(.caption.weight(.semibold))
         }
         .buttonStyle(.plain)
+        .hoverHighlight(radius: DesignTokens.Radius.sm)
         .help("不再显示")
         .accessibilityLabel("不再显示")
       }
@@ -4256,10 +4270,14 @@ struct HistoryContentView: View {
       }
       .buttonStyle(.borderedProminent)
       .controlSize(.small)
+      // 总结已经在跑时不能再点：连点会排出第二次生成。
+      .disabled(providerSettings.hasConfiguredAPIKey && appModel.runState.isActive)
+      .help(providerSettings.hasConfiguredAPIKey && appModel.runState.isActive ? "正在生成，完成后引导会自动消失" : "")
       Button {
         isCaptureOnboardingDismissed = true
       } label: { Image(systemName: "xmark") }
         .buttonStyle(.plain)
+        .hoverHighlight(radius: DesignTokens.Radius.sm)
         .help("不再显示")
         .accessibilityLabel("不再显示")
     }
@@ -4295,6 +4313,11 @@ struct HistoryContentView: View {
       Image(systemName: completed ? "checkmark.circle.fill" : "\(number).circle")
         .foregroundStyle(completed ? theme.success : theme.secondaryText)
         .font(.title3)
+        .motionSymbolReplace(reduceMotion: reduceMotion)
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+          value: completed
+        )
       Text(title).themedFont(.callout, weight: .medium)
       Spacer()
       if !completed {
@@ -4306,8 +4329,13 @@ struct HistoryContentView: View {
           // 灰掉的按钮自己收不到悬停，提示挂在外层才看得到。
           .help(isEnabled ? "" : (disabledHelp ?? ""))
           .accessibilityHint(isEnabled ? "" : (disabledHelp ?? ""))
+          .transition(.opacity)
       }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: completed
+    )
     .contentShape(Rectangle())
     .help(!completed && !isEnabled ? (disabledHelp ?? "") : "")
   }
@@ -4330,6 +4358,7 @@ struct HistoryContentView: View {
 
 /// 多选时详情列的操作面板：批量动作和操作对象同屏，不分散到窗口工具栏。
 private struct HistoryMultiSelectionPanel: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Bindable var model: HistoryViewModel
   var providerSettings: ProviderSettingsViewModel
   let protectedTaskIDs: Set<TaskID>
@@ -4348,7 +4377,13 @@ private struct HistoryMultiSelectionPanel: View {
         } else if model.isBatchTranslating {
           Text("正在批量翻译").themedFont(.title2, weight: .semibold)
         } else {
-          Text("已选择 \(model.selectedTaskCount) 项").themedFont(.title2, weight: .semibold)
+          Text("已选择 \(model.selectedTaskCount) 项")
+            .themedFont(.title2, weight: .semibold)
+            .motionNumericText(reduceMotion: reduceMotion)
+            .animation(
+              DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+              value: model.selectedTaskCount
+            )
           Text(selectionScopeDescription)
             .themedFont(.callout)
             .foregroundStyle(.secondary)
@@ -4361,7 +4396,7 @@ private struct HistoryMultiSelectionPanel: View {
           HStack(spacing: 10) {
             ProgressView().controlSize(.regular)
             Text(model.batchSummaryProgressText)
-              .themedFont(.callout, weight: .medium)
+              .themedFont(.callout, weight: .medium, monospacedDigit: true)
               .foregroundStyle(theme.secondaryText)
               .lineLimit(2)
               .multilineTextAlignment(.center)
@@ -4380,7 +4415,7 @@ private struct HistoryMultiSelectionPanel: View {
           HStack(spacing: 10) {
             ProgressView().controlSize(.regular)
             Text(model.batchTranslationProgressText)
-              .themedFont(.callout, weight: .medium)
+              .themedFont(.callout, weight: .medium, monospacedDigit: true)
               .foregroundStyle(theme.secondaryText)
               .lineLimit(2)
               .multilineTextAlignment(.center)
@@ -4733,6 +4768,10 @@ private struct HistoryDetailView: View, Equatable {
   @State private var transcriptSnapshotWhenRunBegan: String?
   /// 刚校对完的那一条：「校对稿已保存」只亮几秒。
   @State private var recentlyCompletedTidyTaskID: TaskID?
+  /// 三条定时收起的提示各存自己的计时任务：连续两次完成时，旧计时要取消，否则会提前抹掉新提示。
+  @State private var completionBannerTimer: Task<Void, Never>?
+  @State private var stampTimer: Task<Void, Never>?
+  @State private var tidySavedTimer: Task<Void, Never>?
   /// 「处理」面板（2026-09-28 工序印）：原来是系统菜单，只能放单色小图标，放不下印。
   @State private var isProcessPanelPresented = false
   /// 盖章那一刻：记下这一条已经做过哪些工序，新多出来的那道就盖一下。
@@ -4833,6 +4872,7 @@ private struct HistoryDetailView: View, Equatable {
   }
   @State private var renamingSpeaker: String?
   @State private var speakerNameDraft = ""
+  @FocusState private var isSpeakerNameFocused: Bool
   @State private var isOnlineDiarizationConfirmPresented = false
   /// 收起长文时把按钮留在原处（见 `ReadingScrollKeeper`）。
   @State private var readingScrollKeeper = ReadingScrollKeeper()
@@ -5932,7 +5972,9 @@ private struct HistoryDetailView: View, Equatable {
         }
         // 成功有横幅，失败和中断原来什么都不显示——状态只落在详情下方一个被动的
         // 元数据字段上。关 App 时被打断的那次翻译，表现就是「点了没反应」。
-        if completionBanner == nil, stampingStep == nil, let notice = UnfinishedRunNotice.latest(in: detail.runs) {
+        // 不再和完成提示互斥：提示浮在顶上（见 completionNotice），不占正文位置；原来互斥时，提示 2.2 秒后
+        // 收起的那一刻这条会突然插进来，把标题和整篇正文往下顶一格。
+        if let notice = UnfinishedRunNotice.latest(in: detail.runs) {
           HStack(spacing: 8) {
             Label(notice.message, systemImage: "exclamationmark.arrow.circlepath")
               .themedFont(.callout, weight: .medium)
@@ -6046,7 +6088,6 @@ private struct HistoryDetailView: View, Equatable {
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-preview-card")
-            .id(sessionMediaPlayback.generation)
             streamSelectionDiagnostic
           } else if let youTubeVideoID = YouTubeWatchLink.videoID(from: detail.task.canonicalURL) {
             youTubeCard(videoID: youTubeVideoID)
@@ -6164,8 +6205,6 @@ private struct HistoryDetailView: View, Equatable {
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-session-restored-card")
-            // generation is read so cache/refresh updates re-render this branch.
-            .id(sessionMediaPlayback.generation)
             streamSelectionDiagnostic
           } else if HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
             hadMediaDescriptor: detail.hadMediaDescriptor,
@@ -6194,7 +6233,6 @@ private struct HistoryDetailView: View, Equatable {
               }
             )
             .padding(.top, 14)
-            .id(sessionMediaPlayback.generation)
           }
         }
 
@@ -6315,9 +6353,13 @@ private struct HistoryDetailView: View, Equatable {
       VStack(spacing: DesignTokens.Space.sm) {
         if isReadingHeaderPinned, !isOwnWriting, showsReadingSurface {
           pinnedReadingHeader
+            .transition(.opacity)
         }
         completionNotice
       }
+      // 吸顶条出现 / 消失只做淡变，下面的完成提示随之平滑让位，不是被顶下去一格。
+      // 只作用在这个浮层容器上（正文在滚动区里，不受影响）；让位是位移，减弱动态时直接到位。
+      .animation(reduceMotion ? nil : DesignTokens.Motion.instant, value: isReadingHeaderPinned)
     }
     // 视频滚出视野还在播：右下角小窗接着放。放右上角时盖住正在读的那几行的行尾
     //（2026-10-04 实测），右下角是读者视线最少停留的地方。
@@ -6370,6 +6412,10 @@ private struct HistoryDetailView: View, Equatable {
       manuscriptMode = .marked
       // 换条目：记下这一条已有的工序当底数，之后新做完的才盖章。
       stampBaseline = (detail.task.id, completedStepStamps)
+      stampTimer?.cancel()
+      completionBannerTimer?.cancel()
+      tidySavedTimer?.cancel()
+      recentlyCompletedTidyTaskID = nil
       stampingStep = nil
       isProcessPanelPresented = false
       loadTranscriptParagraphs()
@@ -6461,8 +6507,10 @@ private struct HistoryDetailView: View, Equatable {
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
         completionBanner = intent == .translate ? "翻译已完成" : "总结已完成"
       }
-      Task { @MainActor in
+      completionBannerTimer?.cancel()
+      completionBannerTimer = Task { @MainActor in
         try? await Task.sleep(nanoseconds: 2_200_000_000)
+        guard !Task.isCancelled else { return }
         withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { completionBanner = nil }
       }
     }
@@ -6491,9 +6539,10 @@ private struct HistoryDetailView: View, Equatable {
       guard completed else { return }
       let taskID = detail.task.id
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = taskID }
-      Task { @MainActor in
+      tidySavedTimer?.cancel()
+      tidySavedTimer = Task { @MainActor in
         try? await Task.sleep(nanoseconds: 4_000_000_000)
-        guard recentlyCompletedTidyTaskID == taskID else { return }
+        guard !Task.isCancelled, recentlyCompletedTidyTaskID == taskID else { return }
         withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = nil }
       }
     }
@@ -6759,6 +6808,8 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-detail-title")
         if titleExceedsCollapsedLimit {
           Button(isTitleExpanded ? "收起标题" : "展开标题") {
+            // 故意不加动画：标题行数一变，下面整篇正文都要跟着位移，动画会让长文每帧重新定位，
+            // 而这个操作只是偶尔点一下，直接到位更稳（2026-11 动效复审 B26）。
             isTitleExpanded.toggle()
           }
           .buttonStyle(.link)
@@ -7196,6 +7247,15 @@ private struct HistoryDetailView: View, Equatable {
           .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
           .accessibilityIdentifier("history-run-completion-banner")
           .transition(historyBannerTransition(reduceMotion: reduceMotion))
+      } else if recentlyCompletedTidyTaskID == detail.task.id {
+        Label("校对稿已保存", systemImage: "checkmark.circle.fill")
+          .themedFont(.callout, weight: .medium)
+          .foregroundStyle(theme.success)
+          .padding(.vertical, 8).padding(.horizontal, 16)
+          .background(.regularMaterial, in: Capsule())
+          .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
+          .accessibilityIdentifier("history-transcript-tidy-saved")
+          .transition(historyBannerTransition(reduceMotion: reduceMotion))
       }
     }
     .padding(.top, DesignTokens.Space.sm)
@@ -7210,7 +7270,7 @@ private struct HistoryDetailView: View, Equatable {
       .padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)
       // 吸顶表头叠在滚动区外面，而正文那份在滚动区里面——常驻滚动条占着右边 11pt。
       // 不扣掉这一条，表头一吸顶右边的按钮就往右跳 11pt（2026-09-24 走查）。
-      .padding(.trailing, SubtleScroller.trackWidth)
+      .padding(.trailing, readingScrollerTrackWidth)
       // 实底，不用 `.bar`：半透明材质下正文从页签底下透出来，被切成半行（2026-09-29 走查）。
       // 底色一直铺到窗口顶、盖住工具栏那段：只铺表头自己时，工具栏的半透明渐变和实底
       // 表头之间露出一条缝，封面大图滚上去会被夹成一条彩色碎片（2026-09-29 Syc 截图）。
@@ -7241,12 +7301,15 @@ private struct HistoryDetailView: View, Equatable {
         Button {
           selectReadingTab(tab)
         } label: {
-          (Text(title)
-            + Text(count.map { " \($0)" } ?? "")
-            .font(.system(size: 12))
-            .foregroundStyle(theme.secondaryText.opacity(0.8)))
-            .themedFont(.callout, weight: isActive ? .semibold : .regular)
-            .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
+          // 选中时字重变粗会把页签撑宽、挤动右边的邻居：先用一份隐形的粗体字把宽度占满，
+          // 再叠上真正的字。计数单独一格，才能让数字换值时滚动（拼接的 Text 做不到）。
+          ZStack(alignment: .leading) {
+            readingTabLabel(title: title, count: count, weight: .semibold)
+              .hidden()
+              .accessibilityHidden(true)
+            readingTabLabel(title: title, count: count, weight: isActive ? .semibold : .regular)
+              .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
+          }
             // 字距算在这块矩形里，不按笔画的透明缝隙算。左右各留一点，
             // 仍小于页签间距，相邻两块不会叠在一起。
             .padding(.horizontal, 4)
@@ -7286,6 +7349,23 @@ private struct HistoryDetailView: View, Equatable {
     .accessibilityElement(children: .contain)
     .accessibilityLabel("阅读内容")
     .accessibilityIdentifier("history-reading-tabs")
+  }
+
+  private func readingTabLabel(title: String, count: Int?, weight: Font.Weight) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 3) {
+      Text(title)
+        .themedFont(.callout, weight: weight)
+      if let count {
+        Text("\(count)")
+          .font(.system(size: 12))
+          .foregroundStyle(theme.secondaryText.opacity(0.8))
+          .motionNumericText(reduceMotion: reduceMotion)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: count
+          )
+      }
+    }
   }
 
   /// 原文只有一层、而且就是本机转写稿（本地视频、录音，或抖音那类只有转写的）。
@@ -7361,8 +7441,17 @@ private struct HistoryDetailView: View, Equatable {
       Image(systemName: showsManuscriptAnnotations ? "eye" : "eye.slash")
         .themedFont(.caption)
         .foregroundStyle(theme.secondaryText)
+        .motionSymbolReplace(reduceMotion: reduceMotion)
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: showsManuscriptAnnotations
+        )
+        .frame(width: 22, height: 20)
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .hoverHighlight(radius: DesignTokens.Radius.sm)
+    .linkCursor()
     .help(showsManuscriptAnnotations ? "隐藏批注" : "显示批注")
     .accessibilityLabel(showsManuscriptAnnotations ? "隐藏批注" : "显示批注")
     .accessibilityIdentifier("transcript-manuscript-annotations-toggle")
@@ -7414,6 +7503,11 @@ private struct HistoryDetailView: View, Equatable {
         showsTranscriptTimecodes.toggle()
       } label: {
         Image(systemName: showsTranscriptTimecodes ? "clock" : "text.alignleft")
+          .motionSymbolReplace(reduceMotion: reduceMotion)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: showsTranscriptTimecodes
+          )
       }
       .buttonStyle(.appIcon)
       .help(showsTranscriptTimecodes
@@ -7664,6 +7758,8 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(theme.accent)
             .accessibilityIdentifier("history-video-transcription-cancel")
         }
+        // 同 runVerb：这组比旁边的「处理」高，整行就变高，页签和按钮一起下移。
+        .frame(height: ReadingHeaderMetrics.verbRow)
         .accessibilityIdentifier("history-video-transcription-running")
       case .awaitingModelDownload:
         Text("等待确认模型下载")
@@ -7763,13 +7859,9 @@ private struct HistoryDetailView: View, Equatable {
     case .completed:
       // 只在刚做完的那几秒出现（2026-10-04 详情页精简）：原来一直挂着，连带一串
       // 「用量 133180（输入 … / 输出 …）」，下次打开这条还在。用量放进悬停提示。
-      if recentlyCompletedTidyTaskID == taskID {
-        Label("校对稿已保存", systemImage: "checkmark.circle.fill")
-          .themedFont(.caption)
-          .foregroundStyle(theme.success)
-          .help(model.transcriptTidyTokenSummary(for: taskID) ?? "校对稿已保存为最新原文")
-          .transition(.opacity)
-      }
+      // 「校对稿已保存」几秒后会自己收起，放在正文流里收起时会把整篇往上拉一行：
+      // 改走顶部浮层（见 completionNotice）。
+      EmptyView()
     case .cancelled:
       Text(TranscriptTidyError.cancelled.userMessage).themedFont(.caption).foregroundStyle(.secondary)
     case let .failed(message):
@@ -7858,8 +7950,11 @@ private struct HistoryDetailView: View, Equatable {
   /// 面板里点了会弹出另一个窗口的动作（抓评论、换模型重跑），先把面板收起再弹，免得两个浮层叠在一起。
   private func closeProcessPanel(then action: @escaping () -> Void) {
     isProcessPanelPresented = false
+    // 等面板收起这一拍再弹。空档里用户若已切到别的条目，就不弹，免得错弹到新条目上。
+    let taskID = detail.task.id
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 180_000_000)
+      guard !Task.isCancelled, detail.task.id == taskID else { return }
       action()
     }
   }
@@ -8166,6 +8261,7 @@ private struct HistoryDetailView: View, Equatable {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .hoverHighlight(isEnabled: enabled)
     .disabled(!enabled)
     .opacity(enabled ? 1 : 0.5)
     .help(help ?? title)
@@ -8225,8 +8321,10 @@ private struct HistoryDetailView: View, Equatable {
     let refreshed = steps.filter { step, time in baseline.steps[step].map { time > $0 } ?? true }
     guard let step = ProcessStep.allCases.first(where: { refreshed[$0] != nil }) else { return }
     withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { stampingStep = step }
-    Task { @MainActor in
+    stampTimer?.cancel()
+    stampTimer = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 2_600_000_000)
+      guard !Task.isCancelled else { return }
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
         if stampingStep == step { stampingStep = nil }
       }
@@ -8450,13 +8548,24 @@ private struct HistoryDetailView: View, Equatable {
             select(layer)
           }
         } label: {
-          Text(layerDisplayName(layer))
-            .themedFont(.caption, weight: isActive ? .semibold : .regular)
-            .foregroundStyle(isActive ? theme.selectionText : theme.secondaryText)
+          // 选中变粗不挤邻居：隐形粗体字先占好宽度。
+          ZStack {
+            Text(layerDisplayName(layer))
+              .themedFont(.caption, weight: .semibold)
+              .hidden()
+              .accessibilityHidden(true)
+            Text(layerDisplayName(layer))
+              .themedFont(.caption, weight: isActive ? .semibold : .regular)
+              .foregroundStyle(isActive ? theme.selectionText : theme.secondaryText)
+          }
             .padding(.horizontal, 8).padding(.vertical, 2)
             .background(
               isActive ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
               in: Capsule()
+            )
+            .animation(
+              DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+              value: isActive
             )
             .contentShape(Capsule())
         }
@@ -8856,6 +8965,13 @@ private struct HistoryDetailView: View, Equatable {
     HStack(spacing: 0) {
       Button { model.toggleFavorite() } label: {
         Image(systemName: favorited ? "star.fill" : "star")
+          // 收藏后点亮成主题强调色：灰星变实心灰星，确认感太弱。
+          .foregroundStyle(favorited ? theme.accent : theme.secondaryText)
+          .motionSymbolReplace(reduceMotion: reduceMotion)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: favorited
+          )
       }
       .buttonStyle(AppIconButtonStyle(size: 28))
       .disabled(!model.canToggleFavorite)
@@ -9030,6 +9146,7 @@ private struct HistoryDetailView: View, Equatable {
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
     .frame(width: 28, height: 28)
+    .hoverHighlight()
     .help("阅读、导出、删除等")
     .accessibilityLabel("更多")
     .accessibilityIdentifier("export-history")
@@ -9039,6 +9156,11 @@ private struct HistoryDetailView: View, Equatable {
   /// 「…」菜单里的「标签与素材类型…」：先把标题下的标签行滚进视野，再弹出和那个入口一样的小窗。
   private func requestTagEditor() {
     moduleScrollTarget = ReadingAnchor.module("tags")
+    // 等滚动落地再弹小窗；减弱动态下滚动是直接到位的，不用等。
+    guard !reduceMotion else {
+      tagEditorRequest += 1
+      return
+    }
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 250_000_000)
       tagEditorRequest += 1
@@ -9334,12 +9456,14 @@ private struct HistoryDetailView: View, Equatable {
     VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
       if !showsInlineNote {
         Button {
-          isInlineNoteRequested = true
+          // 展开笔记框会改页尾高度：减弱动态下直接到位。
+          withAnimation(reduceMotion ? nil : DesignTokens.Motion.quick) { isInlineNoteRequested = true }
           DispatchQueue.main.async { isInlineNoteFocused = true }
         } label: {
           Label("添加笔记", systemImage: "square.and.pencil")
         }
         .buttonStyle(.plain)
+        .hoverHighlight(radius: DesignTokens.Radius.sm)
         .themedFont(.callout)
         .foregroundStyle(theme.secondaryText)
         .accessibilityIdentifier("history-inline-note-add")
@@ -9357,6 +9481,7 @@ private struct HistoryDetailView: View, Equatable {
           }
           .accessibilityLabel("这篇内容的笔记")
           .accessibilityIdentifier("history-inline-note")
+          .transition(.opacity)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -10164,14 +10289,20 @@ private struct HistoryDetailView: View, Equatable {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
             HStack(spacing: DesignTokens.Space.sm) {
-              Text(noteEditorStatusText(isDirty: sourceDraftIsDirty(snapshot)))
-                .themedFont(.caption)
+              let statusText = noteEditorStatusText(isDirty: sourceDraftIsDirty(snapshot))
+              Text(statusText)
+                .themedFont(.caption, monospacedDigit: true)
                 .foregroundStyle(.tertiary)
-                .animation(historyUIAnimation(reduceMotion: reduceMotion), value: noteSaveIndicator)
+                .contentTransition(.opacity)
+                // 绑文案本身：「正在保存…」「已保存 · 12:03」互换时淡变，不是只看有没有那一行。
+                .animation(
+                  DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+                  value: statusText
+                )
                 .accessibilityIdentifier("history-note-save-state")
               if isOwnWriting {
                 Text("\(noteCharacterCount) 字")
-                  .themedFont(.caption)
+                  .themedFont(.caption, monospacedDigit: true)
                   .foregroundStyle(.tertiary)
                   .accessibilityIdentifier("history-note-word-count")
               }
@@ -10182,9 +10313,9 @@ private struct HistoryDetailView: View, Equatable {
               .frame(width: 0)
               .accessibilityIdentifier("history-transcription-edit-save")
           }
-          .frame(height: isOwnWriting || sourceDraftIsDirty(snapshot) || noteSaveIndicator ? nil : 0)
-          .clipped()
-          .padding(.bottom, isOwnWriting || sourceDraftIsDirty(snapshot) || noteSaveIndicator ? DesignTokens.Space.sm : 0)
+          // 状态栏的一行高度从进入编辑起就预留：原来没内容时压成 0 高，开始打字那一刻
+          // 突然撑开一行，把下面的编辑器顶下去。
+          .padding(.bottom, DesignTokens.Space.sm)
         }
         if bodyOverride == nil, canEditSource(snapshot), isEditingTranscription {
           // 裸 TextEditor 把标题、代码、引用一律画成同一片灰字，写超过几行就看不出
@@ -10576,6 +10707,8 @@ private struct HistoryDetailView: View, Equatable {
                   .background(theme.primaryText.opacity(0.06), in: Capsule())
               }
               .buttonStyle(.plain)
+              .hoverHighlight(radius: 100, strength: 0.05)
+              .linkCursor()
               .help("点击改名，比如改成「张总」")
               .popover(isPresented: Binding(
                 get: { renamingSpeaker == name },
@@ -10585,11 +10718,13 @@ private struct HistoryDetailView: View, Equatable {
                   TextField("名字", text: $speakerNameDraft)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 160)
+                    .focused($isSpeakerNameFocused)
                     .onSubmit(commitSpeakerRename)
                   Button("改名", action: commitSpeakerRename)
                     .keyboardShortcut(.defaultAction)
                 }
                 .padding(12)
+                .onAppear { isSpeakerNameFocused = true }
               }
               .accessibilityIdentifier("history-speaker-\(name)")
             }
@@ -10641,6 +10776,8 @@ private struct HistoryDetailView: View, Equatable {
         .background(theme.accent.opacity(0.08), in: Capsule())
     }
     .buttonStyle(.plain)
+    .hoverHighlight(radius: 100, strength: 0.05, isEnabled: !model.isReadOnly)
+    .linkCursor()
     .help(help)
     .disabled(model.isReadOnly)
   }
@@ -10668,7 +10805,8 @@ private struct HistoryDetailView: View, Equatable {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
         Button {
-          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) { isImportedImageTextExpanded.toggle() }
+          // 展开会改高度：减弱动态下直接到位（resolved 的 0.1 秒插值只适合透明度和颜色）。
+          withAnimation(reduceMotion ? nil : DesignTokens.Motion.quick) { isImportedImageTextExpanded.toggle() }
         } label: {
           HStack(spacing: 6) {
             Image(systemName: "chevron.right")
@@ -10681,11 +10819,13 @@ private struct HistoryDetailView: View, Equatable {
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .hoverHighlight(radius: DesignTokens.Radius.sm)
         .accessibilityIdentifier("imported-image-text-toggle")
         Spacer(minLength: 0)
         Button("复制文字") { CopyFeedbackController.shared.copy(text) }
           .buttonStyle(.plain)
           .foregroundStyle(theme.secondaryText)
+          .hoverHighlight(radius: DesignTokens.Radius.sm)
       }
       .themedFont(.callout)
       .foregroundStyle(.secondary)
@@ -10697,8 +10837,10 @@ private struct HistoryDetailView: View, Equatable {
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("imported-image-text")
+          .transition(.opacity)
       }
     }
+    .clipped()
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
     .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
@@ -10950,9 +11092,41 @@ enum ReadingHeaderMetrics {
 /// 换成自己接收整块矩形的点击，原文、翻译、总结、配文、转写走同一条。
 struct ReadingTabHitStyle: PrimitiveButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
+    ReadingTabHitBody(configuration: configuration)
+  }
+}
+
+/// 页签的悬停底色、按下反馈和手型光标。这是自己接点击的样式，系统按钮样式带的这些都没有了，
+/// 补在这里；只动颜色（透明度），不动尺寸，不影响页签宽度和下划线定位。
+private struct ReadingTabHitBody: View {
+  let configuration: PrimitiveButtonStyleConfiguration
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovering = false
+  @State private var isPressed = false
+
+  var body: some View {
     configuration.label
+      .background(
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+          .fill(Color.primary.opacity(isPressed ? 0.09 : (isHovering ? 0.05 : 0)))
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+        value: isPressed
+      )
       .contentShape(.interaction, Rectangle())
+      .onHover { isHovering = $0 }
+      .linkCursor()
       .onTapGesture { configuration.trigger() }
+      .simultaneousGesture(
+        DragGesture(minimumDistance: 0)
+          .onChanged { _ in isPressed = true }
+          .onEnded { _ in isPressed = false }
+      )
   }
 }
 
@@ -11219,6 +11393,20 @@ private struct HistoryTagEditor: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var input = ""
   @State private var isComposerExpanded = false
+  @FocusState private var isTagInputFocused: Bool
+
+  /// 输入框展开 / 收起走同一条路：打开和关闭（取消、提交）的动画必须对称。
+  /// 展开会改高度，减弱动态下直接到位。弹窗模式里展开的是 popover，本身不改本页布局。
+  private func setComposer(_ expanded: Bool) {
+    guard isComposerExpanded != expanded else { return }
+    if composerInPopover {
+      isComposerExpanded = expanded
+    } else {
+      withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) {
+        isComposerExpanded = expanded
+      }
+    }
+  }
 
   private var canAdd: Bool {
     model.canEditTags
@@ -11303,17 +11491,19 @@ private struct HistoryTagEditor: View {
         TextField("标签名", text: $input)
           .textFieldStyle(.roundedBorder)
           .frame(maxWidth: 220)
+          .focused($isTagInputFocused)
           .onSubmit(add)
           .accessibilityIdentifier("history-tag-input")
         Button("添加", action: add)
           .disabled(!canAdd)
           .accessibilityIdentifier("history-tag-add")
         Button("取消") {
-          isComposerExpanded = false
+          setComposer(false)
           input = ""
         }
         .buttonStyle(.borderless)
       }
+      .onAppear { isTagInputFocused = true }
       // 推荐按用得多少排、名字不截断：原来按字母排，空输入时只看到「Agent / Agent Fram…」
       // 这类半截名字，而不是自己常用的标签（2026-09-24 走查）。
       let suggestions = model.suggestedTags(matching: input, excluding: tags)
@@ -11368,8 +11558,13 @@ private struct HistoryTagEditor: View {
               .labelStyle(.titleAndIcon)
               .themedFont(.caption)
               .lineLimit(1)
+              .motionSymbolReplace(reduceMotion: reduceMotion)
               .padding(.horizontal, 8).padding(.vertical, 3)
               .background(isOn ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
+              .animation(
+                DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+                value: isOn
+              )
           }
           .buttonStyle(.plain)
           .disabled(!isOn && tags.count >= HistoryTagNormalizer.maximumTagsPerTask)
@@ -11384,7 +11579,7 @@ private struct HistoryTagEditor: View {
   /// 输入框展开后就不再显示：旁边已有「取消」，原来「× 收起」和「取消」两个按钮做同一件事（2026-09-24 走查）。
   @ViewBuilder private var addTagControl: some View {
     if composerInPopover {
-      Button { isComposerExpanded = true } label: {
+      Button { setComposer(true) } label: {
         // 已经有标签时只留一个「＋」：四五个标签加上「添加标签」四个字放不下一行，
         // 这四个字常常单独掉到第二行（2026-10-01 走查）。没有标签时照旧写全，告诉人这里能加。
         if hasChipTags {
@@ -11414,11 +11609,7 @@ private struct HistoryTagEditor: View {
         .frame(width: 300, alignment: .leading)
       }
     } else if !isComposerExpanded {
-      Button {
-        withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-          isComposerExpanded = true
-        }
-      } label: {
+      Button { setComposer(true) } label: {
         // 和上面「为这篇内容添加笔记」同一级：同样的字号、同样的强调色，
         // 原来一个大字带笔、一个小灰字带加号，看起来像两类东西。
         Label("添加标签", systemImage: "tag")
@@ -11434,7 +11625,7 @@ private struct HistoryTagEditor: View {
     guard canAdd else { return }
     model.addTag(input)
     input = ""
-    isComposerExpanded = false
+    setComposer(false)
   }
 }
 
@@ -11445,6 +11636,7 @@ private struct HistoryTagChip: View {
   let canRemove: Bool
   let remove: () -> Void
   @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     HStack(spacing: 4) {
@@ -11455,6 +11647,12 @@ private struct HistoryTagChip: View {
         }
         .buttonStyle(.plain)
         .opacity(isHovering ? 1 : 0)
+        // 透明时不能点：看不见的 × 不该能误删标签。
+        .allowsHitTesting(isHovering)
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: isHovering
+        )
         .accessibilityLabel("移除标签 \(tag.name)")
       }
     }
@@ -11472,6 +11670,7 @@ private struct DataDestinationDisclosureView: View {
   let isConfirming: Bool
   let confirm: () -> Void
   let cancel: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -11513,10 +11712,15 @@ private struct DataDestinationDisclosureView: View {
           .disabled(isConfirming)
           .accessibilityIdentifier("data-destination-confirm")
       }
-      if isConfirming {
-        ProgressView("正在确认发送目的地…")
-          .controlSize(.small)
-      }
+      // 一直占着这一行，只切透明度：原来出现时弹窗被撑高一截。
+      ProgressView("正在确认发送目的地…")
+        .controlSize(.small)
+        .opacity(isConfirming ? 1 : 0)
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: isConfirming
+        )
+        .accessibilityHidden(!isConfirming)
     }
     .padding(20)
     .frame(width: 420)
@@ -12593,6 +12797,8 @@ struct SampleReadingPreviewSheet: View {
           showsInlinePlainTextToggle: false,
           anchorScope: "sample-preview"
         )
+        // 切「总结 / 正文」只淡一下，不动位置。
+        .swapReveal(on: layer)
         .padding(.horizontal, 28)
         .padding(.vertical, 20)
         .frame(maxWidth: .infinity, alignment: .leading)

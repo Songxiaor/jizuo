@@ -595,7 +595,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
       DispatchQueue.main.async { Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: !reduceMotion) }
       // 落地后附近的块才建出视图、量出实际高度；再校正一次，误差大于几个点就补滚过去。
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-        Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: false)
+        // 校正量通常很小；偏得多时也平滑补过去，不是硬跳一截。减弱动态下直接到位。
+        Self.scroll(view, toCharacter: scrollRequest.characterOffset, animated: !reduceMotion, duration: 0.16)
       }
     }
     if context.coordinator.lastRevealText != revealText,
@@ -612,7 +613,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
 
   /// 把某个字符所在的那一行滚到视口上方约一成处（顶上压着吸顶的「原文 / 总结」栏，贴顶会被盖住）。
   /// 先把开头到这里排实：新引擎没排到的地方只是估算，直接按估算位置滚会落偏。
-  static func scroll(_ view: NSTextView, toCharacter offset: Int, animated: Bool) {
+  static func scroll(_ view: NSTextView, toCharacter offset: Int, animated: Bool, duration: TimeInterval = 0.24) {
     guard let manager = view.textLayoutManager,
           let content = manager.textContentManager,
           let target = content.location(content.documentRange.location, offsetBy: max(0, offset)),
@@ -639,7 +640,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
     }
     if animated {
       NSAnimationContext.runAnimationGroup { context in
-        context.duration = 0.24
+        context.duration = duration
         context.timingFunction = CAMediaTimingFunction(name: .easeOut)
         clip.animator().setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: landing))
       } completionHandler: {
