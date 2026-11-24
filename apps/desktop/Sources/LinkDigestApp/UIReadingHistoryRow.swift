@@ -376,12 +376,9 @@ struct UIReadingHistoryRow: View {
           .fill(rowBackground)
       }
     }
-    // 选中样式只影响被选中的那一行怎么画，所以只挂在选中行上。原来每一行都嵌一个 AppKit
-    // 视图：滑进一行多建一个原生视图，窗口每帧算标题栏拖动区域时也要多钻一层（2026-11-24 采样）。
-    // 行视图被复用时样式会留着；没被选中的行不画选中底色，留着也看不出来。
-    .background {
-      if isSelected { UIReadingListSelectionStyle(usesSystemSelection: theme.isNative) }
-    }
+    // 选中样式必须每行一挂载就配好：AppKit 先改选中状态、SwiftUI 后更新 isSelected，
+    // 只挂在选中行上会让第一次选中某行时先闪一帧系统蓝底（2026-11-25 审查）。
+    .background(UIReadingListSelectionStyle(usesSystemSelection: theme.isNative))
     // 条目之间一条细线（对标应用的分隔方式）；选中或悬停时由底色区分，线收起来。
     .overlay(alignment: .bottom) {
       if !isSelected && !isHovering {
@@ -422,10 +419,12 @@ struct UIReadingHistoryRow: View {
 
   /// 行尾：存入时间 + 视频 / 脑图等小图标。
   @ViewBuilder private func trailingMeta(_ text: RowText) -> some View {
+    // 日期只格式化一次：显示与否、行尾补间距都用这一份（滑动热路径）。
+    let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
+    let showsSavedTime = savedTime != text.title
     HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
-      let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
       // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
-      if savedTime != text.title {
+      if showsSavedTime {
         Text(savedTime)
           .themedFont(.caption, monospacedDigit: true)
           .foregroundStyle(theme.secondaryText.opacity(0.85))
@@ -459,16 +458,13 @@ struct UIReadingHistoryRow: View {
     }
     // 原来没图标的行也建一个空的图标组，日期后面因此多一格间距；不建那一组后补回这格，
     // 日期位置和原来一个像素都不差。
-    .padding(.trailing, !hasStatusIcons && savedTimeShown(text) ? DesignTokens.Space.xs : 0)
+    .padding(.trailing, !hasStatusIcons && showsSavedTime ? DesignTokens.Space.xs : 0)
   }
 
   private var hasStatusIcons: Bool {
     row.transcriptionFailed == true || row.hasMedia == true || row.hasTranscript == true || row.hasMindMap == true
   }
 
-  private func savedTimeShown(_ text: RowText) -> Bool {
-    HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds) != text.title
-  }
 
   /// 作者行。同名时把日期接在后面；作者被收起时只留日期。
   private func sourceLine(_ text: RowText) -> String? {

@@ -10,9 +10,14 @@ final class UIReadingHistoryRowLightnessTests: XCTestCase {
     return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
   }
 
-  func testSelectionStyleViewOnlyOnSelectedRow() {
-    XCTAssertTrue(row.contains("if isSelected { UIReadingListSelectionStyle(usesSystemSelection: theme.isNative) }"))
-    XCTAssertFalse(row.contains(".background(UIReadingListSelectionStyle("), "每一行都嵌原生视图会让滑动时多建一个 AppKit 视图")
+  func testSelectionStyleMountedOnEveryRow() {
+    // 选中样式要在 AppKit 改选中状态前就配好：只挂在选中行会让首次选中先闪一帧系统蓝底。
+    XCTAssertTrue(row.contains(".background(UIReadingListSelectionStyle(usesSystemSelection: theme.isNative))"))
+    XCTAssertFalse(row.contains("if isSelected { UIReadingListSelectionStyle("))
+  }
+
+  func testSavedTimeFormattedOncePerRow() {
+    XCTAssertEqual(row.components(separatedBy: "HistoryListFinding.compactSavedTime(").count - 1, 1)
   }
 
   func testRowBackgroundOnlyWhenSelectedOrHovered() {
@@ -25,7 +30,10 @@ final class UIReadingHistoryRowLightnessTests: XCTestCase {
 
   func testHoverActionsStillSwitchInSameFrame() {
     // c09a0a30 修的悬停按钮叠字：做轻时不能丢。
-    XCTAssertTrue(row.contains(".overlay(alignment: .trailing) { hoverActions }"))
-    XCTAssertTrue(row.contains(".animation(nil, value: showsHoverActions)"))
+    // 顺序也要守住：.animation(nil) 必须在 overlay 之后，按钮才不继承行级悬停动画。
+    let overlay = row.range(of: ".overlay(alignment: .trailing) { hoverActions }")
+    let noAnim = row.range(of: ".animation(nil, value: showsHoverActions)")
+    XCTAssertNotNil(overlay); XCTAssertNotNil(noAnim)
+    if let overlay, let noAnim { XCTAssertLessThan(overlay.lowerBound, noAnim.lowerBound) }
   }
 }
