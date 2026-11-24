@@ -354,7 +354,11 @@ struct HistoryContentView: View {
   private func withMenuCommands<Content: View>(_ content: Content) -> some View {
     content
       .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction {
-        if columnVisibility == .detailOnly { columnVisibility = .all }
+        if columnVisibility == .detailOnly {
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+            columnVisibility = .all
+          }
+        }
         if !showsPlatformGallerySurface, !model.isCreatorDirectoryActive { isListSearchExpanded = true }
         DispatchQueue.main.async { isSearchFocused = true }
       })
@@ -386,7 +390,9 @@ struct HistoryContentView: View {
 
   private func goBack() {
     if columnVisibility == .detailOnly {
-      columnVisibility = .all
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+        columnVisibility = .all
+      }
     } else if showsPlatformGallerySurface {
       platformGalleryGoBack()
     } else if creatorDirectoryBackTitle != nil {
@@ -427,86 +433,83 @@ struct HistoryContentView: View {
         blockingError
       } else {
         Group {
-          if columnVisibility == .detailOnly {
-            // macOS 三列 NavigationSplitView 不保证响应 detailOnly；专注模式直接呈现详情。
+          // 整个窗口只有这一个分栏容器：专注阅读、卡片墙、博主页都留在同一个 NavigationSplitView 里，
+          // 专注阅读只把左栏和中间列折成 0 宽，不再在裸详情与分栏容器之间切换导致整棵详情树重建。
+          let isFocusReading = columnVisibility == .detailOnly
+          let listMinWidth = usesFullWidthSurface ? 0 : DesignTokens.Layout.listMin
+          let collapsesListColumn = isFocusReading || usesFullWidthSurface
+          NavigationSplitView(columnVisibility: $columnVisibility) {
+            // 左侧栏可拖；拖出的宽度由 WindowColumnDividerInstaller 记下，
+            // 这里和图库页都从同一个值起步，切换分类不再各自一个宽度。
+            navigationRail
+              .opacity(isFocusReading ? 0 : 1)
+              .allowsHitTesting(!isFocusReading)
+              .accessibilityHidden(isFocusReading)
+              .typeErased()
+              .navigationSplitViewColumnWidth(
+                min: isFocusReading ? 0 : DesignTokens.Layout.sidebarMin,
+                ideal: isFocusReading ? 0 : threeColumnWidths.sidebar,
+                max: isFocusReading ? 0 : DesignTokens.Layout.sidebarMax
+              )
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+          } content: {
+            // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
+            // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
             Group {
-              if showsPlatformGallerySurface { platformGallerySurface }
-              else if model.isCreatorDirectoryActive { creatorDirectorySurface }
+              if collapsesListColumn {
+                // 专注阅读、卡片墙、博主页占满右边：中间这一列折成 0 宽，留着它让容器身份不变。
+                Color.clear
+              } else if model.isWorkbenchActive, isWorkbenchVisible {
+                WorkbenchListView(
+                  model: model,
+                  onNewSpark: { isNewSparkPresented = true },
+                  onTakeTopic: takeTopic
+                )
+              } else {
+                sidebar
+              }
+            }
+            .typeErased()
+            // 列表滚动时行文字原样从「全部」标题和搜索、「＋」图标底下穿过（2026-09-24
+            // 走查实测；系统 scroll edge 在这一列同样不生效）。和详情列同一层渐隐遮罩。
+            .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
+            // 窗口名跟着页面走；工具栏里不重复画标题——页面自己的页头已经写着「X · 已保存…」「全部博主」。
+            // 原来这里没有标题，工具栏左上角落成 App 名「汲作」（2026-09-25 走查）。
+            .navigationTitle(contentColumnTitle)
+            .toolbar(removing: .title)
+            .toolbar { if !collapsesListColumn && listColumnToolbarAttached { listColumnToolbar } }
+            // 首屏画完再挂工具栏项（见 `listColumnToolbarAttached`）：列表第一批行一上屏
+            // 就补上；0.9 秒兜底，空库或异常时也不会一直没有工具栏。
+            .onAppear { if !model.rows.isEmpty { listColumnToolbarAttached = true } }
+            .onChange(of: model.rows.isEmpty) { _, empty in
+              if !empty { listColumnToolbarAttached = true }
+            }
+            .task {
+              try? await Task.sleep(for: .milliseconds(900))
+              listColumnToolbarAttached = true
+            }
+            .navigationSplitViewColumnWidth(
+              min: isFocusReading ? 0 : listMinWidth,
+              ideal: collapsesListColumn ? 0 : threeColumnWidths.list,
+              max: collapsesListColumn ? 0 : DesignTokens.Layout.listMax
+            )
+            .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+          } detail: {
+            Group {
+              if model.isCreatorDirectoryActive { creatorDirectorySurface }
+              else if showsPlatformGallerySurface { platformGallerySurface }
               else { detailColumn }
             }
-              .typeErased()
-              .frame(maxWidth: .infinity, maxHeight: .infinity)
-              .background(theme.card)
-              .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
-          } else {
-            // 整个窗口只有这一个分栏容器：卡片墙、博主页只换中间和右边，侧栏的视图身份不变。
-            // 以前这两类页面换成另一个容器（HSplitView），每进出一次侧栏就拆掉重建，
-            // 两个容器顶部留白不同，整列侧栏上下跳、点按落到相邻一行（2026-10-13 Syc 指出）。
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-              // 左侧栏可拖；拖出的宽度由 WindowColumnDividerInstaller 记下，
-              // 这里和图库页都从同一个值起步，切换分类不再各自一个宽度。
-              navigationRail.typeErased().navigationSplitViewColumnWidth(
-                min: DesignTokens.Layout.sidebarMin,
-                ideal: threeColumnWidths.sidebar,
-                max: DesignTokens.Layout.sidebarMax
-              )
-              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
-            } content: {
-              // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
-              // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
-              Group {
-                if usesFullWidthSurface {
-                  // 卡片墙、博主页占满右边：中间这一列折成 0 宽，留着它只为让侧栏的容器不变。
-                  Color.clear
-                } else if model.isWorkbenchActive, isWorkbenchVisible {
-                  WorkbenchListView(
-                    model: model,
-                    onNewSpark: { isNewSparkPresented = true },
-                    onTakeTopic: takeTopic
-                  )
-                } else {
-                  sidebar
-                }
-              }
-              .typeErased()
-              // 列表滚动时行文字原样从「全部」标题和搜索、「＋」图标底下穿过（2026-09-24
-              // 走查实测；系统 scroll edge 在这一列同样不生效）。和详情列同一层渐隐遮罩。
-              .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
-              // 窗口名跟着页面走；工具栏里不重复画标题——页面自己的页头已经写着「X · 已保存…」「全部博主」。
-              // 原来这里没有标题，工具栏左上角落成 App 名「汲作」（2026-09-25 走查）。
-              .navigationTitle(contentColumnTitle)
-              .toolbar(removing: .title)
-              .toolbar { if !usesFullWidthSurface && listColumnToolbarAttached { listColumnToolbar } }
-              // 首屏画完再挂工具栏项（见 `listColumnToolbarAttached`）：列表第一批行一上屏
-              // 就补上；0.9 秒兜底，空库或异常时也不会一直没有工具栏。
-              .onAppear { if !model.rows.isEmpty { listColumnToolbarAttached = true } }
-              .onChange(of: model.rows.isEmpty) { _, empty in
-                if !empty { listColumnToolbarAttached = true }
-              }
-              .task {
-                try? await Task.sleep(for: .milliseconds(900))
-                listColumnToolbarAttached = true
-              }
-              .navigationSplitViewColumnWidth(
-                min: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMin,
-                ideal: usesFullWidthSurface ? 0 : threeColumnWidths.list,
-                max: usesFullWidthSurface ? 0 : DesignTokens.Layout.listMax
-              )
-              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
-            } detail: {
-              Group {
-                if model.isCreatorDirectoryActive { creatorDirectorySurface }
-                else if showsPlatformGallerySurface { platformGallerySurface }
-                else { detailColumn }
-              }
-              .typeErased()
-              .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
-              .toolbar { fullWidthSurfaceToolbar }
-            }
-            // 从卡片墙、博主页回到「列表 | 阅读」时，列表列从用户上次拖出的宽度起步。
-            .onChange(of: usesFullWidthSurface) { _, isFullWidth in
-              if !isFullWidth { threeColumnWidths = .stored() }
-            }
+            .typeErased()
+            .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
+            .toolbar { fullWidthSurfaceToolbar }
+          }
+          // 从专注阅读、卡片墙、博主页回到「列表 | 阅读」时，各栏从用户上次拖出的宽度起步。
+          .onChange(of: usesFullWidthSurface) { _, isFullWidth in
+            if !isFullWidth, columnVisibility != .detailOnly { threeColumnWidths = .stored() }
+          }
+          .onChange(of: columnVisibility) { oldVal, newVal in
+            if oldVal == .detailOnly, newVal != .detailOnly { threeColumnWidths = .stored() }
           }
         }
           // 窗口级分栏细线：贯通工具栏直达窗口顶；系统玻璃主题走原生外观，
@@ -701,7 +704,9 @@ struct HistoryContentView: View {
       ToolbarItem(placement: .navigation) {
         if columnVisibility == .detailOnly {
           Button {
-            columnVisibility = .all
+            withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+              columnVisibility = .all
+            }
           } label: {
             Image(systemName: "sidebar.left")
           }
@@ -1397,7 +1402,7 @@ struct HistoryContentView: View {
           .id("\(model.listRebuildToken)|\(model.searchScrollToTopToken)")
           .onChange(of: model.profileImportScrollTarget) { _, target in
             guard let target else { return }
-            withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
               batchScroll.scrollTo(target, anchor: .center)
             }
             model.consumeProfileImportScrollTarget()
@@ -1450,27 +1455,29 @@ struct HistoryContentView: View {
     // 往下推一截又弹回来——用户正在读的那一行会自己跑掉。
     // 浮在列表**底部**：放在顶部会一直盖住列表第一条（通常正是刚选中、正在读的那条）。
     .overlay(alignment: .bottom) {
-      if let suggestion = manualLink.clipboardSuggestion {
-        ClipboardSuggestionBanner(
-          suggestion: suggestion,
-          capture: manualLink.captureClipboardSuggestion,
-          ignore: manualLink.ignoreClipboardSuggestion
-        )
-        .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-            .strokeBorder(theme.hairline, lineWidth: 1)
-        )
-        .designShadow(.floating, tint: theme.canvas)
-        .padding(.horizontal, 10)
-        .padding(.bottom, 12)
-        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
+      ZStack(alignment: .bottom) {
+        if let suggestion = manualLink.clipboardSuggestion {
+          ClipboardSuggestionBanner(
+            suggestion: suggestion,
+            capture: manualLink.captureClipboardSuggestion,
+            ignore: manualLink.ignoreClipboardSuggestion
+          )
+          .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+              .strokeBorder(theme.hairline, lineWidth: 1)
+          )
+          .designShadow(.floating, tint: theme.canvas)
+          .padding(.horizontal, 10)
+          .padding(.bottom, 12)
+          .transition(DesignTokens.Transition.pill(reduceMotion: reduceMotion))
+        }
       }
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+        value: manualLink.clipboardSuggestion
+      )
     }
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
-      value: manualLink.clipboardSuggestion
-    )
     .frame(maxWidth: .infinity)
     // 底色铺到窗口顶：工具栏自己不再着色（见 HistoryWindowToolbarThemeModifier），
     // 这一列头顶那段由它自己的颜色填满，列与列的分界因此在工具栏里也对得上。
@@ -2559,7 +2566,7 @@ struct HistoryContentView: View {
   private func restoreCreatorDirectoryScroll(using proxy: ScrollViewProxy) {
     guard let creatorID = creatorDirectoryScrollTarget else { return }
     DispatchQueue.main.async {
-      withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
         proxy.scrollTo(creatorID, anchor: .center)
       }
       creatorDirectoryScrollTarget = nil
@@ -3521,7 +3528,7 @@ struct HistoryContentView: View {
 
   private func scrollToProfileImportTarget(using proxy: ScrollViewProxy) {
     guard let target = model.profileImportScrollTarget else { return }
-    withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+    withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
       proxy.scrollTo(target, anchor: .center)
     }
     model.consumeProfileImportScrollTarget()
@@ -3530,7 +3537,7 @@ struct HistoryContentView: View {
   private func restoreCreatorWorkScroll(using proxy: ScrollViewProxy, target: Binding<TaskID?>) {
     guard let taskID = target.wrappedValue else { return }
     DispatchQueue.main.async {
-      withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
         proxy.scrollTo(taskID, anchor: .center)
       }
       target.wrappedValue = nil
@@ -3768,7 +3775,11 @@ struct HistoryContentView: View {
         localImageURLs: model.localImageURLs,
         localMediaFileURL: model.localMediaFileURL,
         isFocusReading: columnVisibility == .detailOnly,
-        toggleFocusReading: { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly },
+        toggleFocusReading: {
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+          }
+        },
         openSettings: { openSettings() },
         openRecapture: { manualLink.openForRecapture($0) },
         remotePreviewPlayback: remotePreviewPlayback,
@@ -8252,14 +8263,15 @@ private struct HistoryDetailView: View, Equatable {
           .overlay(alignment: .leading) { readingSeamSeal }
       }
       content
-        .opacity(isShowingUntidiedTranscript ? 0.6 : 1)
+        .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+          $0.opacity(isShowingUntidiedTranscript ? 0.6 : 1)
+        }
         // 评论区据此给作者本人的回复标上「作者」。
         .environment(\.commentPostAuthor, sourceFrontmatter.author)
         .environment(\.commentCapturedAt, latestSourceSnapshot.map {
           Date(timeIntervalSince1970: Double($0.capturedAtMilliseconds) / 1_000)
         })
     }
-    .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.top, 0)
     .padding(.bottom, DesignTokens.Space.lg)
@@ -11776,10 +11788,25 @@ func historyBannerTransition(reduceMotion: Bool) -> AnyTransition {
 }
 
 private struct PointingHandOnHover: ViewModifier {
+  @State private var isPushed = false
+
   func body(content: Content) -> some View {
-    content.onHover { inside in
-      (inside ? NSCursor.pointingHand : NSCursor.arrow).set()
-    }
+    content
+      .onHover { inside in
+        if inside, !isPushed {
+          NSCursor.pointingHand.push()
+          isPushed = true
+        } else if !inside, isPushed {
+          NSCursor.pop()
+          isPushed = false
+        }
+      }
+      .onDisappear {
+        if isPushed {
+          NSCursor.pop()
+          isPushed = false
+        }
+      }
   }
 }
 

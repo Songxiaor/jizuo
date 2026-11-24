@@ -2634,7 +2634,7 @@ struct MarkdownContentView: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(
-          isHoveringOutlineButton ? Color.primary.opacity(DesignTokens.Surface.hoverSubtle) : Color.clear,
+          isHoveringOutlineButton ? Color.primary.opacity(0.06) : Color.clear,
           in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
         )
     }
@@ -3013,7 +3013,6 @@ struct MarkdownContentView: View {
         // 小三角占住页边那 20pt：标题首行不缩进，三角的位子正好 20pt 宽，标题文字落回正文那条线。
         // （文字引擎不理会嵌入块上的字距，所以不能用「16pt + 4pt 字距」凑。）
         let font = text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont ?? NSFont.systemFont(ofSize: 18)
-        let collapsed = foldToggle.collapsed
         let heading = foldToggle.heading
         let headingLine = (text.string as NSString).paragraphRange(for: NSRange(location: 0, length: 0))
         if let current = text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle,
@@ -4255,7 +4254,7 @@ private struct OutlinePopoverRowButton: View {
       .padding(.vertical, 3)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(
-        isHovering ? Color.primary.opacity(DesignTokens.Surface.hoverSubtle) : Color.clear,
+        isHovering ? Color.primary.opacity(0.06) : Color.clear,
         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
       )
       .contentShape(Rectangle())
