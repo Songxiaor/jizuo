@@ -2815,6 +2815,8 @@ struct MarkdownContentView: View {
     .environment(\.openURL, OpenURLAction { url in
       openValidated(url)
     })
+    // 换了一份正文（切到别的记录再切回来）：提示框的展开记忆清空，不沿用上一份正文的展开状态。
+    .onChange(of: source) { _, _ in calloutFolds.expanded.removeAll() }
     .alert("无法打开链接", isPresented: $rejectedLink) {
       Button("知道了", role: .cancel) {}
     } message: {
@@ -3181,7 +3183,7 @@ struct MarkdownContentView: View {
       case let .code(language, content):
         // 位置进键：同一篇里两个一模一样的流程图 / HTML 各切各的（原来按内容记，会一起切）。
         appendBlock(.full, followsText ? 10 : 0, 20, anchor, "code|\(anchor)|\(language ?? "")|\(content)") {
-          AnyView(self.specialCodeBlock(language: language, content: content, slot: "\(anchor)"))
+          AnyView(self.specialCodeBlock(language: language, content: content, slot: "\(segmentIndex)|\(anchor)"))
         }
       case let .table(headers, rows, alignments):
         appendBlock(.full, followsText ? 10 : 0, 20, anchor, "table|\(headers)|\(rows)|\(String(describing: alignments))") {
@@ -3205,7 +3207,7 @@ struct MarkdownContentView: View {
           AnyView(ReadingCalloutCard(
             kind: kind, title: title, fold: fold,
             accentColor: self.accentColor, secondaryTextColor: self.secondaryTextColor,
-            foldMemory: self.calloutFolds, foldKey: "\(anchor)|\(calloutKey)"
+            foldMemory: self.calloutFolds, foldKey: "\(segmentIndex)|\(anchor)|\(calloutKey)"
           ) {
             if !text.isEmpty {
               AnyView(self.structuredMarkdown(
@@ -3991,6 +3993,7 @@ private struct CodeCopyButton: View {
   @State private var justCopied = false
   @State private var resetTask: Task<Void, Never>?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.appTheme) private var appTheme
 
   var body: some View {
     Button {
@@ -4008,7 +4011,7 @@ private struct CodeCopyButton: View {
         .motionSymbolReplace(reduceMotion: reduceMotion)
     }
     .buttonStyle(.plain)
-    .foregroundStyle(justCopied ? Color.green : (isHovered ? .primary : .secondary))
+    .foregroundStyle(justCopied ? appTheme.success : (isHovered ? .primary : .secondary))
     .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovered
