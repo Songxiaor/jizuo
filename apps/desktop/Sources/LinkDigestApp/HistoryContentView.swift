@@ -70,7 +70,6 @@ struct HistoryContentView: View {
   @State private var threeColumnWidths = ThreeColumnWidths.stored()
   /// 列表列的搜索框平时收成列头的一个放大镜图标；点开、⌘F 或已有搜索词时才展开。
   @State private var isListSearchExpanded = false
-  @State private var userScrolledSinceSearch = false
   /// 点平台默认留在三栏列表里按平台筛选（2026-09-23），和侧栏其他入口一个样子；
   /// 想看卡片墙时从列头「卡片视图」进。换平台或返回后自动回到列表。
   @State private var isPlatformGalleryRequested = false
@@ -1052,20 +1051,6 @@ struct HistoryContentView: View {
     }
   }
 
-  private var listContentBranchKey: String {
-    switch model.listState {
-    case .idle where model.rows.isEmpty, .loading where model.rows.isEmpty:
-      return "skeleton"
-    case .empty where model.visibleRelatedRows.isEmpty
-      && ordinaryPendingCaptures.isEmpty && visibleProfileImportBatches.isEmpty:
-      return "empty-\(model.selectedScope)-\(model.selectedForm?.rawValue ?? "all")-\(model.selectedCollectionID?.rawValue ?? "none")-\(model.showsCreatorZeroWorks)-\(model.hasActiveFilter)"
-    case .failed where model.rows.isEmpty:
-      return "failed-\(model.canRetryList)"
-    case .loaded, .loading, .failed, .idle, .empty:
-      return "list"
-    }
-  }
-
   private var listTopBannersAnimationKey: String {
     "\(model.isReadOnly)|\(model.selectedScope == .trash && !model.rows.isEmpty)|\(manualLink.captureNotice ?? "")|\(model.creatorFailure ?? "")|\(listTopBanner != nil)"
   }
@@ -1246,28 +1231,25 @@ struct HistoryContentView: View {
           .accessibilityIdentifier("history-untranscribed-empty")
         } else if model.selectedScope == .notes, !model.hasCategoryFilter,
                   model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          // 完整空态与主按钮在右侧详情列；列表列只留轻提示，一屏只留一个主动作落点。
-          VStack(spacing: 10) {
-            Image(systemName: "square.and.pencil")
-              .font(.system(size: DesignTokens.IconSize.empty, weight: .regular))
-              .foregroundStyle(theme.secondaryText)
-            Text("还没有笔记").themedFont(.headline)
-          }
-          .padding(24)
+          HistoryInlineState(
+            symbol: "square.and.pencil",
+            title: "还没有笔记",
+            message: "随手记下想法、灵感或读后感。",
+            actionTitle: "写第一条笔记",
+            action: createNote
+          )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-notes-empty")
         } else if model.selectedScope == .trash, !model.hasCategoryFilter,
                   model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          VStack(spacing: 10) {
-            Image(systemName: "trash")
-              .font(.system(size: DesignTokens.IconSize.empty, weight: .regular))
-              .foregroundStyle(theme.secondaryText)
-            Text("回收站是空的").themedFont(.headline)
-          }
-          .padding(24)
+          HistoryInlineState(
+            symbol: "trash",
+            title: "回收站是空的",
+            message: "删除的内容会在这里保留 \(HistoryTrashPolicy.retentionDays) 天。过期后会从本机彻底清除，无法再恢复。",
+            actionTitle: "查看全部",
+            action: { model.selectScope(.all) }
+          )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-trash-empty")
         } else if let collection = model.selectedCollection,
                   // 只有合集本身没内容时才说「还是空的」；有内容但被搜索 / 形式 / 标签
@@ -1287,15 +1269,18 @@ struct HistoryContentView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-collection-empty")
         } else if model.showsCreatorZeroWorks {
-          VStack(spacing: 10) {
-            Image(systemName: "tray")
-              .font(.system(size: DesignTokens.IconSize.empty, weight: .regular))
-              .foregroundStyle(theme.secondaryText)
-            Text("尚未保存作品").themedFont(.headline)
-          }
-          .padding(24)
+          HistoryInlineState(
+            symbol: "tray",
+            title: "尚未保存作品",
+            message: "打开主页后勾选要保存的内容。",
+            actionTitle: "挑选作品",
+            action: {
+              if let url = model.selectedCreator?.profileURL {
+                presentDouyinProfileImport(profileURL: url, autoStart: true)
+              }
+            }
+          )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-creator-zero-works")
         } else if model.hasActiveFilter {
           filterEmptyState
@@ -1440,16 +1425,14 @@ struct HistoryContentView: View {
           .background(SmoothKnobScrollerInstaller().frame(width: 0, height: 0))
           .scrollContentBackground(.hidden)
           // 滑动中读回来的下一页等手停了再并入（见 `HistoryViewModel.setListScrolling`）。
-          .onScrollPhaseChange { _, phase in
-            model.setListScrolling(phase.isScrolling)
-            if phase.isScrolling { userScrolledSinceSearch = true }
-          }
+          .onScrollPhaseChange { _, phase in model.setListScrolling(phase.isScrolling) }
           .onDeleteCommand { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) }
-          // 不再因新条目登顶或搜索词变化整表销毁重建 NSTableView；用 scrollTo 对齐顶部组头。
-          .onChange(of: model.listRebuildToken) { _, token in
-            guard token > 0, !userScrolledSinceSearch, let top = listTopScrollID else { return }
-            batchScroll.scrollTo(top, anchor: .top)
-          }
+          // macOS List 对插入行沿用估算行高，新到卡片被压扁；初始构建
+          // 的测量始终正确，因此新条目登顶时整表重建（新行本就在顶部，
+          // 不损失滚动位置），行高恢复按真实内容计算。
+          // 搜索结果换了也整表重建：从最上面开始，连「昨天」这类分组标题一起露出来。
+          // 用 scrollTo 第一行会把它上面的分组标题顶出视野（2026-10-01 自查）。
+          .id("\(model.listRebuildToken)|\(model.searchScrollToTopToken)")
           .onChange(of: model.profileImportScrollTarget) { _, target in
             guard let target else { return }
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
@@ -1458,20 +1441,17 @@ struct HistoryContentView: View {
             model.consumeProfileImportScrollTarget()
           }
           .typeErased()
-          // 搜索、从博主页回来：等新列表落地再滚到顶；若用户已主动滚动则立刻中止重试。
+          // 搜索、从博主页回来：等新列表落地再滚到顶。只靠整表重建不够——实测从博主页
+          // 回到「全部」，列表仍停在 9 月 8 日那段（2026-10-01 自查）。
           .task(id: model.searchScrollToTopToken) {
             guard model.searchScrollToTopToken > 0 else { return }
-            userScrolledSinceSearch = false
             for _ in 0..<40 where model.listState == .loading {
               try? await Task.sleep(for: .milliseconds(50))
-              if Task.isCancelled || userScrolledSinceSearch { return }
             }
-            if !userScrolledSinceSearch, let top = listTopScrollID {
-              batchScroll.scrollTo(top, anchor: .top)
-            }
-            for stepMs in [150, 150, 150] {
-              try? await Task.sleep(for: .milliseconds(stepMs))
-              if Task.isCancelled || userScrolledSinceSearch { return }
+            // 列表落地后还会因选中项、整表重建再挪一次位置：隔一会儿再滚一次，以最后一次为准。
+            for delay in [150, 450, 900] {
+              try? await Task.sleep(for: .milliseconds(delay == 150 ? 150 : delay - 150))
+              if Task.isCancelled { return }
               if let top = listTopScrollID { batchScroll.scrollTo(top, anchor: .top) }
             }
           }
@@ -1505,10 +1485,6 @@ struct HistoryContentView: View {
       }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .animation(
-        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-        value: listContentBranchKey
-      )
     }
     .typeErased()
     // 剪贴板提示改成浮层。原来它排在列表上面，出现和消失都会把整张列表
@@ -7295,7 +7271,8 @@ private struct HistoryDetailView: View, Equatable {
             .frame(width: 1, height: 2)
             .scaleEffect(x: max(rect.width, 1), y: 1, anchor: .leading)
             .offset(x: rect.minX, y: rect.maxY - 2)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: rect)
+            // 只在换页签时滑动；拖宽窗口时页签位置变了，线直接跟着走。
+            .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: activeReadingTab)
             .allowsHitTesting(false)
         }
       }
@@ -9562,7 +9539,7 @@ private struct HistoryDetailView: View, Equatable {
         // 淡入：两页同时半透明叠在一起时，标题压着正文，字糊成一片（2026-10-04 真机录屏）。
         // 用限定范围的动画：只给这一层透明度加动画。`.animation(_:value:)` 会把同一拍里面板
         // 内部的尺寸变化也一起动画，每帧重排整篇长文（2026-10-04 Instruments）。
-        .animation(reduceMotion || !isActive ? nil : .easeOut(duration: 0.16)) {
+        .animation(reduceMotion || !isActive ? nil : DesignTokens.Motion.quick) {
           $0.opacity(isActive ? 1 : 0)
         }
         .allowsHitTesting(isActive)
@@ -10687,7 +10664,7 @@ private struct HistoryDetailView: View, Equatable {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
         Button {
-          withAnimation(.easeInOut(duration: 0.15)) { isImportedImageTextExpanded.toggle() }
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) { isImportedImageTextExpanded.toggle() }
         } label: {
           HStack(spacing: 6) {
             Image(systemName: "chevron.right")

@@ -2561,9 +2561,8 @@ struct MarkdownContentView: View {
   @Environment(\.colorScheme) private var colorScheme
   /// 公式 / 流程图排好一批就会变；观察它，正文才会把占位换成图片。
   @ObservedObject private var webRenderer = ReadingWebRenderer.shared
-  /// 标题折叠状态：独立成可观察对象，使嵌入块里的 `InlineFoldToggle` 原地感知折叠翻转，
-  /// 不因 `collapsed` 变化而更换附件 reuseKey、销毁按钮或丢失悬停态。
-  @State private var headingFoldState = HeadingFoldState()
+  /// 打开了源码的流程图、打开了预览的 html 代码块（按内容区分）。
+  @State private var toggledCodeBlocks: Set<String> = []
 
   /// 后台解析出来的正文章节，以及它属于哪一份正文。
   ///
@@ -2595,7 +2594,8 @@ struct MarkdownContentView: View {
       && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil
       && LocalMarkdownImageLayout.firstVideoMarkerRange(in: source) == nil
   }
-  @State private var isHoveringOutlineButton = false
+  /// 收起的章节（按全文标题序号）。只改显示，不写回正文；换条目清空。
+  @State private var collapsedHeadings: Set<Int> = []
   /// 整篇文章拼成的富文本（见 `articleDocumentView`）：输入没变就拿回同一份。
   @State private var articleCache = ArticleDocumentCache()
   @State private var articleScrollRequest: ReadingScrollRequest?
@@ -2630,20 +2630,9 @@ struct MarkdownContentView: View {
     } label: {
       Label(outlineButtonTitle, systemImage: "list.bullet.indent")
         .themedFont(.subheadline, weight: .medium)
-        .foregroundStyle(isHoveringOutlineButton ? .primary : .secondary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(
-          isHoveringOutlineButton ? Color.primary.opacity(0.06) : Color.clear,
-          in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
-        )
+        .foregroundStyle(.secondary)
     }
     .buttonStyle(.plain)
-    .onHover { hovering in
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion)) {
-        isHoveringOutlineButton = hovering
-      }
-    }
     .help("正文章节与下方模块")
     .accessibilityLabel(outlineButtonTitle)
     .accessibilityIdentifier("history-content-outline-button")
@@ -2704,14 +2693,31 @@ struct MarkdownContentView: View {
     indent: CGFloat = 0,
     target: ReadingAnchor
   ) -> some View {
-    OutlinePopoverRowButton(
-      title: title,
-      systemImage: systemImage,
-      indent: indent
-    ) {
+    Button {
       showsOutlinePopover = false
       scrollTarget = target
+    } label: {
+      HStack(spacing: 6) {
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: DesignTokens.IconSize.inline))
+            .foregroundStyle(.secondary)
+            .frame(width: 14)
+        }
+        Text(title)
+          .themedFont(.callout)
+          .foregroundStyle(.primary)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 0)
+      }
+      .padding(.leading, indent)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+      .padding(.vertical, 3)
     }
+    .buttonStyle(.plain)
   }
 
   /// 点击目录后要滚到的块下标。用 `ScrollViewReader` 驱动**外层**滚动容器——
@@ -2811,7 +2817,7 @@ struct MarkdownContentView: View {
     }
     // 换条目就重算一次目录；同一条正文内的重绘不再解析。
     .task(id: source) {
-      headingFoldState.collapsed = []
+      collapsedHeadings = []
       let text = source
       // 已经知道的（纯文字正文在拼的时候就取了，或者这一份之前解析过）不再后台重算。
       if let known = ReadingRenderCache.outline(for: text) {
@@ -2890,6 +2896,7 @@ struct MarkdownContentView: View {
     let appearance: String
     let outline: [Int]
     let collapsed: [Int]
+    let toggledCode: [String]
     let rendererGeneration: Int
     let anchorScope: String
   }
@@ -2905,21 +2912,20 @@ struct MarkdownContentView: View {
       palette: articlePalette.fingerprint,
       appearance: NSApp.effectiveAppearance.name.rawValue,
       outline: outlineEntries.map(\.blockIndex),
-      collapsed: headingFoldState.collapsed.sorted(),
-      // 只有行内公式 `$...$` 直接嵌在富文本属性串里；块级公式、Mermaid、HTML 都由各自块内视图观察 `ReadingWebRenderer`。
-      rendererGeneration: source.contains("$") ? webRenderer.generation : 0,
+      collapsed: collapsedHeadings.sorted(),
+      toggledCode: toggledCodeBlocks.sorted(),
+      rendererGeneration: webRenderer.generation,
       anchorScope: anchorScope
     ))
   }
 
   /// 嵌入块的样子取决于的条件：正文、目录、折叠以外的那些。这些没变时，重拼正文可以沿用旧块。
-  /// 不把 `webRenderer.generation` 或代码块局部预览开关放进这里：否则任一公式/流程图排完都会清空所有嵌入块缓存，
-  /// 把用户刚展开的折叠 Callout 卡片重置回折叠态。
   private var blockReuseScope: AnyHashable {
     AnyHashable([
       AnyHashable(localImageURLs), AnyHashable(localMediaFileURL), AnyHashable(sourceURL),
       AnyHashable(readingFont), AnyHashable(articlePalette.fingerprint),
-      AnyHashable(NSApp.effectiveAppearance.name.rawValue), AnyHashable(anchorScope),
+      AnyHashable(NSApp.effectiveAppearance.name.rawValue), AnyHashable(toggledCodeBlocks),
+      AnyHashable(webRenderer.generation), AnyHashable(anchorScope),
     ])
   }
 
@@ -2944,7 +2950,7 @@ struct MarkdownContentView: View {
         groupsConsecutiveImages: groupsConsecutiveImages
       )
     let headingOffsets = LocalMarkdownImageLayout.headingOffsets(of: segments)
-    let folding = SectionFolding(entries: outlineEntries, collapsed: headingFoldState.collapsed)
+    let folding = SectionFolding(entries: outlineEntries, collapsed: collapsedHeadings)
     let palette = articlePalette
     let environment = environmentValues
     let cache = articleCache
@@ -3013,6 +3019,7 @@ struct MarkdownContentView: View {
         // 小三角占住页边那 20pt：标题首行不缩进，三角的位子正好 20pt 宽，标题文字落回正文那条线。
         // （文字引擎不理会嵌入块上的字距，所以不能用「16pt + 4pt 字距」凑。）
         let font = text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont ?? NSFont.systemFont(ofSize: 18)
+        let collapsed = foldToggle.collapsed
         let heading = foldToggle.heading
         let headingLine = (text.string as NSString).paragraphRange(for: NSRange(location: 0, length: 0))
         if let current = text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle,
@@ -3021,13 +3028,15 @@ struct MarkdownContentView: View {
           text.addAttribute(.paragraphStyle, value: style, range: headingLine)
         }
         let offset = CGPoint(x: 0, y: font.capHeight / 2 - 8)
-        let foldState = self.headingFoldState
-        let toggle = cache.block(reuseKey: "fold|\(heading)|\(offset.y)") {
+        let toggle = cache.block(reuseKey: "fold|\(heading)|\(collapsed)|\(offset.y)") {
           HostedBlockAttachment(width: .fixed(CGSize(width: Self.foldGutter, height: 16), offset: offset)) {
-            AnyView(
-              InlineFoldToggle(foldState: foldState, heading: heading, tint: self.secondaryTextColor)
-                .environment(\.self, environment)
-            )
+            AnyView(InlineFoldToggle(isCollapsed: collapsed, tint: self.secondaryTextColor) {
+              if self.collapsedHeadings.contains(heading) {
+                self.collapsedHeadings.remove(heading)
+              } else {
+                self.collapsedHeadings.insert(heading)
+              }
+            })
           }
         }
         let mark = NSMutableAttributedString(attachment: toggle)
@@ -3247,7 +3256,7 @@ struct MarkdownContentView: View {
         runs.append((index, .text([block])))
       }
     }
-    let folding = SectionFolding(entries: outlineEntries, collapsed: headingFoldState.collapsed)
+    let folding = SectionFolding(entries: outlineEntries, collapsed: collapsedHeadings)
     /// 某个块属于全文第几个标题之下（含它自己是标题的情况）；在第一个标题之前为 nil。
     func owningHeading(_ localIndex: Int) -> Int? {
       let count = localHeadings.filter { $0.blockIndex <= localIndex }.count
@@ -3275,8 +3284,10 @@ struct MarkdownContentView: View {
               runView(collapsed ? entry.run.headingOnly : entry.run, trimsTrailingLine: nextIsCard && !collapsed, followsText: followsText)
                 .overlay(alignment: .topLeading) {
                   SectionFoldToggle(isCollapsed: collapsed, level: level, tint: secondaryTextColor) {
-                    withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-                      headingFoldState.toggle(heading)
+                    if collapsedHeadings.contains(heading) {
+                      collapsedHeadings.remove(heading)
+                    } else {
+                      collapsedHeadings.insert(heading)
                     }
                   }
                 }
@@ -3578,12 +3589,13 @@ struct MarkdownContentView: View {
         codeBlock(language: language, content: content)
       }
     case .mermaid:
-      ToggleableSpecialCodeBlock(
-        title: "流程图",
-        untoggledActionTitle: "看源码",
-        toggledActionTitle: "看图",
-        secondaryTextColor: secondaryTextColor,
-        untoggledContent: {
+      let key = "mermaid|" + content
+      let showsSource = toggledCodeBlocks.contains(key)
+      VStack(alignment: .leading, spacing: 6) {
+        specialBlockToolbar(title: "流程图", toggleTitle: showsSource ? "看图" : "看源码", key: key)
+        if showsSource {
+          codeBlock(language: language, content: content)
+        } else {
           ReadingRenderedBlock(
             request: webRequest(.mermaid, content),
             alignment: .center,
@@ -3591,21 +3603,14 @@ struct MarkdownContentView: View {
           ) {
             codeBlock(language: language, content: content)
           }
-        },
-        toggledContent: {
-          codeBlock(language: language, content: content)
         }
-      )
+      }
     case .html:
-      ToggleableSpecialCodeBlock(
-        title: "HTML",
-        untoggledActionTitle: "预览",
-        toggledActionTitle: "看代码",
-        secondaryTextColor: secondaryTextColor,
-        untoggledContent: {
-          codeBlock(language: language, content: content)
-        },
-        toggledContent: {
+      let key = "html|" + content
+      let previews = toggledCodeBlocks.contains(key)
+      VStack(alignment: .leading, spacing: 6) {
+        specialBlockToolbar(title: "HTML", toggleTitle: previews ? "看代码" : "预览", key: key)
+        if previews {
           ReadingRenderedBlock(
             request: webRequest(.html, content, width: 640),
             alignment: .leading,
@@ -3617,8 +3622,10 @@ struct MarkdownContentView: View {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
               .strokeBorder(primaryTextColor.opacity(0.1), lineWidth: 1)
           )
+        } else {
+          codeBlock(language: language, content: content)
         }
-      )
+      }
     case .none:
       if ReadingSpecialCode.isProse(language: language, content: content) {
         proseBlock(content)
@@ -3650,7 +3657,19 @@ struct MarkdownContentView: View {
       .accessibilityIdentifier("history-content-prose-block")
   }
 
-
+  private func specialBlockToolbar(title: String, toggleTitle: String, key: String) -> some View {
+    HStack(spacing: 8) {
+      Text(title)
+        .themedFont(.caption, weight: .semibold)
+        .foregroundStyle(secondaryTextColor)
+      Spacer(minLength: 0)
+      Button(toggleTitle) {
+        if toggledCodeBlocks.contains(key) { toggledCodeBlocks.remove(key) } else { toggledCodeBlocks.insert(key) }
+      }
+      .buttonStyle(.link)
+      .themedFont(.caption)
+    }
+  }
 
   private func webRequest(_ kind: ReadingWebRenderer.Kind, _ source: String, width: CGFloat = 0) -> ReadingWebRenderer.Request {
     ReadingWebRenderer.Request(
@@ -3855,8 +3874,6 @@ struct QuotedTweetCardView: View {
   var readingFont: ResolvedReadingFont = .sans
   var accentColor: Color = .accentColor
   let onOpenURL: (URL) -> Void
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var isHoveringOriginLink = false
 
   private var paragraphs: [String] {
     quote.text
@@ -3894,16 +3911,10 @@ struct QuotedTweetCardView: View {
                 Image(systemName: "arrow.up.right").font(.system(size: DesignTokens.IconSize.inline - 2, weight: .medium))
                 Text("查看原推").themedFont(.caption)
               }
-              .foregroundStyle(isHoveringOriginLink ? accentColor : .secondary)
+              .foregroundStyle(.secondary)
               .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .linkCursor()
-            .onHover { hovering in
-              withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion)) {
-                isHoveringOriginLink = hovering
-              }
-            }
             .help("在浏览器中打开被引用的这条推文")
           }
         }
@@ -3939,35 +3950,18 @@ struct QuotedTweetCardView: View {
 /// the pointer affordance is visible before the click.
 private struct CodeCopyButton: View {
   let content: String
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isHovered = false
-  @State private var didCopy = false
-  @State private var resetTask: Task<Void, Never>?
 
   var body: some View {
     Button {
       CopyFeedbackController.shared.copy(content)
-      resetTask?.cancel()
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-        didCopy = true
-      }
-      resetTask = Task { @MainActor in
-        try? await Task.sleep(for: .milliseconds(1200))
-        guard !Task.isCancelled else { return }
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-          didCopy = false
-        }
-      }
     } label: {
-      Label("复制", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+      Label("复制", systemImage: "doc.on.doc")
         .labelStyle(.iconOnly)
-        .motionSymbolReplace(reduceMotion: reduceMotion)
     }
     .buttonStyle(.plain)
-    .foregroundStyle(didCopy ? .primary : (isHovered ? .primary : .secondary))
-    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), value: isHovered)
+    .foregroundStyle(isHovered ? .primary : .secondary)
     .onHover { isHovered = $0 }
-    .onDisappear { resetTask?.cancel() }
     .accessibilityLabel("复制代码")
   }
 }
@@ -4083,9 +4077,8 @@ struct ReadingCalloutCard<Content: View>: View {
   let secondaryTextColor: Color
   let content: () -> Content
   @State private var isExpanded: Bool
-  @State private var isHoveringHeader = false
-  @Environment(\.appTheme) private var appTheme
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.appTheme) private var appTheme
 
   init(
     kind: String,
@@ -4112,7 +4105,6 @@ struct ReadingCalloutCard<Content: View>: View {
       header
       if isExpanded {
         content()
-          .transition(.opacity)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -4155,20 +4147,11 @@ struct ReadingCalloutCard<Content: View>: View {
       label
     } else {
       Button {
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-          isExpanded.toggle()
-        }
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) { isExpanded.toggle() }
       } label: {
-        label
-          .opacity(isHoveringHeader ? 1.0 : 0.92)
-          .contentShape(Rectangle())
+        label.contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .onHover { hovering in
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion)) {
-          isHoveringHeader = hovering
-        }
-      }
       .accessibilityLabel(isExpanded ? "收起\(heading)" : "展开\(heading)")
     }
   }
@@ -4206,148 +4189,14 @@ struct SectionFolding {
 
 /// 标题左侧的收起 / 展开按钮。平时淡，悬停到这一节才明显，不给正文添噪点。
 /// 整篇文章一个文字视图时的章节折叠小三角：位置由嵌入块定（挂在标题左边的页边），这里只画按钮。
-@MainActor
-@Observable
-final class HeadingFoldState {
-  var collapsed: Set<Int> = []
-
-  func isCollapsed(_ heading: Int) -> Bool {
-    collapsed.contains(heading)
-  }
-
-  func toggle(_ heading: Int) {
-    if collapsed.contains(heading) {
-      collapsed.remove(heading)
-    } else {
-      collapsed.insert(heading)
-    }
-  }
-}
-
-private struct OutlinePopoverRowButton: View {
-  let title: String
-  let systemImage: String?
-  let indent: CGFloat
+struct InlineFoldToggle: View {
+  let isCollapsed: Bool
+  let tint: Color
   let action: () -> Void
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isHovering = false
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 6) {
-        if let systemImage {
-          Image(systemName: systemImage)
-            .font(.system(size: DesignTokens.IconSize.inline))
-            .foregroundStyle(.secondary)
-            .frame(width: 14)
-        }
-        Text(title)
-          .themedFont(.callout)
-          .foregroundStyle(.primary)
-          .lineLimit(2)
-          .multilineTextAlignment(.leading)
-          .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: 0)
-      }
-      .padding(.leading, indent)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 3)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        isHovering ? Color.primary.opacity(0.06) : Color.clear,
-        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
-      )
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .onHover { hovering in
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion)) {
-        isHovering = hovering
-      }
-    }
-  }
-}
-
-private struct ToggleableSpecialCodeBlock<Untoggled: View, Toggled: View>: View {
-  let title: String
-  let untoggledActionTitle: String
-  let toggledActionTitle: String
-  let secondaryTextColor: Color
-  @ViewBuilder let untoggledContent: () -> Untoggled
-  @ViewBuilder let toggledContent: () -> Toggled
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var isToggled = false
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 8) {
-        Text(title)
-          .themedFont(.caption, weight: .semibold)
-          .foregroundStyle(secondaryTextColor)
-        Spacer(minLength: 0)
-        Button(isToggled ? toggledActionTitle : untoggledActionTitle) {
-          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-            isToggled.toggle()
-          }
-        }
-        .buttonStyle(.link)
-        .themedFont(.caption)
-      }
-      Group {
-        if isToggled {
-          toggledContent()
-            .transition(.opacity)
-        } else {
-          untoggledContent()
-            .transition(.opacity)
-        }
-      }
-    }
-  }
-}
-
-struct InlineFoldToggle: View {
-  private let foldState: HeadingFoldState?
-  private let heading: Int?
-  private let staticCollapsed: Bool
-  let tint: Color
-  private let customAction: (() -> Void)?
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var isHovering = false
-
-  init(foldState: HeadingFoldState, heading: Int, tint: Color) {
-    self.foldState = foldState
-    self.heading = heading
-    self.staticCollapsed = false
-    self.tint = tint
-    self.customAction = nil
-  }
-
-  init(isCollapsed: Bool, tint: Color, action: @escaping () -> Void) {
-    self.foldState = nil
-    self.heading = nil
-    self.staticCollapsed = isCollapsed
-    self.tint = tint
-    self.customAction = action
-  }
-
-  private var isCollapsed: Bool {
-    if let foldState, let heading {
-      return foldState.isCollapsed(heading)
-    }
-    return staticCollapsed
-  }
-
-  var body: some View {
-    Button {
-      if let foldState, let heading {
-        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-          foldState.toggle(heading)
-        }
-      } else {
-        customAction?()
-      }
-    } label: {
       Image(systemName: "chevron.right")
         .font(.system(size: 10, weight: .semibold))
         .rotationEffect(.degrees(isCollapsed ? 0 : 90))
@@ -4356,8 +4205,6 @@ struct InlineFoldToggle: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(tint.opacity(isCollapsed || isHovering ? 0.9 : 0.35))
-    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: isCollapsed)
-    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), value: isHovering)
     .onHover { isHovering = $0 }
     .help(isCollapsed ? "展开这一节" : "收起这一节")
     .accessibilityLabel(isCollapsed ? "展开这一节" : "收起这一节")
@@ -4369,7 +4216,6 @@ struct SectionFoldToggle: View {
   let level: Int
   let tint: Color
   let action: () -> Void
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isHovering = false
 
   /// 按 `SelectableReadingText` 里标题的字号，让三角落在标题第一行中间。
@@ -4389,8 +4235,6 @@ struct SectionFoldToggle: View {
     }
     .buttonStyle(.plain)
     .foregroundStyle(tint.opacity(isCollapsed || isHovering ? 0.9 : 0.35))
-    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: isCollapsed)
-    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), value: isHovering)
     .onHover { isHovering = $0 }
     .offset(x: -20, y: topInset)
     .help(isCollapsed ? "展开这一节" : "收起这一节")
@@ -4437,93 +4281,49 @@ struct ReadingRenderedBlock<Fallback: View>: View {
   let failureTitle: String
   @ViewBuilder let fallback: () -> Fallback
   @ObservedObject private var renderer = ReadingWebRenderer.shared
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  private var renderedAccessibilityLabel: String {
-    switch request.kind {
-    case .mermaid: "流程图"
-    case .html: "HTML 预览"
-    case .blockMath, .inlineMath: "公式"
-    }
-  }
-
-  private var loadingTitle: String {
-    switch request.kind {
-    case .mermaid: "正在画流程图…"
-    case .html: "正在渲染预览…"
-    case .blockMath, .inlineMath: "正在排版公式…"
-    }
-  }
-
-  private func outcomePhaseTag(_ outcome: ReadingWebRenderer.Outcome?) -> Int {
-    switch outcome {
-    case .none: 0
-    case .rendered: 1
-    case .failed: 2
-    }
-  }
 
   var body: some View {
     let _ = renderer.generation
-    let outcome = renderer.outcome(for: request)
-    Group {
-      switch outcome {
-      case let .rendered(result):
-        // 按排版时的原尺寸显示（缩放会让公式里的小字糊掉）；比正文还宽的图可以横向拖动。
-        let image = Image(nsImage: result.image)
-          .frame(width: result.size.width, height: result.size.height)
-          .accessibilityLabel(renderedAccessibilityLabel)
-        // 按正文列的实际宽度判断放不放得下（2026-09-25）：原来和固定的 660 比，正文列更窄时
-        // 640 宽的流程图既没换成可拖动、也放不下，右边一截被裁掉。
-        if request.kind == .mermaid {
-          // 流程图比正文宽时整张等比缩进正文宽度（和 Tolaria 一样）：横向拖动只能看到半张图。
-          // 公式不缩，缩小后上下标会糊，仍然走下面的横向拖动。
-          Image(nsImage: result.image)
-            .resizable()
-            .aspectRatio(result.size.width / max(1, result.size.height), contentMode: .fit)
-            .frame(maxWidth: result.size.width)
-            .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
-            .accessibilityLabel("流程图")
-            .transition(.opacity)
-        } else {
-          ViewThatFits(in: .horizontal) {
-            image.frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
-            ScrollView(.horizontal, showsIndicators: true) { image }
-              .frame(height: result.size.height + 14)
-          }
-          .transition(.opacity)
+    switch renderer.outcome(for: request) {
+    case let .rendered(result):
+      // 按排版时的原尺寸显示（缩放会让公式里的小字糊掉）；比正文还宽的图可以横向拖动。
+      let image = Image(nsImage: result.image)
+        .frame(width: result.size.width, height: result.size.height)
+        .accessibilityLabel(request.kind == .mermaid ? "流程图" : "公式")
+      // 按正文列的实际宽度判断放不放得下（2026-09-25）：原来和固定的 660 比，正文列更窄时
+      // 640 宽的流程图既没换成可拖动、也放不下，右边一截被裁掉。
+      if request.kind == .mermaid {
+        // 流程图比正文宽时整张等比缩进正文宽度（和 Tolaria 一样）：横向拖动只能看到半张图。
+        // 公式不缩，缩小后上下标会糊，仍然走下面的横向拖动。
+        Image(nsImage: result.image)
+          .resizable()
+          .aspectRatio(result.size.width / max(1, result.size.height), contentMode: .fit)
+          .frame(maxWidth: result.size.width)
+          .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+          .accessibilityLabel("流程图")
+      } else {
+        ViewThatFits(in: .horizontal) {
+          image.frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+          ScrollView(.horizontal, showsIndicators: true) { image }
+            .frame(height: result.size.height + 14)
         }
-      case let .failed(message):
-        VStack(alignment: .leading, spacing: 6) {
-          Text(failureTitle)
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-          fallback()
-        }
-        .onAppear {
-          AppLog.error(
-            .media,
-            "reading_web_render_failed",
-            code: "WEB_RENDER_FAILED",
-            ["kind": String(describing: request.kind), "error": message]
-          )
-        }
-        .transition(.opacity)
-      case .none:
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.small)
-          Text(loadingTitle)
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: Alignment(horizontal: alignment, vertical: .center))
-        .transition(.opacity)
       }
+    case let .failed(message):
+      VStack(alignment: .leading, spacing: 6) {
+        Text("\(failureTitle)（\(message)）")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+        fallback()
+      }
+    case .none:
+      HStack(spacing: 8) {
+        ProgressView().controlSize(.small)
+        Text(request.kind == .mermaid ? "正在画流程图…" : "正在排版…")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, minHeight: 36, alignment: Alignment(horizontal: alignment, vertical: .center))
     }
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-      value: outcomePhaseTag(outcome)
-    )
   }
 }
 

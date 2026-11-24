@@ -583,7 +583,8 @@ private struct InlineImageLightboxCanvas: View {
 
   /// 双击缩放用 snappy 弹簧过渡（可被再次双击打断）；捏合和拖动不走这里，保持跟手。
   private func toggleZoom() {
-    withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+    // 减弱动态效果时缩放、回中直接到位，不插值。
+    withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) {
       if scale > 1.01 || abs(offset.width) > 1 || abs(offset.height) > 1 {
         scale = 1; pinchBase = 1; offset = .zero; dragBase = .zero
       } else {

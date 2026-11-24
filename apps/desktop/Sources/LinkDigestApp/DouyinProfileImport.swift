@@ -1652,12 +1652,8 @@ struct DouyinProfileImportSheet: View {
               if model.discoverySource != .browserExtension {
                 DouyinProfileImportWebView(model: model, dataStore: model.dataStore)
                   .id(model.platform)
-                  // 查看主页时跟随可见区填满；其余时间保持稳定的桌面视口。
-                  .frame(
-                    width: showsHomepage ? geometry.size.width : 960,
-                    height: showsHomepage ? geometry.size.height : 480
-                  )
-                  // WebView 尺寸跳变不参与外层的阶段动画，避免页面在动画中反复重排。
+                  // 视口始终固定：扫描中切去看主页也不能改变正在懒加载的页面布局。
+                  .frame(width: 960, height: 480)
                   .transaction { $0.animation = nil }
                   .allowsHitTesting(showsHomepage)
                   .accessibilityHidden(!showsHomepage)
@@ -1687,10 +1683,8 @@ struct DouyinProfileImportSheet: View {
     }
     .frame(width: sheetSize.width, height: sheetSize.height, alignment: .top)
     // 只对离散阶段动画；hostWindowSize（拖动缩放主窗口）不进动画，保持跟手。
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
-      value: sheetStage
-    )
+    // 减弱动态效果时弹窗外框直接换尺寸，不插值。
+    .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: sheetStage)
     .background(theme.card)
     .background(SheetHostWindowSizeReader(size: $hostWindowSize))
     .onChange(of: metricsReader.readingID) { previous, current in
@@ -2063,7 +2057,8 @@ struct DouyinProfileImportSheet: View {
           ForEach(workSort.sorted(model.candidates, likes: { $0.likes }, published: { $0.publishedText }, referenceDate: sortReferenceDate)) { candidate in
             candidateCard(candidate)
               .onScrollVisibilityChange(threshold: 0.2) { visible in
-                metricsQueue.setVisible(candidate.id, visible && !showsHomepage)
+                // 作品面板保活：一直记几何可见性，是否开读由 readNextVisibleMetrics 统一拦。
+                metricsQueue.setVisible(candidate.id, visible)
                 readNextVisibleMetrics()
               }
               .onDisappear { metricsQueue.setVisible(candidate.id, false) }

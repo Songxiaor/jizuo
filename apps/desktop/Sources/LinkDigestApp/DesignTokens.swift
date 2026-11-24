@@ -113,6 +113,8 @@ extension DesignTokens {
   /// 规则：
   /// - 全部经 `resolved(_:reduceMotion:)`；转场用 `DesignTokens.Transition`，
   ///   它把「去掉位移/缩放」的降级一起做了。
+  /// - `resolved` 的降级仍是 0.1 秒插值，只适合透明度、颜色；直接动位移、缩放、尺寸的地方
+  ///   在减弱动态效果时传 `nil`，直接到位。
   /// - 隐式 `.animation(_, value:)` 只挂在变化的那一小块上，绝不挂在窗口根、
   ///   整张 List、整篇正文这类大容器上。
   /// - 拖动、调整大小直接跟手，过程中不加动画。

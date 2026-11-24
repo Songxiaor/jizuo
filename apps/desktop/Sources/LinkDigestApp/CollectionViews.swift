@@ -79,10 +79,22 @@ struct CollectionMenuItems: View {
   }
 }
 
+/// 「已复制」小药丸出现时，底部的合集提示往上让一格；只在这一小块里订阅，
+/// 不让复制动作刷新整个窗口。减弱动态效果时直接换位置。
+private struct CopyFeedbackAvoidance: ViewModifier {
+  @ObservedObject private var copyFeedback = CopyFeedbackController.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  func body(content: Content) -> some View {
+    content
+      .padding(.bottom, copyFeedback.isVisible ? 72 : 28)
+      .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: copyFeedback.isVisible)
+  }
+}
+
 /// 新建 / 改名 / 删除合集的弹窗，和加入之后的提示条。挂在历史窗口根部。
 struct CollectionPromptsModifier: ViewModifier {
   @Bindable var model: HistoryViewModel
-  private var copyFeedback = CopyFeedbackController.shared
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   func body(content: Content) -> some View {
@@ -130,14 +142,13 @@ struct CollectionPromptsModifier: ViewModifier {
             .padding(.vertical, 8).padding(.horizontal, 16)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
-            .padding(.bottom, copyFeedback.isVisible ? 72 : 28)
+            .modifier(CopyFeedbackAvoidance())
             .transition(DesignTokens.Transition.pill(reduceMotion: reduceMotion))
             .allowsHitTesting(model.canUndoFeedback)
             .accessibilityIdentifier("history-collection-feedback")
           }
         }
         .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion), value: model.collectionFeedback)
-        .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: copyFeedback.isVisible)
       }
   }
 
