@@ -70,6 +70,7 @@ struct HistoryContentView: View {
   @State private var threeColumnWidths = ThreeColumnWidths.stored()
   /// 列表列的搜索框平时收成列头的一个放大镜图标；点开、⌘F 或已有搜索词时才展开。
   @State private var isListSearchExpanded = false
+  @State private var userScrolledSinceSearch = false
   /// 点平台默认留在三栏列表里按平台筛选（2026-09-23），和侧栏其他入口一个样子；
   /// 想看卡片墙时从列头「卡片视图」进。换平台或返回后自动回到列表。
   @State private var isPlatformGalleryRequested = false
@@ -359,7 +360,11 @@ struct HistoryContentView: View {
             columnVisibility = .all
           }
         }
-        if !showsPlatformGallerySurface, !model.isCreatorDirectoryActive { isListSearchExpanded = true }
+        if !showsPlatformGallerySurface, !model.isCreatorDirectoryActive {
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+            isListSearchExpanded = true
+          }
+        }
         DispatchQueue.main.async { isSearchFocused = true }
       })
       .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
@@ -1024,7 +1029,9 @@ struct HistoryContentView: View {
     }
     ToolbarItemGroup(placement: .automatic) {
       Button {
-        isListSearchExpanded = true
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+          isListSearchExpanded = true
+        }
         DispatchQueue.main.async { isSearchFocused = true }
       } label: {
         Label("搜索", systemImage: "magnifyingglass")
@@ -1048,96 +1055,139 @@ struct HistoryContentView: View {
     }
   }
 
+  private var listContentBranchKey: String {
+    switch model.listState {
+    case .idle where model.rows.isEmpty, .loading where model.rows.isEmpty:
+      return "skeleton"
+    case .empty where model.visibleRelatedRows.isEmpty
+      && ordinaryPendingCaptures.isEmpty && visibleProfileImportBatches.isEmpty:
+      return "empty-\(model.selectedScope)-\(model.selectedForm?.rawValue ?? "all")-\(model.selectedCollectionID?.rawValue ?? "none")-\(model.showsCreatorZeroWorks)-\(model.hasActiveFilter)"
+    case .failed where model.rows.isEmpty:
+      return "failed-\(model.canRetryList)"
+    case .loaded, .loading, .failed, .idle, .empty:
+      return "list"
+    }
+  }
+
+  private var listTopBannersAnimationKey: String {
+    "\(model.isReadOnly)|\(model.selectedScope == .trash && !model.rows.isEmpty)|\(manualLink.captureNotice ?? "")|\(model.creatorFailure ?? "")|\(listTopBanner != nil)"
+  }
+
   private var sidebar: some View {
     VStack(spacing: 0) {
-      if showsListSearchField {
-      // 三处搜索框同一个组件（2026-10-01 视觉一致性）。
-      ThemedSearchField {
-        // 提示语要说清搜的范围。写「搜索历史」时用户不会想到能搜正文，
-        // 于是有了这个能力也用不上。「总结」必须留：能搜总结是刻意实现的能力。
-        DebouncedSearchField(placeholder: listSearchPlaceholder, committed: model.searchText,
-                             onChange: { model.searchText = $0 })
-          .focused($isSearchFocused)
-      }
-      .padding(.horizontal, DesignTokens.Layout.columnInset).padding(.top, 5).padding(.bottom, 10)
-        .accessibilityIdentifier("history-search")
-        .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
-      }
-      if listFilterChipCount > 0 {
-        activeFilterBar
-      }
-      if model.isReadOnly {
-        Label("只读", systemImage: "lock.fill")
-          .themedFont(.caption, weight: .semibold)
-          .foregroundStyle(theme.primaryText)
-          .padding(.horizontal, 8).padding(.vertical, 4)
-          .background(theme.warning.opacity(0.14), in: Capsule())
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 10).padding(.bottom, 8)
-          .accessibilityIdentifier("history-read-only-banner")
-      }
-      if model.selectedScope == .trash, !model.rows.isEmpty {
-        // 回收站原来没有任何说明：不知道会不会自动清、也没有一键清空，
-        // 恢复只藏在右键菜单里（2026-10-01 走查）。「30 天后自动删除」只在这一处写；
-        // 详情顶上的提示条不再重复（2026-10-13 走查 #8）。
-        NoticeBanner(
-          icon: "trash",
-          title: "回收站里的内容放满 \(HistoryTrashPolicy.retentionDays) 天自动删除",
-          actionTitle: "清空",
-          actionStyle: .destructive,
-          isActionDisabled: model.isReadOnly,
-          actionHelp: "彻底删除回收站里的全部内容（会先确认）",
-          actionIdentifier: "history-trash-empty",
-          identifier: "history-trash-banner"
-        ) { isEmptyTrashConfirmPresented = true }
-      }
-      if let notice = manualLink.captureNotice {
-        captureNoticeBanner(notice)
-      }
-      if let failure = model.creatorFailure {
-        HStack {
-          Label(failure, systemImage: "exclamationmark.triangle")
-            .themedFont(.caption)
-            .foregroundStyle(theme.danger)
-          Spacer()
-          Button("知道了", action: model.dismissCreatorFailure)
-        }
-        // 10：和搜索框、列表卡片外缘同一条线（原来 12，往里缩 2pt，2026-10-01 体检）。
-        .padding(.horizontal, 10).padding(.bottom, 8)
-      }
-      if let creator = model.selectedCreator {
-        // 名字一行、按钮一行：列宽 220–260 时同一行放名字加两个按钮，名字被挤成三四个字一折
-        // （2026-10-01 体检）。
-        VStack(alignment: .leading, spacing: 6) {
-          Text(creator.directoryDisplayName)
-            .themedFont(.headline)
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-          HStack(spacing: 8) {
-            Button("更新资料") {
-              presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-            }
-            .buttonStyle(.appNormal)
-            .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
-            .help("只刷新姓名和头像，不必保存新作品")
-            .accessibilityIdentifier("history-creator-refresh-selected")
-            // 同组按钮同样式（2026-10-12 走查 #12）：原来「更新资料」无框、「挑选作品」实心，
-            // 并排着像两种东西。统一描边，主动作靠文字顺序表达。
-            Button("挑选作品") {
-              presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-            }
-            .buttonStyle(.appNormal)
-            .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
-            .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页，选要存的作品" : "暂不支持此平台主页")
-            .accessibilityIdentifier("history-creator-capture-selected")
+      VStack(spacing: 0) {
+        if showsListSearchField {
+          // 三处搜索框同一个组件（2026-10-01 视觉一致性）。
+          ThemedSearchField {
+            // 提示语要说清搜的范围。写「搜索历史」时用户不会想到能搜正文，
+            // 于是有了这个能力也用不上。「总结」必须留：能搜总结是刻意实现的能力。
+            DebouncedSearchField(placeholder: listSearchPlaceholder, committed: model.searchText,
+                                 onChange: { model.searchText = $0 })
+              .focused($isSearchFocused)
           }
+          .padding(.horizontal, DesignTokens.Layout.columnInset).padding(.top, 5).padding(.bottom, 10)
+          .accessibilityIdentifier("history-search")
+          .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.bottom, 8)
       }
-      if let listTopBanner { listTopBanner }
+      .clipped()
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: showsListSearchField
+      )
+      VStack(spacing: 0) {
+        if listFilterChipCount > 0 {
+          activeFilterBar
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
+      }
+      .clipped()
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: listFilterChipCount > 0
+      )
+      VStack(spacing: 0) {
+        if model.isReadOnly {
+          Label("只读", systemImage: "lock.fill")
+            .themedFont(.caption, weight: .semibold)
+            .foregroundStyle(theme.primaryText)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(theme.warning.opacity(0.14), in: Capsule())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.bottom, 8)
+            .accessibilityIdentifier("history-read-only-banner")
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
+        if model.selectedScope == .trash, !model.rows.isEmpty {
+          // 回收站原来没有任何说明：不知道会不会自动清、也没有一键清空，
+          // 恢复只藏在右键菜单里（2026-10-01 走查）。「30 天后自动删除」只在这一处写；
+          // 详情顶上的提示条不再重复（2026-10-13 走查 #8）。
+          NoticeBanner(
+            icon: "trash",
+            title: "回收站里的内容放满 \(HistoryTrashPolicy.retentionDays) 天自动删除",
+            actionTitle: "清空",
+            actionStyle: .destructive,
+            isActionDisabled: model.isReadOnly,
+            actionHelp: "彻底删除回收站里的全部内容（会先确认）",
+            actionIdentifier: "history-trash-empty",
+            identifier: "history-trash-banner"
+          ) { isEmptyTrashConfirmPresented = true }
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
+        if let notice = manualLink.captureNotice {
+          captureNoticeBanner(notice)
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
+        if let failure = model.creatorFailure {
+          HStack {
+            Label(failure, systemImage: "exclamationmark.triangle")
+              .themedFont(.caption)
+              .foregroundStyle(theme.danger)
+            Spacer()
+            Button("知道了") {
+              withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+                model.dismissCreatorFailure()
+              }
+            }
+          }
+          // 10：和搜索框、列表卡片外缘同一条线（原来 12，往里缩 2pt，2026-10-01 体检）。
+          .padding(.horizontal, 10).padding(.bottom, 8)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
+        if let creator = model.selectedCreator {
+          // 名字一行、按钮一行：合并原先功能完全相同的「更新资料」与「挑选作品」，避免承诺失准。
+          VStack(alignment: .leading, spacing: 6) {
+            Text(creator.directoryDisplayName)
+              .themedFont(.headline)
+              .lineLimit(2)
+              .multilineTextAlignment(.leading)
+              .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+              Button("挑选作品") {
+                presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+              }
+              .buttonStyle(.appNormal)
+              .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
+              .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页挑选作品，同时更新姓名与头像" : "暂不支持此平台主页")
+              .accessibilityIdentifier("history-creator-capture-selected")
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 10)
+          .padding(.bottom, 8)
+        }
+        if let listTopBanner {
+          listTopBanner
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
+      }
+      .clipped()
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+        value: listTopBannersAnimationKey
+      )
+      ZStack {
       switch model.listState {
       case .idle where model.rows.isEmpty:
         HistorySkeletonList(theme: theme)
@@ -1155,7 +1205,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: form.systemImage,
             title: "这里没有\(form.rawValue)",
-            message: "列头选了只看这一种形式。换回全部形式，就能看到这里的其它内容。",
+            message: "当前只看「\(form.rawValue)」，切回全部就能看到其他内容。",
             actionTitle: "显示全部形式",
             action: { model.selectForm(nil) }
           )
@@ -1165,7 +1215,7 @@ struct HistoryContentView: View {
            model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
             symbol: "checkmark.circle",
-            title: "没有未总结的内容",
+            title: "都总结过了",
             message: "新存的链接会出现在这里。也可切到「全部」浏览已有内容。",
             actionTitle: "查看全部",
             action: { model.selectScope(.all) },
@@ -1199,25 +1249,28 @@ struct HistoryContentView: View {
           .accessibilityIdentifier("history-untranscribed-empty")
         } else if model.selectedScope == .notes, !model.hasCategoryFilter,
                   model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          HistoryInlineState(
-            symbol: "square.and.pencil",
-            title: "还没有笔记",
-            message: "随手记下想法、灵感或读后感。",
-            actionTitle: "写第一条笔记",
-            action: createNote
-          )
+          // 完整空态与主按钮在右侧详情列；列表列只留轻提示，一屏只留一个主动作落点。
+          VStack(spacing: 10) {
+            Image(systemName: "square.and.pencil")
+              .font(.system(size: DesignTokens.IconSize.empty, weight: .regular))
+              .foregroundStyle(theme.secondaryText)
+            Text("还没有笔记").themedFont(.headline)
+          }
+          .padding(24)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-notes-empty")
         } else if model.selectedScope == .trash, !model.hasCategoryFilter,
                   model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          HistoryInlineState(
-            symbol: "trash",
-            title: "回收站是空的",
-            message: "删除的内容会在这里保留 \(HistoryTrashPolicy.retentionDays) 天。过期后会从本机彻底清除，无法再恢复。",
-            actionTitle: "查看全部",
-            action: { model.selectScope(.all) }
-          )
+          VStack(spacing: 10) {
+            Image(systemName: "trash")
+              .font(.system(size: DesignTokens.IconSize.empty, weight: .regular))
+              .foregroundStyle(theme.secondaryText)
+            Text("回收站是空的").themedFont(.headline)
+          }
+          .padding(24)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-trash-empty")
         } else if let collection = model.selectedCollection,
                   // 只有合集本身没内容时才说「还是空的」；有内容但被搜索 / 形式 / 标签
@@ -1230,25 +1283,22 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: CollectionIcon.collection,
             title: "「\(collection.name)」还是空的",
-            message: "在列表里右键一条内容（或打开它后点「⋯」菜单），选「加入合集」，就会按加入的先后排在这里；列表多选后可以一起加入。进来之后可以拖动调整顺序。",
+            message: "右键任意内容或点详情「⋯」加入合集，支持多选和拖动排序。",
             actionTitle: "去全部里挑",
             action: { model.selectScope(.all) }
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-collection-empty")
         } else if model.showsCreatorZeroWorks {
-          HistoryInlineState(
-            symbol: "tray",
-            title: "尚未保存作品",
-            message: "打开主页后勾选要保存的内容。",
-            actionTitle: "挑选作品",
-            action: {
-              if let url = model.selectedCreator?.profileURL {
-                presentDouyinProfileImport(profileURL: url, autoStart: true)
-              }
-            }
-          )
+          VStack(spacing: 10) {
+            Image(systemName: "tray")
+              .font(.system(size: DesignTokens.IconSize.empty, weight: .regular))
+              .foregroundStyle(theme.secondaryText)
+            Text("尚未保存作品").themedFont(.headline)
+          }
+          .padding(24)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-creator-zero-works")
         } else if model.hasActiveFilter {
           filterEmptyState
@@ -1324,6 +1374,7 @@ struct HistoryContentView: View {
             Section {
               ForEach(ordinaryPendingCaptures) { pending in
                 PendingCaptureRow(pending: pending, model: manualLink)
+                  .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
               }
             } header: {
               listSectionHeader("保存队列").id(Self.listTopPendingID)
@@ -1392,14 +1443,16 @@ struct HistoryContentView: View {
           .background(SmoothKnobScrollerInstaller().frame(width: 0, height: 0))
           .scrollContentBackground(.hidden)
           // 滑动中读回来的下一页等手停了再并入（见 `HistoryViewModel.setListScrolling`）。
-          .onScrollPhaseChange { _, phase in model.setListScrolling(phase.isScrolling) }
+          .onScrollPhaseChange { _, phase in
+            model.setListScrolling(phase.isScrolling)
+            if phase.isScrolling { userScrolledSinceSearch = true }
+          }
           .onDeleteCommand { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) }
-          // macOS List 对插入行沿用估算行高，新到卡片被压扁；初始构建
-          // 的测量始终正确，因此新条目登顶时整表重建（新行本就在顶部，
-          // 不损失滚动位置），行高恢复按真实内容计算。
-          // 搜索结果换了也整表重建：从最上面开始，连「昨天」这类分组标题一起露出来。
-          // 用 scrollTo 第一行会把它上面的分组标题顶出视野（2026-10-01 自查）。
-          .id("\(model.listRebuildToken)|\(model.searchScrollToTopToken)")
+          // 不再因新条目登顶或搜索词变化整表销毁重建 NSTableView；用 scrollTo 对齐顶部组头。
+          .onChange(of: model.listRebuildToken) { _, token in
+            guard token > 0, !userScrolledSinceSearch, let top = listTopScrollID else { return }
+            batchScroll.scrollTo(top, anchor: .top)
+          }
           .onChange(of: model.profileImportScrollTarget) { _, target in
             guard let target else { return }
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
@@ -1408,17 +1461,20 @@ struct HistoryContentView: View {
             model.consumeProfileImportScrollTarget()
           }
           .typeErased()
-          // 搜索、从博主页回来：等新列表落地再滚到顶。只靠整表重建不够——实测从博主页
-          // 回到「全部」，列表仍停在 9 月 8 日那段（2026-10-01 自查）。
+          // 搜索、从博主页回来：等新列表落地再滚到顶；若用户已主动滚动则立刻中止重试。
           .task(id: model.searchScrollToTopToken) {
             guard model.searchScrollToTopToken > 0 else { return }
+            userScrolledSinceSearch = false
             for _ in 0..<40 where model.listState == .loading {
               try? await Task.sleep(for: .milliseconds(50))
+              if Task.isCancelled || userScrolledSinceSearch { return }
             }
-            // 列表落地后还会因选中项、整表重建再挪一次位置：隔一会儿再滚一次，以最后一次为准。
-            for delay in [150, 450, 900] {
-              try? await Task.sleep(for: .milliseconds(delay == 150 ? 150 : delay - 150))
-              if Task.isCancelled { return }
+            if !userScrolledSinceSearch, let top = listTopScrollID {
+              batchScroll.scrollTo(top, anchor: .top)
+            }
+            for stepMs in [150, 150, 150] {
+              try? await Task.sleep(for: .milliseconds(stepMs))
+              if Task.isCancelled || userScrolledSinceSearch { return }
               if let top = listTopScrollID { batchScroll.scrollTo(top, anchor: .top) }
             }
           }
@@ -1448,7 +1504,14 @@ struct HistoryContentView: View {
             model.consumeRevealScrollTarget()
           }
         }
+        .transition(.opacity)
       }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: listContentBranchKey
+      )
     }
     .typeErased()
     // 剪贴板提示改成浮层。原来它排在列表上面，出现和消失都会把整张列表
@@ -1490,14 +1553,18 @@ struct HistoryContentView: View {
       // 只在 App 在前台时按失焦收起：从后台点放大镜那一下，焦点还没进来就先「失焦」了，
       // 搜索框弹出又立刻收回（2026-10-02 自查）。切到别的 App 时也不该把用户展开的框收掉。
       if !focused, NSApp.isActive, model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        isListSearchExpanded = false
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+          isListSearchExpanded = false
+        }
       }
     }
     // 用筛选条上的 × 清掉搜索词时，搜索框并没有焦点，上面那条收回规则碰不到——
     // 空的搜索框就一直占着列头下面一行（2026-10-01 Syc 截图）。词清空且不在输入时一并收回。
     .onChange(of: model.searchText) { _, text in
       if !isSearchFocused, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        isListSearchExpanded = false
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+          isListSearchExpanded = false
+        }
       }
     }
   }
@@ -1553,12 +1620,18 @@ struct HistoryContentView: View {
       Button {
         // 换掉这一组后列表会自己滚回顶部；内容还比窗口高就按回原来的偏移（同分组标题）。
         sidebarScrollMemory.holdVisibleOffset()
-        expanded.wrappedValue.toggle()
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+          expanded.wrappedValue.toggle()
+        }
       } label: {
         Image(systemName: "chevron.right")
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(theme.secondaryText)
           .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: expanded.wrappedValue
+          )
           .frame(width: 22, height: 20)
           .contentShape(Rectangle())
       }
@@ -1582,10 +1655,7 @@ struct HistoryContentView: View {
     // 尺寸、选中底和 `navigationButton` 同一套：上下 2pt、左右 8pt 再外扩 6pt。
     .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
-    .background(
-      selected ? theme.accent.opacity(0.12) : .clear,
-      in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-    )
+    .modifier(SidebarRowSurfaceModifier(selected: selected, theme: theme, reduceMotion: reduceMotion))
     .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
     .fontWeight(selected ? .medium : .regular)
@@ -1769,13 +1839,14 @@ struct HistoryContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(SidebarSubtleHoverModifier(theme: theme, reduceMotion: reduceMotion))
         .disabled(!model.canEditCollections)
         .help("新建合集")
         .accessibilityLabel("新建合集")
         .accessibilityIdentifier("history-navigation-collection-add")
       }
     }
-    .id("collections-\(navigationCollectionsExpanded)-\(model.collections.count)")
+    .id("collections-\(navigationCollectionsExpanded)")
   }
 
   private var navigationRail: some View {
@@ -1901,8 +1972,9 @@ struct HistoryContentView: View {
               if sidebarTagCloud.count > 6 {
                 sidebarLinkAction(
                   "全部 \(sidebarTagCloud.count) 个",
-                  systemImage: "chevron.down"
-                ) { isAllTagsPopoverPresented = true }
+                  systemImage: "chevron.down",
+                  chevronExpanded: isAllTagsPopoverPresented
+                ) { isAllTagsPopoverPresented.toggle() }
                   .popover(isPresented: $isAllTagsPopoverPresented, arrowEdge: .bottom) {
                     allTagsPopover
                   }
@@ -2029,26 +2101,14 @@ struct HistoryContentView: View {
   /// 侧栏与弹层共用的一枚标签药丸。普通点击即叠加（AND 缩小范围），再点取消；⌘点击=只看这个。
   private func sidebarTagPill(_ item: HistoryNavigationTag) -> some View {
     let selected = model.selectedTagNormalizedNames.contains(item.tag.normalizedName)
-    return Button {
+    return SidebarTagPillButton(
+      item: item,
+      selected: selected,
+      theme: theme,
+      reduceMotion: reduceMotion
+    ) {
       model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))
-    } label: {
-      HStack(spacing: 4) {
-        Text(item.tag.name).lineLimit(1)
-        Text("\(item.count)")
-          .themedFont(.caption2, monospacedDigit: true)
-          .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
-      }
-      .themedFont(.caption)
-      .padding(.vertical, 4).padding(.horizontal, 9)
-      // 无描边的浅底胶囊：带边框的药丸在侧栏里像一排按钮，比左边的文字还重。
-      .background(
-        selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
-        in: Capsule()
-      )
-      .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
-      .contentShape(Capsule())
     }
-    .buttonStyle(.plain)
     .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
     .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
   }
@@ -2061,22 +2121,45 @@ struct HistoryContentView: View {
         .foregroundStyle(theme.secondaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, DesignTokens.Space.xs)
+        .padding(.horizontal, DesignTokens.Space.xs)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .modifier(SidebarSubtleHoverModifier(theme: theme, reduceMotion: reduceMotion))
+    .padding(.horizontal, -DesignTokens.Space.xs)
   }
 
   /// 侧栏里「能点的小动作」：主题色 + 图标，和灰色说明文字区分开。
-  private func sidebarLinkAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+  private func sidebarLinkAction(
+    _ title: String,
+    systemImage: String,
+    chevronExpanded: Bool? = nil,
+    action: @escaping () -> Void
+  ) -> some View {
     Button(action: action) {
-      Label(title, systemImage: systemImage)
-        .labelStyle(.titleAndIcon)
-        .themedFont(.subheadline)
-        .foregroundStyle(theme.accent)
-        .padding(.vertical, DesignTokens.Space.xs)
-        .contentShape(Rectangle())
+      HStack(spacing: DesignTokens.Space.xs) {
+        Image(systemName: systemImage)
+          .rotationEffect(.degrees((chevronExpanded ?? false) ? 180 : 0))
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: chevronExpanded ?? false
+          )
+        Text(title)
+          .motionNumericText(reduceMotion: reduceMotion)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: title
+          )
+      }
+      .themedFont(.subheadline)
+      .foregroundStyle(theme.accent)
+      .padding(.vertical, DesignTokens.Space.xs)
+      .padding(.horizontal, DesignTokens.Space.xs)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .modifier(SidebarSubtleHoverModifier(theme: theme, reduceMotion: reduceMotion))
+    .padding(.horizontal, -DesignTokens.Space.xs)
   }
 
   /// 选中的来源在侧栏里那一行的 id。来源挂在「自有 / 外部」下面（2026-10-12（Syc 定）），
@@ -2106,13 +2189,19 @@ struct HistoryContentView: View {
           // 分组换 id 时列表会自己滚回 0。内容还比窗口高就按回原来的偏移，
           // 不再按新高度往下推（2026-10-10 点「视图」来回跳；2026-10-11 收起「来源」回顶）。
           sidebarScrollMemory.holdVisibleOffset()
-          expanded.wrappedValue.toggle()
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+            expanded.wrappedValue.toggle()
+          }
         } label: {
           // 2026-09-23：分组默认收起后必须看得出「能点开」，补一个转向的小箭头（对标应用同款）。
           HStack(spacing: 4) {
             Image(systemName: "chevron.right")
               .font(.system(size: 9, weight: .semibold))
               .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+              .animation(
+                DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+                value: expanded.wrappedValue
+              )
               .frame(width: 10)
             Text(title)
           }
@@ -2148,9 +2237,13 @@ struct HistoryContentView: View {
           .labelStyle(.titleAndIcon)
           .themedFont(.callout)
           .foregroundStyle(theme.secondaryText)
+          .padding(.vertical, DesignTokens.Space.xxs)
+          .padding(.horizontal, DesignTokens.Space.xs)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .modifier(SidebarSubtleHoverModifier(theme: theme, reduceMotion: reduceMotion))
+      .padding(.horizontal, -DesignTokens.Space.xs)
       .help("打开设置")
       .accessibilityLabel("打开设置")
       .accessibilityIdentifier("open-provider-settings")
@@ -2234,10 +2327,7 @@ struct HistoryContentView: View {
     // 与「来源平台」行同高。原来 8pt / 28pt 让主导航每行约 52pt，是对标应用的两倍。
     .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
-    .background(
-      selected ? theme.accent.opacity(0.12) : .clear,
-      in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-    )
+    .modifier(SidebarRowSurfaceModifier(selected: selected, theme: theme, reduceMotion: reduceMotion))
     .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
     .fontWeight(selected ? .medium : .regular)
@@ -2270,7 +2360,11 @@ struct HistoryContentView: View {
       Image(systemName: "info.circle")
       Text(notice).themedFont(.caption)
       Spacer(minLength: 8)
-      Button("知道了", action: manualLink.dismissCaptureNotice)
+      Button("知道了") {
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+          manualLink.dismissCaptureNotice()
+        }
+      }
         .themedFont(.caption)
     }
     .foregroundStyle(theme.primaryText)
@@ -2296,9 +2390,10 @@ struct HistoryContentView: View {
   }
 
   private func creatorPinRow(_ creator: CreatorSummary) -> some View {
+    let selected = isPinnedCreatorHighlighted(creator.id)
     // 和「全部博主」里点同一位走同一条路：进这位博主的作品页。原来侧栏置顶行是
     // 「三栏列表 + 按博主筛选」，同一个博主两处点进去长得完全不一样（2026-10-01 体检）。
-    Button {
+    return Button {
       showsCreatorDirectoryCatalog = false
       creatorDirectoryScrollTarget = nil
       creatorWorkScrollTarget = nil
@@ -2309,16 +2404,22 @@ struct HistoryContentView: View {
         VStack(alignment: .leading, spacing: 1) {
           Text(creator.directoryDisplayName)
             .themedFont(.body)
+            .foregroundStyle(selected ? theme.accent : theme.primaryText)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
             .layoutPriority(1)
           HStack(spacing: 4) {
             Text(HistoryPlatformDisplay.name(forHost: creator.identity.platform))
-              .font(.caption2)
+              .themedFont(.caption2)
               .foregroundStyle(theme.secondaryText)
             Text("\(creator.savedWorkCount)")
-              .font(.caption2.monospacedDigit())
+              .themedFont(.caption2, monospacedDigit: true)
+              .motionNumericText(reduceMotion: reduceMotion)
+              .animation(
+                DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+                value: creator.savedWorkCount
+              )
               .foregroundStyle(theme.secondaryText)
           }
         }
@@ -2327,10 +2428,11 @@ struct HistoryContentView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .background(
-      isPinnedCreatorHighlighted(creator.id) ? theme.accent.opacity(0.12) : .clear,
-      in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-    )
+    .padding(.vertical, DesignTokens.Space.xxs)
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .modifier(SidebarRowSurfaceModifier(selected: selected, theme: theme, reduceMotion: reduceMotion))
+    .padding(.horizontal, -6)
+    .fontWeight(selected ? .medium : .regular)
     .accessibilityIdentifier("history-navigation-creator-\(creator.id.rawValue)")
     .contextMenu {
       Button("挑选作品") {
@@ -2394,24 +2496,37 @@ struct HistoryContentView: View {
       ThemedSearchField("搜索博主名称、主页或作者 ID", text: $model.creatorSearchText)
       .padding(.horizontal, DesignTokens.Layout.columnInset).padding(.top, 5).padding(.bottom, 10)
       .accessibilityIdentifier("history-creator-search")
-      if let notice = manualLink.captureNotice {
-        captureNoticeBanner(notice)
-      }
-      if let failure = model.creatorFailure {
-        HStack {
-          Label(failure, systemImage: "exclamationmark.triangle")
-            .themedFont(.caption)
-            .foregroundStyle(theme.danger)
-          Spacer()
-          Button("知道了", action: model.dismissCreatorFailure)
+      VStack(spacing: 0) {
+        if let notice = manualLink.captureNotice {
+          captureNoticeBanner(notice)
+            .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
         }
-        .padding(.horizontal, 10).padding(.bottom, 8)
+        if let failure = model.creatorFailure {
+          HStack {
+            Label(failure, systemImage: "exclamationmark.triangle")
+              .themedFont(.caption)
+              .foregroundStyle(theme.danger)
+            Spacer()
+            Button("知道了") {
+              withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+                model.dismissCreatorFailure()
+              }
+            }
+          }
+          .padding(.horizontal, 10).padding(.bottom, 8)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+        }
       }
+      .clipped()
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+        value: "\(manualLink.captureNotice ?? "")|\(model.creatorFailure ?? "")"
+      )
       if model.showsCreatorDirectoryFailure {
         HistoryInlineState(
           symbol: "exclamationmark.triangle",
           title: "无法载入博主列表",
-          message: model.creatorFailure ?? "请稍后重试。",
+          message: model.creatorFailure ?? "这次没从本机读出博主列表，已存的内容都在，点「重试」再读一次。",
           actionTitle: "重试",
           action: { model.reloadCreators() }
         )
@@ -2608,10 +2723,19 @@ struct HistoryContentView: View {
     // 只把数字换成靛青、中等字重；需要提醒的计数仍留一层极淡的底。
     Text("\(count)")
       .themedFont(.subheadline, weight: selected ? .medium : .regular, monospacedDigit: true)
+      .motionNumericText(reduceMotion: reduceMotion)
       .foregroundStyle(selected ? theme.accent : theme.secondaryText)
       .padding(.horizontal, 6)
       .padding(.vertical, emphasized ? 1 : 0)
       .background(emphasized ? theme.accent.opacity(0.12) : Color.clear, in: Capsule())
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: count
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+        value: selected
+      )
   }
 
   private var listSearchPlaceholder: String {
@@ -2714,6 +2838,11 @@ struct HistoryContentView: View {
          let count = model.searchResultCount {
         Text("\(count) 条")
           .themedFont(.caption, monospacedDigit: true)
+          .motionNumericText(reduceMotion: reduceMotion)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: count
+          )
           .foregroundStyle(theme.secondaryText)
           .fixedSize()
           .accessibilityLabel("搜到 \(count) 条")
@@ -2722,7 +2851,11 @@ struct HistoryContentView: View {
       // 每个筛选片自带 ✕，右端再放一个「清除」是同一件事的第二个入口；
       // 只有同时挂着两个以上筛选时才值得一键全清。
       if listFilterChipCount > 1 {
-        Button("清除") { clearListFilters() }
+        Button("清除") {
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+            clearListFilters()
+          }
+        }
           .buttonStyle(.borderless)
           .themedFont(.caption, weight: .medium)
           .fixedSize()
@@ -2734,6 +2867,10 @@ struct HistoryContentView: View {
     }
     .padding(.horizontal, 10)
     .padding(.bottom, 8)
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: listFilterChipCount
+    )
     .accessibilityIdentifier("history-active-filters")
   }
 
@@ -2757,19 +2894,12 @@ struct HistoryContentView: View {
   private var filterScopeTitle: String { scopeTitle }
 
   private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
-    Button(action: clear) {
-      HStack(spacing: 4) {
-        Text(title).lineLimit(1).truncationMode(.tail).frame(maxWidth: 180)
-        Image(systemName: "xmark")
-          .themedFont(.caption2, weight: .bold)
+    FilterChipButton(title: title, theme: theme, reduceMotion: reduceMotion) {
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
+        clear()
       }
-      .themedFont(.caption)
-      .padding(.vertical, 3)
-      .padding(.horizontal, 8)
-      .background(theme.primaryText.opacity(0.06), in: Capsule())
-      .foregroundStyle(theme.primaryText)
     }
-    .buttonStyle(.plain)
+    .transition(DesignTokens.Transition.lift(reduceMotion: reduceMotion))
     .help("移除这个筛选")
     .accessibilityLabel("移除筛选 \(title)")
   }
@@ -3125,7 +3255,7 @@ struct HistoryContentView: View {
       HistoryInlineState(
         symbol: "exclamationmark.triangle",
         title: "无法载入博主列表",
-        message: model.creatorFailure ?? "请稍后重试。",
+        message: model.creatorFailure ?? "这次没从本机读出博主列表，已存的内容都在，点「重试」再读一次。",
         actionTitle: "重试",
         action: { model.reloadCreators() }
       )
@@ -3201,20 +3331,12 @@ struct HistoryContentView: View {
         }
         .layoutPriority(1)
         Spacer(minLength: 8)
-        Button("更新资料") {
-          presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-        }
-        .buttonStyle(.appNormal)
-        .disabled(!canCapture)
-        .help("只刷新姓名和头像，不必保存新作品")
-        .accessibilityIdentifier("history-creator-refresh-selected")
-        // 同组按钮同样式（2026-10-12 走查 #12），和三栏页博主页头那一对一致。
         Button("挑选作品") {
           presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
         }
         .buttonStyle(.appNormal)
         .disabled(!canCapture)
-        .help(canCapture ? "打开主页，选要存的作品" : "暂不支持此平台主页")
+        .help(canCapture ? "打开主页挑选作品，同时更新姓名与头像" : "暂不支持此平台主页")
         .accessibilityIdentifier("history-creator-capture-selected")
       }
       .padding(.horizontal, 14)
@@ -3231,7 +3353,7 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "exclamationmark.triangle",
           title: "无法载入作品",
-          message: "请稍后重试。",
+          message: "这次没从本机读出作品列表，已存的内容都在，点「重试」再读一次。",
           actionTitle: "重试",
           action: { model.retryList() }
         )
@@ -12203,20 +12325,153 @@ private struct HistorySelectionRow: View, Equatable {
 /// 列表末尾：读下一页时转圈，读失败给重试。
 private struct HistoryNextPageFooter: View {
   let model: HistoryViewModel
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    if model.isLoadingNextPage { HStack { Spacer(); ProgressView().controlSize(.small); Spacer() } }
-    else if model.listErrorCode != nil, model.canRetryList {
-      HStack(alignment: .firstTextBaseline) {
-        Text("下一页没能载入。已经显示的内容都在，也没有发生任何写入。点「重试」再读一次。")
-          .themedFont(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: DesignTokens.Space.sm)
-        Button("重试", action: model.retryList)
-          .accessibilityIdentifier("history-list-next-page-retry")
+    ZStack {
+      if model.isLoadingNextPage {
+        HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+          .transition(.opacity)
+      } else if model.listErrorCode != nil, model.canRetryList {
+        HStack(alignment: .firstTextBaseline) {
+          Text("下一页没能载入。已经显示的内容都在，也没有发生任何写入。点「重试」再读一次。")
+            .themedFont(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: DesignTokens.Space.sm)
+          Button("重试", action: model.retryList)
+            .accessibilityIdentifier("history-list-next-page-retry")
+        }
+        .transition(.opacity)
       }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: "\(model.isLoadingNextPage)|\(model.listErrorCode?.rawValue ?? "")|\(model.canRetryList)"
+    )
+  }
+}
+
+private struct SidebarRowSurfaceModifier: ViewModifier {
+  let selected: Bool
+  let theme: HistoryThemeTokens
+  let reduceMotion: Bool
+  @State private var isHovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        selected
+          ? theme.accent.opacity(0.12)
+          : (isHovering ? theme.primaryText.opacity(0.06) : Color.clear),
+        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+        value: selected
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering
+      )
+      .onHover { isHovering = $0 }
+  }
+}
+
+private struct SidebarSubtleHoverModifier: ViewModifier {
+  let theme: HistoryThemeTokens
+  let reduceMotion: Bool
+  @State private var isHovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        isHovering ? theme.primaryText.opacity(0.06) : Color.clear,
+        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+      )
+      .opacity(isHovering ? 0.85 : 1)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering
+      )
+      .onHover { isHovering = $0 }
+  }
+}
+
+private struct SidebarTagPillButton: View {
+  let item: HistoryNavigationTag
+  let selected: Bool
+  let theme: HistoryThemeTokens
+  let reduceMotion: Bool
+  let action: () -> Void
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 4) {
+        Text(item.tag.name).lineLimit(1)
+        Text("\(item.count)")
+          .themedFont(.caption2, monospacedDigit: true)
+          .motionNumericText(reduceMotion: reduceMotion)
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: item.count
+          )
+          .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
+      }
+      .themedFont(.caption)
+      .padding(.vertical, 4).padding(.horizontal, 9)
+      .background(
+        selected
+          ? AnyShapeStyle(theme.selectionFill)
+          : AnyShapeStyle(theme.primaryText.opacity(isHovering ? 0.09 : 0.05)),
+        in: Capsule()
+      )
+      .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
+      .contentShape(Capsule())
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+        value: selected
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering
+      )
+    }
+    .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
+  }
+}
+
+private struct FilterChipButton: View {
+  let title: String
+  let theme: HistoryThemeTokens
+  let reduceMotion: Bool
+  let clear: () -> Void
+  @State private var isHovering = false
+
+  var body: some View {
+    Button(action: clear) {
+      HStack(spacing: 4) {
+        Text(title).lineLimit(1).truncationMode(.tail).frame(maxWidth: 180)
+        Image(systemName: "xmark")
+          .themedFont(.caption2, weight: .bold)
+      }
+      .themedFont(.caption)
+      .padding(.vertical, 3)
+      .padding(.horizontal, 8)
+      .background(
+        theme.primaryText.opacity(isHovering ? 0.11 : 0.06),
+        in: Capsule()
+      )
+      .foregroundStyle(theme.primaryText)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: isHovering
+      )
+    }
+    .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
   }
 }
 
