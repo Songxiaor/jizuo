@@ -4771,7 +4771,9 @@ private struct HistoryDetailView: View, Equatable {
   /// 三条定时收起的提示各存自己的计时任务：连续两次完成时，旧计时要取消，否则会提前抹掉新提示。
   @State private var completionBannerTimer: Task<Void, Never>?
   @State private var stampTimer: Task<Void, Never>?
-  @State private var tidySavedTimer: Task<Void, Never>?
+  /// 「处理」面板收起后延时弹出的动作、标签小窗延时：各存任务，换条目 / 离开时取消。
+  @State private var processFollowUpTask: Task<Void, Never>?
+  @State private var tagEditorTask: Task<Void, Never>?
   /// 「处理」面板（2026-09-28 工序印）：原来是系统菜单，只能放单色小图标，放不下印。
   @State private var isProcessPanelPresented = false
   /// 盖章那一刻：记下这一条已经做过哪些工序，新多出来的那道就盖一下。
@@ -6422,7 +6424,8 @@ private struct HistoryDetailView: View, Equatable {
       stampBaseline = (detail.task.id, completedStepStamps)
       stampTimer?.cancel()
       completionBannerTimer?.cancel()
-      tidySavedTimer?.cancel()
+      processFollowUpTask?.cancel()
+      tagEditorTask?.cancel()
       recentlyCompletedTidyTaskID = nil
       stampingStep = nil
       isProcessPanelPresented = false
@@ -6500,7 +6503,11 @@ private struct HistoryDetailView: View, Equatable {
       guard hasResult, readingPaneChoices[detail.task.id] != nil else { return }
       readingPaneChoices[detail.task.id] = nil
     }
-    .onDisappear { ReadingSelectionRouter.shared.formatter = nil }
+    .onDisappear {
+      ReadingSelectionRouter.shared.formatter = nil
+      processFollowUpTask?.cancel()
+      tagEditorTask?.cancel()
+    }
     .typeErased()
     .onChange(of: showsLiveRunInReadingPane) { wasShown, isShown in
       // 生成过程就在总结/翻译页里。完成后草稿换成落库正文，闪一下横幅。
@@ -6547,12 +6554,7 @@ private struct HistoryDetailView: View, Equatable {
       guard completed else { return }
       let taskID = detail.task.id
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = taskID }
-      tidySavedTimer?.cancel()
-      tidySavedTimer = Task { @MainActor in
-        try? await Task.sleep(nanoseconds: 4_000_000_000)
-        guard !Task.isCancelled, recentlyCompletedTidyTaskID == taskID else { return }
-        withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = nil }
-      }
+      // 计时不在这里起：提示可能还在排队等前面的完成提示，真正显示出来才开始数（见 completionNotice）。
     }
     // 挂在详情根上：入口挪进「处理」面板后，说话人那一栏没分过时不在页面上。
     .alert("在线区分说话人", isPresented: $isOnlineDiarizationConfirmPresented) {
@@ -7264,6 +7266,12 @@ private struct HistoryDetailView: View, Equatable {
           .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
           .accessibilityIdentifier("history-transcript-tidy-saved")
           .transition(historyBannerTransition(reduceMotion: reduceMotion))
+          // 提示真正出现才开始计 4 秒；被前面的提示顶掉时任务随视图消失，重新出现再从头数。
+          .task(id: detail.task.id) {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { recentlyCompletedTidyTaskID = nil }
+          }
       }
     }
     .padding(.top, DesignTokens.Space.sm)
@@ -7945,10 +7953,12 @@ private struct HistoryDetailView: View, Equatable {
   private func closeProcessPanel(then action: @escaping () -> Void) {
     isProcessPanelPresented = false
     // 等面板收起这一拍再弹。空档里用户若已切到别的条目，就不弹，免得错弹到新条目上。
+    // 比的是延时结束那一刻 model 里选中的条目，不是闭包捕获的旧 detail。
     let taskID = detail.task.id
-    Task { @MainActor in
+    processFollowUpTask?.cancel()
+    processFollowUpTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 180_000_000)
-      guard !Task.isCancelled, detail.task.id == taskID else { return }
+      guard !Task.isCancelled, model.selectedTaskID == taskID else { return }
       action()
     }
   }
@@ -8059,7 +8069,9 @@ private struct HistoryDetailView: View, Equatable {
         title: done ? "重新校对转写稿" : "校对转写稿",
         state: state,
         isEnabled: transcriptTidyBlockedReason == nil && !tidy.isActive,
-        help: tidyFailedReason ?? "把转写文字校对一遍并重新分段，不改说了什么",
+        help: tidyFailedReason
+          ?? model.transcriptTidyTokenSummary(for: taskID).map { "校对稿已保存 · \($0)" }
+          ?? "把转写文字校对一遍并重新分段，不改说了什么",
         subtitle: failedLine
           ?? transcriptTidyBlockedReason
           ?? processModelSubtitle(providerSettings.effectiveTidyModelName ?? providerSettings.activeSummaryModelName),
@@ -9148,8 +9160,11 @@ private struct HistoryDetailView: View, Equatable {
       tagEditorRequest += 1
       return
     }
-    Task { @MainActor in
+    let taskID = detail.task.id
+    tagEditorTask?.cancel()
+    tagEditorTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 250_000_000)
+      guard !Task.isCancelled, model.selectedTaskID == taskID else { return }
       tagEditorRequest += 1
     }
   }
@@ -9443,8 +9458,8 @@ private struct HistoryDetailView: View, Equatable {
     VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
       if !showsInlineNote {
         Button {
-          // 展开笔记框会改页尾高度：减弱动态下直接到位。
-          withAnimation(reduceMotion ? nil : DesignTokens.Motion.quick) { isInlineNoteRequested = true }
+          // 展开笔记框改的是阅读流里的高度：一次到位，不做动画。
+          isInlineNoteRequested = true
           DispatchQueue.main.async { isInlineNoteFocused = true }
         } label: {
           Label("添加笔记", systemImage: "square.and.pencil")
@@ -10787,8 +10802,8 @@ private struct HistoryDetailView: View, Equatable {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
         Button {
-          // 展开会改高度：减弱动态下直接到位（resolved 的 0.1 秒插值只适合透明度和颜色）。
-          withAnimation(reduceMotion ? nil : DesignTokens.Motion.quick) { isImportedImageTextExpanded.toggle() }
+          // 展开改的是阅读流里的高度：一次到位，不做动画（小三角照常转）。
+          isImportedImageTextExpanded.toggle()
         } label: {
           HStack(spacing: 6) {
             Image(systemName: "chevron.right")
@@ -11084,7 +11099,8 @@ private struct ReadingTabHitBody: View {
   let configuration: PrimitiveButtonStyleConfiguration
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isHovering = false
-  @State private var isPressed = false
+  /// GestureState：系统取消手势（拖出、窗口失焦）时自动复位，不会卡在按下态。
+  @GestureState private var isPressed = false
 
   var body: some View {
     configuration.label
@@ -11106,8 +11122,7 @@ private struct ReadingTabHitBody: View {
       .onTapGesture { configuration.trigger() }
       .simultaneousGesture(
         DragGesture(minimumDistance: 0)
-          .onChanged { _ in isPressed = true }
-          .onEnded { _ in isPressed = false }
+          .updating($isPressed) { _, state, _ in state = true }
       )
   }
 }

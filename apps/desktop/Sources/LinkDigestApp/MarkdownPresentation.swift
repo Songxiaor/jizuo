@@ -3208,13 +3208,30 @@ struct MarkdownContentView: View {
             foldMemory: self.calloutFolds, foldKey: "\(anchor)|\(calloutKey)"
           ) {
             if !text.isEmpty {
-              AnyView(self.structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
+              AnyView(self.structuredMarkdown(
+                text,
+                segmentIndex: Self.nestedSegmentIndex(path: "\(segmentIndex)|\(anchor)|\(calloutKey)"),
+                foldsSections: false
+              ))
             }
           })
         }
       }
       pendingSpace = 0
     }
+  }
+
+  /// 嵌套提示框里子块的 segmentIndex：由「父块路径」决定，不再只看正文长度。
+  /// 两个相同或等长的提示框路径不同（父段序号 + 块锚点 + 内容键），子块的切换键和折叠键就不会共用。
+  /// 用固定算法（FNV-1a）而不是 Hasher，同一路径永远得到同一个数；落在 1e6 以内，
+  /// 避免多层嵌套时 `(segmentIndex + 1) * 1_000_000` 溢出。
+  static func nestedSegmentIndex(path: String) -> Int {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in path.utf8 {
+      hash ^= UInt64(byte)
+      hash = hash &* 0x0000_0100_0000_01B3
+    }
+    return 1_000_000 + Int(hash % 8_999_999)
   }
 
   /// Block-first reading layout: air before headings, body leading ~1.65, clear lists.
@@ -3366,7 +3383,11 @@ struct MarkdownContentView: View {
         if !text.isEmpty {
           // 按完整正文排：提示框 / 折叠块里常有代码、表格，只用文字视图会把它们丢掉。
           // AnyView 断开「结构化正文里套结构化正文」的类型递归。
-          AnyView(structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
+          AnyView(structuredMarkdown(
+            text,
+            segmentIndex: Self.nestedSegmentIndex(path: "\(slot)|callout|\(kind)|\(title)"),
+            foldsSections: false
+          ))
         }
       }
       .padding(.bottom, 20)
