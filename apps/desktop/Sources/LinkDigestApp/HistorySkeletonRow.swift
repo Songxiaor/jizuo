@@ -91,7 +91,7 @@ struct HistorySkeletonList: View {
     .task {
       try? await Task.sleep(for: .milliseconds(250))
       guard !Task.isCancelled else { return }
-      withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { isRevealed = true }
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) { isRevealed = true }
     }
     .accessibilityLabel("正在载入资料库")
   }

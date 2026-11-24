@@ -9,6 +9,7 @@ struct LiveRecordingPanelView: View {
   @ObservedObject private var preferences: LiveRecordingPreferences
   @Environment(\.dismiss) private var dismiss
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(controller: LiveRecordingController) {
     self.controller = controller
@@ -53,6 +54,8 @@ struct LiveRecordingPanelView: View {
       if controller.activeCount > 0 {
         Text("\(controller.activeCount) 场进行中")
           .font(.system(size: 12))
+          .motionNumericText(reduceMotion: reduceMotion)
+          .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: controller.activeCount)
           .foregroundStyle(appTheme.secondaryText)
       }
       Spacer()

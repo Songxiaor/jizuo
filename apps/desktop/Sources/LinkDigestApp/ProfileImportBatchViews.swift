@@ -16,10 +16,14 @@ struct ProfileImportBatchStack: View {
   @ObservedObject var manualLink: ManualLinkViewModel
   var historyModel: HistoryViewModel
   let compact: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
+    let visibleBatches = manualLink.profileImportBatches.filter {
+      ProfileImportQueuePresentation.visible($0, dismissed: dismissed)
+    }
     VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-      ForEach(manualLink.profileImportBatches.filter { ProfileImportQueuePresentation.visible($0, dismissed: dismissed) }) { batch in
+      ForEach(visibleBatches) { batch in
         ProfileImportBatchCard(
           batch: batch,
           manualLink: manualLink,
@@ -27,8 +31,14 @@ struct ProfileImportBatchStack: View {
           compact: compact,
           dismiss: { dismissed = (dismissed.isEmpty ? "" : dismissed + ",") + batch.id.uuidString }
         )
+        // 完成提示 3 秒后自己收起、新批次出现：从顶部滑入/淡出，不再把下面的列表硬顶上来。
+        .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+      value: visibleBatches.map(\.id)
+    )
   }
 }
 
@@ -42,6 +52,8 @@ struct ProfileImportBatchHeader: View {
     batch.items.filter { $0.phase == .interrupted }.count
   }
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var body: some View {
     HStack(spacing: 8) {
       // 抓完之后还叫「本次抓取」会让人以为还在抓；抓完就改成「最近一次抓取」。
@@ -49,7 +61,7 @@ struct ProfileImportBatchHeader: View {
         ? "最近一次保存 · \(batch.completedCount) 条"
         : "正在保存 · 已存 \(batch.completedCount) / \(batch.items.count)")
         .themedFont(.caption, weight: .semibold)
-        .monospacedDigit()
+        .motionNumericText(reduceMotion: reduceMotion)
       Spacer(minLength: 4)
       if interruptedCount > 0 {
         Button("继续 \(interruptedCount) 项") {
@@ -62,6 +74,10 @@ struct ProfileImportBatchHeader: View {
       }
       .controlSize(.small)
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: batch.completedCount
+    )
     .accessibilityIdentifier("profile-import-batch-header")
   }
 }
@@ -122,6 +138,7 @@ struct ProfileImportBatchGrid: View {
   let localCover: (TaskID, String?) async -> URL?
   @ObservedObject var manualLink: ManualLinkViewModel
   var historyModel: HistoryViewModel
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -141,6 +158,10 @@ struct ProfileImportBatchGrid: View {
         }
       }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+      value: batch.isCollapsed
+    )
     .accessibilityIdentifier("profile-import-primary-grid")
   }
 }
@@ -152,6 +173,7 @@ private struct ProfileImportReservedWorkCard: View {
   @ObservedObject var manualLink: ManualLinkViewModel
   var historyModel: HistoryViewModel
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var host: String { URL(string: item.seed.canonicalURL)?.host ?? "" }
 
@@ -255,6 +277,11 @@ private struct ProfileImportReservedWorkCard: View {
     .padding(.vertical, DesignTokens.Space.xs)
     .background(.ultraThinMaterial, in: Capsule())
     .padding(DesignTokens.Space.sm)
+    // 进度圈 → 勾 / 警告：交叉淡入，不再一帧硬换。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: item.phase
+    )
   }
 
   @ViewBuilder private var actionButton: some View {
@@ -319,6 +346,7 @@ private struct ProfileImportBatchCard: View {
   let compact: Bool
   let dismiss: () -> Void
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var interruptedCount: Int {
     batch.items.filter { $0.phase == .interrupted }.count
@@ -370,7 +398,9 @@ private struct ProfileImportBatchCard: View {
         Button {
           manualLink.toggleProfileImportBatch(batch.id)
         } label: {
-          Image(systemName: batch.isCollapsed ? "chevron.down" : "chevron.up")
+          // 项目约定：chevron.down 配旋转（折叠 -90°），不换字形。
+          Image(systemName: "chevron.down")
+            .rotationEffect(.degrees(batch.isCollapsed ? -90 : 0))
         }
         .buttonStyle(.plain)
         .help(batch.isCollapsed ? "展开批次" : "收起批次")
@@ -387,11 +417,16 @@ private struct ProfileImportBatchCard: View {
             compact: compact
           )
           .id(item.id)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
         }
       }
     }
     .padding(10)
     .background(theme.badge.opacity(0.6), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+      value: batch.isCollapsed
+    )
     .accessibilityIdentifier("profile-import-batch")
     }
   }

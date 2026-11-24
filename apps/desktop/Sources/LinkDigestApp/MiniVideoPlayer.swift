@@ -57,8 +57,25 @@ struct MiniVideoPlayerOverlay: View {
   @ObservedObject private var controller = MiniVideoPlayerController.shared
   @ObservedObject private var cinema = VideoCinemaController.shared
   @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var isShown: Bool {
+    guard let content = controller.content else { return false }
+    return !cinema.isPresenting(player: content.player)
+  }
 
   var body: some View {
+    // 动画只挂在这个容器上；.transition 要有 value 驱动的动画才会生效。
+    ZStack {
+      miniPlayer
+    }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.modal, reduceMotion: reduceMotion),
+      value: isShown
+    )
+  }
+
+  @ViewBuilder private var miniPlayer: some View {
     if let content = controller.content, !cinema.isPresenting(player: content.player) {
       let width: CGFloat = content.aspectRatio >= 1 ? 220 : max(120, 260 * content.aspectRatio)
       VideoPlayer(player: content.player)
@@ -68,22 +85,29 @@ struct MiniVideoPlayerOverlay: View {
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
         .overlay(alignment: .topTrailing) {
-          if isHovering {
-            HStack(spacing: 4) {
-              miniButton("放大", systemImage: "arrow.up.left.and.arrow.down.right") {
-                cinema.present(player: content.player, aspectRatio: content.aspectRatio)
+          ZStack {
+            if isHovering {
+              HStack(spacing: 4) {
+                miniButton("放大", systemImage: "arrow.up.left.and.arrow.down.right") {
+                  cinema.present(player: content.player, aspectRatio: content.aspectRatio)
+                }
+                miniButton("收起小窗", systemImage: "xmark") { controller.dismissByUser() }
               }
-              miniButton("收起小窗", systemImage: "xmark") { controller.dismissByUser() }
+              .padding(6)
+              .transition(.opacity)
             }
-            .padding(6)
           }
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: isHovering
+          )
         }
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         .onHover { isHovering = $0 }
         .videoCinemaDoubleClick {
           cinema.present(player: content.player, aspectRatio: content.aspectRatio)
         }
-        .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .bottomTrailing)))
+        .transition(DesignTokens.Transition.lift(reduceMotion: reduceMotion))
         .accessibilityIdentifier("history-mini-video-player")
     }
   }

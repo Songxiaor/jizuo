@@ -60,12 +60,22 @@ struct SettingsStepSeal: View {
   var size: CGFloat = 20
   let color: Color
 
+  /// 只有用户当面把「手动」拨成「自动」才盖一次章；进页面时已是自动的，直接是静态印。
+  @State private var stampsOnAppear = false
+
   var body: some View {
-    if isAuto {
-      SealMark(glyph: step.glyph, size: size, color: color, style: .stamped, rotation: step.rotation)
-    } else {
-      SealMark(glyph: step.glyph, size: size, color: color.opacity(0.75), style: .pending)
+    Group {
+      if isAuto {
+        if stampsOnAppear {
+          SealStampView(glyph: step.glyph, size: size, color: color, rotation: step.rotation)
+        } else {
+          SealMark(glyph: step.glyph, size: size, color: color, style: .stamped, rotation: step.rotation)
+        }
+      } else {
+        SealMark(glyph: step.glyph, size: size, color: color.opacity(0.75), style: .pending)
+      }
     }
+    .onChange(of: isAuto) { old, new in stampsOnAppear = !old && new }
   }
 }
 
@@ -81,6 +91,7 @@ struct SettingsStepHeader: View {
   let hairline: Color
   /// 并进「AI 处理」页的一节：印和标题小一号、不画底线（2026-10-04 设置合并）。
   var compact = false
+  @State private var stampsOnToggle = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -118,17 +129,26 @@ struct SettingsStepHeader: View {
     }
   }
 
-  /// 打开「自动」时换成 `SealStampView`：新建的视图带着盖下的动画出场。
+  /// 只在用户把开关从关拨到开的那一下换成 `SealStampView`（新建的视图带着盖下的
+  /// 动画出场）；进页面时已经是自动的，显示静态印，不每次都砸一次章。
   @ViewBuilder private var seal: some View {
     let auto = isAuto?.wrappedValue ?? true
     let size: CGFloat = compact ? 36 : 52
-    if auto {
-      SealStampView(glyph: step.glyph, size: size, color: sealColor, rotation: step.rotation)
-        .id("stamped-\(step.rawValue)")
-    } else {
-      SealMark(glyph: step.glyph, size: size, color: sealColor.opacity(0.75), style: .pending)
-        .id("pending-\(step.rawValue)")
+    Group {
+      if auto {
+        if stampsOnToggle {
+          SealStampView(glyph: step.glyph, size: size, color: sealColor, rotation: step.rotation)
+            .id("stamping-\(step.rawValue)")
+        } else {
+          SealMark(glyph: step.glyph, size: size, color: sealColor, style: .stamped, rotation: step.rotation)
+            .id("stamped-\(step.rawValue)")
+        }
+      } else {
+        SealMark(glyph: step.glyph, size: size, color: sealColor.opacity(0.75), style: .pending)
+          .id("pending-\(step.rawValue)")
+      }
     }
+    .onChange(of: auto) { old, new in stampsOnToggle = !old && new }
   }
 }
 

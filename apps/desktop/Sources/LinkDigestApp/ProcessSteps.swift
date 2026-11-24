@@ -155,7 +155,7 @@ struct SealStampView: View {
       .opacity(landed || reduceMotion ? 1 : 0)
       .onAppear {
         guard !reduceMotion else { return }
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.55)) { landed = true }
+        withAnimation(DesignTokens.Motion.stamp) { landed = true }
       }
   }
 }

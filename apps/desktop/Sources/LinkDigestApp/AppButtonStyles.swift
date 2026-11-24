@@ -44,7 +44,7 @@ struct AppIconButtonStyle: ButtonStyle {
         )
         // 命中区域要覆盖整个方块，而不是只有图标那几个像素。
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-        .scaleEffect(configuration.isPressed ? 0.96 : 1)
+        .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
         .opacity(isEnabled ? 1 : 0.4)
         .animation(
           DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
@@ -125,11 +125,15 @@ struct AppButtonStyle: ButtonStyle {
             .strokeBorder(border, lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-        .scaleEffect(configuration.isPressed ? 0.97 : 1)
+        .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.97 : 1))
         .opacity(isEnabled ? 1 : 0.4)
         .animation(
           DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
           value: isHovering
+        )
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.press, reduceMotion: reduceMotion),
+          value: configuration.isPressed
         )
         .onHover { isHovering = isEnabled && $0 }
     }

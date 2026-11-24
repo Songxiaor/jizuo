@@ -1596,6 +1596,7 @@ struct DouyinProfileImportRequest: Identifiable, Equatable {
 
 struct DouyinProfileImportSheet: View {
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.appTheme) private var theme
   @StateObject private var model: DouyinProfileImportViewModel
   @ObservedObject private var manualLink: ManualLinkViewModel
@@ -1651,15 +1652,28 @@ struct DouyinProfileImportSheet: View {
               if model.discoverySource != .browserExtension {
                 DouyinProfileImportWebView(model: model, dataStore: model.dataStore)
                   .id(model.platform)
-                  .frame(width: 960, height: 480)
+                  // 查看主页时跟随可见区填满；其余时间保持稳定的桌面视口。
+                  .frame(
+                    width: showsHomepage ? geometry.size.width : 960,
+                    height: showsHomepage ? geometry.size.height : 480
+                  )
+                  // WebView 尺寸跳变不参与外层的阶段动画，避免页面在动画中反复重排。
+                  .transaction { $0.animation = nil }
                   .allowsHitTesting(showsHomepage)
                   .accessibilityHidden(!showsHomepage)
               }
-              if !showsHomepage || model.discoverySource == .browserExtension {
-                candidatePanel(availableWidth: geometry.size.width)
-                  .frame(width: geometry.size.width, height: geometry.size.height)
-                  .background(theme.canvas)
-              }
+              // 作品面板保活，只淡出：切到主页再切回来，滚动位置和可见性回调都还在。
+              let candidatesHidden = showsHomepage && model.discoverySource != .browserExtension
+              candidatePanel(availableWidth: geometry.size.width)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .background(theme.canvas)
+                .opacity(candidatesHidden ? 0 : 1)
+                .allowsHitTesting(!candidatesHidden)
+                .accessibilityHidden(candidatesHidden)
+                .animation(
+                  DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+                  value: candidatesHidden
+                )
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .clipped()
@@ -1672,6 +1686,11 @@ struct DouyinProfileImportSheet: View {
       }
     }
     .frame(width: sheetSize.width, height: sheetSize.height, alignment: .top)
+    // 只对离散阶段动画；hostWindowSize（拖动缩放主窗口）不进动画，保持跟手。
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+      value: sheetStage
+    )
     .background(theme.card)
     .background(SheetHostWindowSizeReader(size: $hostWindowSize))
     .onChange(of: metricsReader.readingID) { previous, current in
@@ -1686,7 +1705,12 @@ struct DouyinProfileImportSheet: View {
       }
     }
     .onChange(of: showsHomepage) { _, shown in
-      if shown { metricsQueue.clearVisible() }
+      // 作品面板保活，可见集合仍然有效；回到作品时接着读，不清空。
+      if !shown { readNextVisibleMetrics() }
+    }
+    // 停扫 / 开页结束后补读首屏卡片（扫描中 readNextVisibleMetrics 被拦住，没有这一条会一直停在「等待主页列表数据」）。
+    .onChange(of: model.phase) { _, _ in
+      readNextVisibleMetrics()
     }
     .id(request.id)
     .onAppear {
@@ -1767,7 +1791,15 @@ struct DouyinProfileImportSheet: View {
   private var sheetHeight: CGFloat {
     if showsHomepage { return 740 }
     if !model.candidates.isEmpty { return model.candidates.count <= 3 ? 560 : 720 }
-    return model.sourceURL == nil ? 320 : 300
+    // 输入页与「找作品」空态同高，进入发现阶段时不反缩。
+    return 320
+  }
+
+  /// 弹窗尺寸的离散阶段，仅用于挂动画。
+  private var sheetStage: Int {
+    if showsHomepage { return 3 }
+    if !model.candidates.isEmpty { return model.candidates.count <= 3 ? 2 : 1 }
+    return 0
   }
 
   /// 弹窗不能比承载它的主窗口还大：小屏或缩小过的窗口里，按主窗口留边收缩。

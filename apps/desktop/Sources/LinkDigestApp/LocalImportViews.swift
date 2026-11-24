@@ -15,17 +15,25 @@ struct LocalImportDropTarget: ViewModifier {
   @ObservedObject var controller: LocalImportController
   @State private var isTargeted = false
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   func body(content: Content) -> some View {
     content
       // 「导入后转写」可能要转很久：进度放在窗口右下角一条不挡操作的小胶囊里，
       // 不用弹窗把整个 App 占住。关掉导入结果也照常往下转。
       .overlay(alignment: .bottomTrailing) {
-        if controller.transcriptionQueue != nil {
-          LocalImportTranscriptionBadge(controller: controller)
-            .padding(DesignTokens.Space.lg)
-            .transition(.opacity)
+        // 动画只挂在这个小容器上，不碰外层 content（整个主窗口）。
+        ZStack {
+          if controller.transcriptionQueue != nil {
+            LocalImportTranscriptionBadge(controller: controller)
+              .padding(DesignTokens.Space.lg)
+              .transition(DesignTokens.Transition.pill(reduceMotion: reduceMotion))
+          }
         }
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+          value: controller.transcriptionQueue != nil
+        )
       }
       .dropDestination(for: URL.self) { urls, _ in
         let files = urls.filter(\.isFileURL)
@@ -34,7 +42,8 @@ struct LocalImportDropTarget: ViewModifier {
         return true
       } isTargeted: { isTargeted = $0 && controller.canImport }
       .overlay {
-        if isTargeted {
+        ZStack {
+          if isTargeted {
           RoundedRectangle(cornerRadius: DesignTokens.Radius.xl)
             .strokeBorder(theme.accent, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
             .background(theme.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
@@ -48,7 +57,12 @@ struct LocalImportDropTarget: ViewModifier {
             .padding(DesignTokens.Space.md)
             .allowsHitTesting(false)
             .transition(.opacity)
+          }
         }
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.modal, reduceMotion: reduceMotion),
+          value: isTargeted
+        )
       }
   }
 }
@@ -340,14 +354,17 @@ struct LocalImportTranscriptionBadge: View {
   @ObservedObject var controller: LocalImportController
   @State private var showsFailures = false
   @Environment(\.appTheme) private var theme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     if let status = controller.transcriptionQueue {
       HStack(spacing: DesignTokens.Space.sm) {
+        // 运行 ↔ 完成：两组内容交叉淡入，胶囊宽度随内容平滑过渡。
         if status.isRunning {
           ProgressView().controlSize(.small)
           VStack(alignment: .leading, spacing: 1) {
             Text("转写中 \(status.position)/\(status.total)").themedFont(.callout, weight: .medium)
+              .motionNumericText(reduceMotion: reduceMotion)
             if let name = status.currentName {
               Text(name).themedFont(.caption).foregroundStyle(.secondary)
                 .lineLimit(1).truncationMode(.middle)
@@ -361,6 +378,7 @@ struct LocalImportTranscriptionBadge: View {
         } else {
           Image(systemName: status.failures.isEmpty ? "checkmark.circle" : "exclamationmark.circle")
             .foregroundStyle(status.failures.isEmpty ? theme.accent : theme.warning)
+            .motionSymbolReplace(reduceMotion: reduceMotion)
           Text(Self.finishedText(status)).themedFont(.callout)
           if !status.failures.isEmpty {
             Button("看原因") { showsFailures = true }
@@ -382,6 +400,14 @@ struct LocalImportTranscriptionBadge: View {
       .background(.regularMaterial, in: Capsule())
       .overlay(Capsule().strokeBorder(theme.hairline))
       .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: status.isRunning
+      )
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: status.position
+      )
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("local-import-transcription-badge")
     }

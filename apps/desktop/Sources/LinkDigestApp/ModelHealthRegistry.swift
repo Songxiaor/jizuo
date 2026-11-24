@@ -171,11 +171,17 @@ struct ModelHealthBadge: Equatable {
 struct ModelHealthBadgeView: View {
   let badge: ModelHealthBadge
   let theme: HistoryThemeTokens
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Label(badge.text, systemImage: badge.symbol)
       .themedFont(.caption, weight: .medium)
       .foregroundStyle(badge.color(theme: theme))
+      .motionSymbolReplace(reduceMotion: reduceMotion)
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+        value: badge.text
+      )
       .lineLimit(1)
       .fixedSize()
       .help(badge.detail)
