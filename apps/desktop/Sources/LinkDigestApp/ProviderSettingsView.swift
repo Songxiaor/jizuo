@@ -247,8 +247,6 @@ struct ProviderSettingsView: View {
   /// 从「推荐服务商 → 填入」打开的添加窗口：服务商已经选好，网格折成一行，
   /// 密钥框留在首屏（展开的网格有 600pt 高，会把密钥框挤到下面看不见）。
   @State private var isPresetPrefilled = false
-  /// 自绘侧栏选中高亮的滑动锚点。见 `paperSidebarRow`。
-  @Namespace private var sidebarSelectionNamespace
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
@@ -2039,25 +2037,19 @@ struct ProviderSettingsView: View {
     .listStyle(.sidebar)
     .scrollContentBackground(.hidden)
     .background(settingsTheme.canvas)
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
-      value: selectedTab
-    )
   }
 
   /// 自绘侧栏的单个分类行。
   ///
-  /// 选中高亮用 `matchedGeometryEffect` 在同一命名空间内挂靠：切换分类时，高亮块
-  /// 从旧行的位置滑到新行，而不是旧的消失、新的凭空出现。`withAnimation` 包住状态
-  /// 变化本身——没有它，`matchedGeometryEffect` 只负责插值，不负责触发过渡。
+  /// 选中高亮只在单行背景上做 `instant` 淡入淡出。不用 `matchedGeometryEffect`
+  /// 滑块（List 单元格会各自裁剪、复用，滑行易截断闪烁），也不用 `withAnimation`
+  /// 包住 `selectedTab`——那会把动画事务泄漏进右侧详情页，页面切换保持干脆。
   @ViewBuilder
   private func paperSidebarRow(_ tab: SettingsTab) -> some View {
     let isSelected = selectedTab == tab
     Button {
       settingsAnchor = nil
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
-        selectedTab = tab
-      }
+      selectedTab = tab
     } label: {
       Label {
         Text(tab.title)
@@ -2077,11 +2069,12 @@ struct ProviderSettingsView: View {
     .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
     .background {
-      if isSelected {
-        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-          .fill(settingsTheme.accent.opacity(0.12))
-          .matchedGeometryEffect(id: "settings-sidebar-highlight", in: sidebarSelectionNamespace)
-      }
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        .fill(settingsTheme.accent.opacity(isSelected ? 0.12 : 0))
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+          value: isSelected
+        )
     }
     .foregroundStyle(settingsTheme.primaryText)
     .fontWeight(isSelected ? .semibold : .regular)
@@ -2463,9 +2456,7 @@ struct ProviderSettingsView: View {
         primaryText: settingsTheme.primaryText,
         secondaryText: settingsTheme.secondaryText,
         onSelect: { step in
-          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
-            navigate(to: SettingsTab.allCases.first { $0.step == step } ?? .generation)
-          }
+          navigate(to: SettingsTab.allCases.first { $0.step == step } ?? .generation)
         },
         onToggleAuto: toggleAutoFromChain
       )

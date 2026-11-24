@@ -101,6 +101,7 @@ struct PlatformHistoryGallery: View {
   let onOpen: (TaskID) -> Void
   let contextMenu: (HistoryRowProjection) -> AnyView
   var accessibilityPrefix: String = "platform-gallery"
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// 返回三栏列表。传了就只收起卡片墙、保留当前来源；不传（独立的来源页）才清空来源选择。
   /// 原来一律清空，从 X 的卡片墙返回会落到「全部」（2026-09-25 走查）。
   var onBack: (() -> Void)? = nil
@@ -252,13 +253,19 @@ struct PlatformHistoryGallery: View {
     // 卡片墙没有详情列，三栏里多选时的批量面板到不了这里：原来勾了几张卡之后，
     // 既看不到选了几张，也没有「取消选择」，只能一张张再点掉（2026-10-01 走查）。
     .overlay(alignment: .bottom) {
-      if !model.selectedTaskIDs.isEmpty {
-        selectionBar
-          .padding(.bottom, 16)
-          .transition(.move(edge: .bottom).combined(with: .opacity))
+      // 动画只挂在选择条这个小容器上，不再包住整面卡片墙。
+      ZStack {
+        if !model.selectedTaskIDs.isEmpty {
+          selectionBar
+            .padding(.bottom, 16)
+            .transition(DesignTokens.Transition.reveal(edge: .bottom, reduceMotion: reduceMotion))
+        }
       }
+      .animation(
+        DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
+        value: model.selectedTaskIDs.isEmpty
+      )
     }
-    .animation(.easeOut(duration: 0.18), value: model.selectedTaskIDs.isEmpty)
     .onChange(of: rows.map(\.taskID), initial: true) { _, order in
       model.galleryDisplayOrder = sortOrder == .original ? nil : order
     }
@@ -270,7 +277,11 @@ struct PlatformHistoryGallery: View {
       Text("已选择 \(model.selectedTaskIDs.count) 项")
         .themedFont(.callout, weight: .semibold)
         .foregroundStyle(theme.primaryText)
-        .monospacedDigit()
+        .motionNumericText(reduceMotion: reduceMotion)
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: model.selectedTaskIDs.count
+        )
       if let onDeleteSelection {
         Button(action: onDeleteSelection) {
           Label("移到回收站", systemImage: "trash")

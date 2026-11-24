@@ -95,7 +95,7 @@ private struct PlatformNavigationRow: View {
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovering
     )
-    .animation(reduceMotion ? nil : DesignTokens.Motion.instant, value: isSelected)
+    .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion), value: isSelected)
     .onHover { isHovering = $0 }
     .help("\(fullName)（\(item.count) 条）")
     .accessibilityLabel(fullName)

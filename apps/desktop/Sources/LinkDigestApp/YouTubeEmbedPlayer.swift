@@ -428,7 +428,7 @@ struct VideoCinemaOverlay: View {
   /// 系统打开「减少动态效果」时直接切换。
   var body: some View {
     ZStack { cinemaLayer }
-      .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: cinema.isPresented)
+      .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.modal, reduceMotion: reduceMotion), value: cinema.isPresented)
   }
 
   @ViewBuilder private var cinemaLayer: some View {

@@ -402,12 +402,21 @@ final class VisibilityGatedAnimatedImageView: NSImageView {
 /// 之间切换。
 struct InlineImageLightboxOverlay: View {
   @ObservedObject private var controller = InlineImageLightboxController.shared
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    if let url = controller.url {
-      InlineImageLightboxCanvas(url: url)
-        .transition(.opacity)
+    // 状态在 withAnimation 之外改，单靠 .transition 是死代码；动画挂在这个只含灯箱的
+    // 容器上（不是整个窗口）。整体淡入淡出，框体的轻微浮起在 Canvas 里做。
+    ZStack {
+      if let url = controller.url {
+        InlineImageLightboxCanvas(url: url)
+          .transition(.opacity)
+      }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.modal, reduceMotion: reduceMotion),
+      value: controller.url
+    )
   }
 }
 
@@ -420,6 +429,9 @@ private struct InlineImageLightboxCanvas: View {
   @State private var dragBase: CGSize = .zero
   /// 单图 OCR：与详情页「图片文字识别」同一 Apple Vision 本机管线。
   @State private var recognition: RecognitionState = .idle
+  /// 打开时框体从 0.97 浮起到 1（暗幕本身只淡入）。关闭时只淡出，不再缩。
+  @State private var isLifted = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   enum RecognitionState: Equatable {
     case idle
@@ -472,6 +484,7 @@ private struct InlineImageLightboxCanvas: View {
           .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(width: proxy.size.width * 0.86, height: proxy.size.height * 0.84)
+        .scaleEffect(isLifted || reduceMotion ? 1 : 0.97)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
@@ -481,6 +494,11 @@ private struct InlineImageLightboxCanvas: View {
       }
     }
     .task(id: url) { await loadFullImage() }
+    .onAppear {
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.modal, reduceMotion: reduceMotion)) {
+        isLifted = true
+      }
+    }
   }
 
   @ViewBuilder private func canvas(in size: CGSize) -> some View {
@@ -563,11 +581,14 @@ private struct InlineImageLightboxCanvas: View {
 
   private func clamped(_ value: CGFloat) -> CGFloat { min(max(value, minScale), maxScale) }
 
+  /// 双击缩放用 snappy 弹簧过渡（可被再次双击打断）；捏合和拖动不走这里，保持跟手。
   private func toggleZoom() {
-    if scale > 1.01 || abs(offset.width) > 1 || abs(offset.height) > 1 {
-      scale = 1; pinchBase = 1; offset = .zero; dragBase = .zero
-    } else {
-      scale = 2; pinchBase = 2
+    withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+      if scale > 1.01 || abs(offset.width) > 1 || abs(offset.height) > 1 {
+        scale = 1; pinchBase = 1; offset = .zero; dragBase = .zero
+      } else {
+        scale = 2; pinchBase = 2
+      }
     }
   }
 

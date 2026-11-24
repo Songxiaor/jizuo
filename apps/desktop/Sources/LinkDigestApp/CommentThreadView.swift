@@ -40,10 +40,13 @@ extension EnvironmentValues {
 /// 鼠标停在这一块上时才为 true。状态放在自己里面，进出一条评论不会让整个评论区重排。
 private struct HoverReveal<Content: View>: View {
   @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let content: (Bool) -> Content
 
   var body: some View {
     content(hovering)
+      // 悬停露出的原链箭头淡入淡出，不硬闪；动画档在这里统一给。
+      .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: hovering)
       .onHover { hovering = $0 }
   }
 }
@@ -181,7 +184,7 @@ struct CommentThreadSectionView: View {
       let update = {
         if expands { expandedRoots.insert(rootID) } else { expandedRoots.remove(rootID) }
       }
-      if reduceMotion { update() } else { withAnimation(DesignTokens.Motion.standard) { update() } }
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) { update() }
     } label: {
       Text(title)
         .themedFont(.caption)

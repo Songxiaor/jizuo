@@ -96,11 +96,12 @@ struct CreatorDirectoryPlatformSection<Content: View>: View {
   let theme: HistoryThemeTokens
   @Binding var isExpanded: Bool
   @ViewBuilder let content: () -> Content
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Button {
-        withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
           isExpanded.toggle()
         }
       } label: {
