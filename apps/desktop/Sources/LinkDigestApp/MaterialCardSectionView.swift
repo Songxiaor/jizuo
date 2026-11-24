@@ -146,7 +146,6 @@ struct MaterialCardSettingsSection: View {
 
 private struct MaterialCardBatchView: View {
   @Bindable var controller: MaterialCardController
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -180,19 +179,6 @@ private struct MaterialCardBatchView: View {
         Button("好") { controller.dismissBatch() }.controlSize(.small)
       }
     }
-    // 只用离散阶段作触发值：进度（done/total/failed）和计数直接更新，不进动画；
-    // 阶段切换会改面板高度，减弱动态时直接到位。
-    .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: batchStage)
-  }
-
-  private var batchStage: Int {
-    switch controller.batchState {
-    case .idle: 0
-    case .estimating: 1
-    case .estimate: 2
-    case .running: 3
-    case .finished: 4
-    case .failed: 5
-    }
+    // 阶段切换会改面板高度：一次到位，不挂隐式动画；进度和计数也直接更新。
   }
 }

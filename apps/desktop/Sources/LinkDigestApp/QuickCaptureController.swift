@@ -180,18 +180,12 @@ private struct QuickCaptureView: View {
           }
         }
       }
-      // 错误条单独一个区域，动画只挂在这里、只动自己的透明度：不碰输入框、类型胶囊和按钮行，
-      // 行高即时到位，不位移。
-      ZStack {
-        if let error = controller.errorMessage {
-          Text(error).themedFont(.caption).foregroundStyle(theme.danger)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .transition(.opacity)
-        }
+      // 错误条出现会改窗口内容高度，预留不了位置：不挂转场和隐式动画，直接出现，
+      // 避免高度被插值、把输入框和按钮行推着走。
+      if let error = controller.errorMessage {
+        Text(error).themedFont(.caption).foregroundStyle(theme.danger)
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .animation(
-        DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-        value: controller.errorMessage != nil)
       HStack {
         Text("存到「我的笔记」，全局快捷键 \(QuickCaptureController.shortcutDescription)")
           .themedFont(.caption).foregroundStyle(theme.secondaryText)

@@ -114,15 +114,10 @@ struct AnnotationSectionView: View {
             .buttonStyle(.link)
             .themedFont(.caption2)
         }
-        .transition(.opacity)
         .accessibilityIdentifier("annotation-failure-banner")
       }
     }
-    // 摘录增删在阅读流里改高度：一次到位，不动画（不挂转场、不挂隐式动画）；失败条只淡变。
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-      value: model.annotationFailureMessage != nil
-    )
+    // 摘录增删、失败条出现都在阅读流里改高度：一次到位，不挂转场、不挂隐式动画。
     // 摘录路由跟随当前详情条目；离开时清空，避免误挂到旧条目。
     .onAppear { ExcerptCaptureRouter.shared.handler = { model.addExcerpt($0, taskID: taskID) } }
     .onChange(of: taskID) { _, newTaskID in

@@ -1602,6 +1602,30 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.editorSessionID, start + 3)
   }
 
+  // 同一会话里切换预设、地址变了：视图据 apiKeyDraftResetID 清掉密钥草稿。
+  func testSelectingPresetWithDifferentBaseURLAdvancesKeyDraftResetID() async throws {
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(),
+        secretStore: ViewModelSecretStore(values: [:]),
+        makeSecretReference: { .init(rawValue: "r") }
+      ),
+      provider: SettingsTestProvider(scripts: [])
+    )
+    await model.load()
+    model.beginAddModel()
+    let presets = ProviderPreset.allCases.filter { !$0.baseURLTemplate.isEmpty }
+    let first = try XCTUnwrap(presets.first)
+    let second = try XCTUnwrap(presets.first { $0.baseURLTemplate != first.baseURLTemplate })
+    let start = model.apiKeyDraftResetID
+    model.selectPreset(first)
+    XCTAssertEqual(model.apiKeyDraftResetID, start + 1)
+    model.selectPreset(first)
+    XCTAssertEqual(model.apiKeyDraftResetID, start + 1, "地址没变不清草稿")
+    model.selectPreset(second)
+    XCTAssertEqual(model.apiKeyDraftResetID, start + 2)
+  }
+
   private func profile() throws -> ProviderProfile {
     try ProviderProfile(
       baseURL: "https://example.test/v1",

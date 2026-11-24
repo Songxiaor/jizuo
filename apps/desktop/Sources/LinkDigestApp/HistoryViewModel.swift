@@ -5212,6 +5212,12 @@ final class HistoryViewModel {
         }
         self.transcriptTidyState = Self.tidyStateAfterSaving(outcome, style: .note)
         self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
+        // 笔记整理也花 token：写进现有用量台账，重启后合计不丢（不改表结构）。
+        await self.recordTokenUsage(
+          taskID: taskID, operation: "note_tidy",
+          promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
+          totalTokens: outcome.totalTokens
+        )
         self.refreshDetailAfterTranscription(taskID: taskID)
       } catch {
         guard let self, self.transcriptTidyRequestID == requestID else { return }
