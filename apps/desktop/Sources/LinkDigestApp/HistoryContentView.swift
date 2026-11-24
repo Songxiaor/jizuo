@@ -5924,6 +5924,10 @@ private struct HistoryDetailView: View, Equatable {
     // 菜单栏「内容」里的生成总结 / 翻译：原来这两个核心动作只能用鼠标点（2026-10-02 键盘走查）。
     // 阅读区外面套一层隔离：量尺寸时不往里量（见 `ReadingSizeIsolation`）。
     return ReadingSizeIsolation { scrollBody }
+      // 换条目那一拍不播任何隐式动画：页签计数、素材类型、图层胶囊这些值在换条目时
+      // 都会变，各自的 `.animation(value:)` 会在整篇正文所在的滚动区里连跑几百毫秒
+      // 白白拖慢打开（2026-11-24 合成库实测）。它们只该解释用户在这一条上的操作。
+      .transaction(value: detail.task.id) { $0.disablesAnimations = true }
       .focusedSceneValue(\.summarizeCurrent, isOwnWriting || isNavigationStandIn ? nil : RunCurrentAction(key: runActionKey) { startRun(.summarize) })
       .focusedSceneValue(\.translateCurrent, isOwnWriting || isNavigationStandIn ? nil : RunCurrentAction(key: runActionKey) { startRun(.translate, ignoreLanguageMatch: true) })
   }
@@ -7364,10 +7368,6 @@ private struct HistoryDetailView: View, Equatable {
           .font(.system(size: 12))
           .foregroundStyle(theme.secondaryText.opacity(0.8))
           .motionNumericText(reduceMotion: reduceMotion)
-          .animation(
-            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-            value: count
-          )
       }
     }
   }
@@ -7445,11 +7445,6 @@ private struct HistoryDetailView: View, Equatable {
       Image(systemName: showsManuscriptAnnotations ? "eye" : "eye.slash")
         .themedFont(.caption)
         .foregroundStyle(theme.secondaryText)
-        .motionSymbolReplace(reduceMotion: reduceMotion)
-        .animation(
-          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-          value: showsManuscriptAnnotations
-        )
         .frame(width: 22, height: 20)
         .contentShape(Rectangle())
     }
@@ -7507,11 +7502,6 @@ private struct HistoryDetailView: View, Equatable {
         showsTranscriptTimecodes.toggle()
       } label: {
         Image(systemName: showsTranscriptTimecodes ? "clock" : "text.alignleft")
-          .motionSymbolReplace(reduceMotion: reduceMotion)
-          .animation(
-            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-            value: showsTranscriptTimecodes
-          )
       }
       .buttonStyle(.appIcon)
       .help(showsTranscriptTimecodes
@@ -8567,10 +8557,6 @@ private struct HistoryDetailView: View, Equatable {
               isActive ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
               in: Capsule()
             )
-            .animation(
-              DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
-              value: isActive
-            )
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -8971,11 +8957,8 @@ private struct HistoryDetailView: View, Equatable {
         Image(systemName: favorited ? "star.fill" : "star")
           // 收藏后点亮成主题强调色：灰星变实心灰星，确认感太弱。
           .foregroundStyle(favorited ? theme.accent : theme.secondaryText)
-          .motionSymbolReplace(reduceMotion: reduceMotion)
-          .animation(
-            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-            value: favorited
-          )
+          // 不做图标替换动效：这颗星在窗口工具栏里，换条目时收藏状态一变，替换动效会让工具栏
+          // 连续几百毫秒逐帧重排（2026-11-24 合成库实测，打开一条从 130ms 涨到 600ms）。
       }
       .buttonStyle(AppIconButtonStyle(size: 28))
       .disabled(!model.canToggleFavorite)
@@ -10297,12 +10280,7 @@ private struct HistoryDetailView: View, Equatable {
               Text(statusText)
                 .themedFont(.caption, monospacedDigit: true)
                 .foregroundStyle(.tertiary)
-                .contentTransition(.opacity)
-                // 绑文案本身：「正在保存…」「已保存 · 12:03」互换时淡变，不是只看有没有那一行。
-                .animation(
-                  DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-                  value: statusText
-                )
+                // 不挂跟值走的动画：打开一条时文案会随加载变化，那一拍不该在正文区里播动画（2026-11-24 实测）。
                 .accessibilityIdentifier("history-note-save-state")
               if isOwnWriting {
                 Text("\(noteCharacterCount) 字")
@@ -11562,13 +11540,8 @@ private struct HistoryTagEditor: View {
               .labelStyle(.titleAndIcon)
               .themedFont(.caption)
               .lineLimit(1)
-              .motionSymbolReplace(reduceMotion: reduceMotion)
               .padding(.horizontal, 8).padding(.vertical, 3)
               .background(isOn ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
-              .animation(
-                DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
-                value: isOn
-              )
           }
           .buttonStyle(.plain)
           .disabled(!isOn && tags.count >= HistoryTagNormalizer.maximumTagsPerTask)
