@@ -351,6 +351,9 @@ struct UIReadingHistoryRow: View {
           trailingMeta(text)
             .opacity(showsHoverActions ? 0 : 1)
             .overlay(alignment: .trailing) { hoverActions }
+            // 日期和按钮必须同一帧切换：行上 isHovering 挂着淡入淡出动画，不关掉的话
+            // 日期淡出、按钮淡入会同时可见（叠字），离开时按钮也会淡出留下残影。
+            .animation(nil, value: showsHoverActions)
         }
       }
     }
