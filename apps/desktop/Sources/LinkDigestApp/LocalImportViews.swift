@@ -116,7 +116,6 @@ struct LocalImportStatusSheet: View {
           .themedFont(.callout)
           .foregroundStyle(.secondary)
           .lineLimit(2)
-          .motionNumericText(reduceMotion: reduceMotion)
         HStack {
           Spacer()
           Button("停止") { controller.cancel() }
