@@ -158,10 +158,8 @@ struct ProfileImportBatchGrid: View {
         }
       }
     }
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
-      value: batch.isCollapsed
-    )
+    // 折叠时箭头旋转、卡片收高；减弱动态效果时直接切换。
+    .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: batch.isCollapsed)
     .accessibilityIdentifier("profile-import-primary-grid")
   }
 }
@@ -423,10 +421,8 @@ private struct ProfileImportBatchCard: View {
     }
     .padding(10)
     .background(theme.badge.opacity(0.6), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion),
-      value: batch.isCollapsed
-    )
+    // 折叠时箭头旋转、卡片收高；减弱动态效果时直接切换。
+    .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: batch.isCollapsed)
     .accessibilityIdentifier("profile-import-batch")
     }
   }

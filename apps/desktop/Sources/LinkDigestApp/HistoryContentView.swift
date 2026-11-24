@@ -70,6 +70,8 @@ struct HistoryContentView: View {
   @State private var threeColumnWidths = ThreeColumnWidths.stored()
   /// 列表列的搜索框平时收成列头的一个放大镜图标；点开、⌘F 或已有搜索词时才展开。
   @State private var isListSearchExpanded = false
+  /// 搜索后回顶的几次补滚：用户一伸手滚动就停，不跟用户抢。
+  @State private var listTopRetryCancelled = false
   /// 点平台默认留在三栏列表里按平台筛选（2026-09-23），和侧栏其他入口一个样子；
   /// 想看卡片墙时从列头「卡片视图」进。换平台或返回后自动回到列表。
   @State private var isPlatformGalleryRequested = false
@@ -1425,7 +1427,11 @@ struct HistoryContentView: View {
           .background(SmoothKnobScrollerInstaller().frame(width: 0, height: 0))
           .scrollContentBackground(.hidden)
           // 滑动中读回来的下一页等手停了再并入（见 `HistoryViewModel.setListScrolling`）。
-          .onScrollPhaseChange { _, phase in model.setListScrolling(phase.isScrolling) }
+          .onScrollPhaseChange { _, phase in
+            model.setListScrolling(phase.isScrolling)
+            // 用户自己动手滚了，就别再把列表拉回顶部。
+            if phase == .interacting { listTopRetryCancelled = true }
+          }
           .onDeleteCommand { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) }
           // macOS List 对插入行沿用估算行高，新到卡片被压扁；初始构建
           // 的测量始终正确，因此新条目登顶时整表重建（新行本就在顶部，
@@ -1445,13 +1451,14 @@ struct HistoryContentView: View {
           // 回到「全部」，列表仍停在 9 月 8 日那段（2026-10-01 自查）。
           .task(id: model.searchScrollToTopToken) {
             guard model.searchScrollToTopToken > 0 else { return }
+            listTopRetryCancelled = false
             for _ in 0..<40 where model.listState == .loading {
               try? await Task.sleep(for: .milliseconds(50))
             }
             // 列表落地后还会因选中项、整表重建再挪一次位置：隔一会儿再滚一次，以最后一次为准。
             for delay in [150, 450, 900] {
               try? await Task.sleep(for: .milliseconds(delay == 150 ? 150 : delay - 150))
-              if Task.isCancelled { return }
+              if Task.isCancelled || listTopRetryCancelled { return }
               if let top = listTopScrollID { batchScroll.scrollTo(top, anchor: .top) }
             }
           }
@@ -2825,9 +2832,8 @@ struct HistoryContentView: View {
       // 只有同时挂着两个以上筛选时才值得一键全清。
       if listFilterChipCount > 1 {
         Button("清除") {
-          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-            clearListFilters()
-          }
+          // 不包动画：清筛选会让整张列表重载，筛选条自己的收起已有局部动画。
+          clearListFilters()
         }
           .buttonStyle(.borderless)
           .themedFont(.caption, weight: .medium)
@@ -2868,9 +2874,7 @@ struct HistoryContentView: View {
 
   private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
     FilterChipButton(title: title, theme: theme, reduceMotion: reduceMotion) {
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)) {
-        clear()
-      }
+      clear()
     }
     .transition(DesignTokens.Transition.lift(reduceMotion: reduceMotion))
     .help("移除这个筛选")

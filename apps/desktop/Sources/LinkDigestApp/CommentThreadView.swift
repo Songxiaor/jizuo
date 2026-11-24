@@ -184,7 +184,7 @@ struct CommentThreadSectionView: View {
       let update = {
         if expands { expandedRoots.insert(rootID) } else { expandedRoots.remove(rootID) }
       }
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) { update() }
+      if reduceMotion { update() } else { withAnimation(DesignTokens.Motion.standard) { update() } }
     } label: {
       Text(title)
         .themedFont(.caption)

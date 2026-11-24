@@ -1652,8 +1652,12 @@ struct DouyinProfileImportSheet: View {
               if model.discoverySource != .browserExtension {
                 DouyinProfileImportWebView(model: model, dataStore: model.dataStore)
                   .id(model.platform)
-                  // 视口始终固定：扫描中切去看主页也不能改变正在懒加载的页面布局。
-                  .frame(width: 960, height: 480)
+                  // 扫描中视口固定，切去看主页也不改变正在懒加载的页面布局；
+                  // 不在扫描时看主页，跟随可见区填满（窄弹窗里不被裁掉右半边）。
+                  .frame(
+                    width: showsHomepage && !model.isScanning ? geometry.size.width : 960,
+                    height: showsHomepage && !model.isScanning ? geometry.size.height : 480
+                  )
                   .transaction { $0.animation = nil }
                   .allowsHitTesting(showsHomepage)
                   .accessibilityHidden(!showsHomepage)
