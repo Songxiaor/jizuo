@@ -16,6 +16,11 @@ struct ProofreadDoubtCard: View {
   let highlight: Color
   /// 全部处理完后收成一行，点开才看细节。
   @State private var isExpanded = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 展开收起会改高度：减弱动态时直接到位，不走 resolved 的插值。
+  private var expandAnimation: Animation? { reduceMotion ? nil : DesignTokens.Motion.standard }
+  private var fadeAnimation: Animation { DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion) }
 
   var body: some View {
     let entry = isTidiedTranscript ? model.doubtEntry(taskID: taskID) : nil
@@ -40,11 +45,21 @@ struct ProofreadDoubtCard: View {
         }
         .buttonStyle(.borderless)
         .themedFont(.caption)
+        .transition(DesignTokens.Transition.reveal(reduceMotion: reduceMotion))
       }
       if let notice = model.proofreadNotice(for: taskID) {
         Text(notice).themedFont(.caption).foregroundStyle(secondaryText)
+          .transition(DesignTokens.Transition.reveal(reduceMotion: reduceMotion))
       }
     }
+    .animation(
+      reduceMotion ? nil : DesignTokens.Motion.standard,
+      value: model.nameToRemember(for: taskID) != nil
+    )
+    .animation(
+      reduceMotion ? nil : DesignTokens.Motion.standard,
+      value: model.proofreadNotice(for: taskID) != nil
+    )
   }
 
   @ViewBuilder private func doubtSection(_ entry: TranscriptDoubtEntry) -> some View {
@@ -56,7 +71,7 @@ struct ProofreadDoubtCard: View {
       }
     } else if pending.isEmpty && !isExpanded {
       Button {
-        isExpanded = true
+        withAnimation(expandAnimation) { isExpanded = true }
       } label: {
         HStack(spacing: 4) {
           Text(ProofreadDoubtSummary.collapsedLine(handled: entry.doubts.count))
@@ -65,8 +80,10 @@ struct ProofreadDoubtCard: View {
         .themedFont(.caption).foregroundStyle(secondaryText)
       }
       .buttonStyle(.plain)
+      .transition(.opacity)
     } else {
       doubtList(entry, pendingCount: pending.count)
+        .transition(DesignTokens.Transition.reveal(reduceMotion: reduceMotion))
     }
   }
 
@@ -81,7 +98,7 @@ struct ProofreadDoubtCard: View {
         Button("全部忽略") { model.keepAllDoubts(taskID: taskID) }.disabled(isSaving)
       }
       if pendingCount == 0 {
-        Button("收起") { isExpanded = false }
+        Button("收起") { withAnimation(expandAnimation) { isExpanded = false } }
       }
     }
     .buttonStyle(.borderless)
@@ -119,6 +136,7 @@ struct ProofreadDoubtCard: View {
       }
     }
     .themedFont(.body)
+    .animation(fadeAnimation, value: doubt.status)
   }
 }
 

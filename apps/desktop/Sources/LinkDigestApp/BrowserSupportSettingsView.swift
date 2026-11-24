@@ -6,6 +6,7 @@ struct BrowserSupportSettingsView: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var model: BrowserSupportViewModel
   var appModel: AppViewModel
 
@@ -28,6 +29,8 @@ struct BrowserSupportSettingsView: View {
   private var hasConnectedBrowser: Bool {
     detectedBrowsers.contains { isChannelHealthy(model.status(for: $0).state) }
   }
+
+  private var showsInstallStepsBlock: Bool { !hasConnectedBrowser || showsInstallSteps }
 
   /// 列哪些浏览器：档案表里提供的、且本机真的装着的。
   ///
@@ -66,25 +69,35 @@ struct BrowserSupportSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
           // ① 动手步骤放最前——这才是要做的事，不是先看两屏状态。
           // 已经连上之后收起：三步说明对连好的人是噪音，只留一个「重新安装」入口。
-          if !hasConnectedBrowser || showsInstallSteps {
-            VStack(alignment: .leading, spacing: 6) {
-              installStep(1, "打开浏览器的扩展管理页")
-              installStep(2, "开启「开发者模式」")
-              installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
-            }
-            Button("打开扩展文件夹", action: revealExtensionFiles)
-              .buttonStyle(.appProminent(appTheme.accent))
-              .accessibilityIdentifier("reveal-test-browser-extension")
-          } else {
-            HStack(spacing: DesignTokens.Space.md) {
-              Button("重装扩展…") { showsInstallSteps = true }
-                .buttonStyle(.appNormal)
-                .accessibilityIdentifier("browser-support-reinstall")
-              Text("换浏览器或挪了文件夹时再点")
-                .themedFont(.caption)
-                .foregroundStyle(.secondary)
+          //
+          // 高度会变：减弱动态效果时传 nil 直接到位。包一层只放这块，动画不波及下面的浏览器行。
+          VStack(alignment: .leading, spacing: 16) {
+            if showsInstallStepsBlock {
+              VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                  installStep(1, "打开浏览器的扩展管理页")
+                  installStep(2, "开启「开发者模式」")
+                  installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
+                }
+                Button("打开扩展文件夹", action: revealExtensionFiles)
+                  .buttonStyle(.appProminent(appTheme.accent))
+                  .accessibilityIdentifier("reveal-test-browser-extension")
+              }
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
+            } else {
+              HStack(spacing: DesignTokens.Space.md) {
+                Button("重装扩展…") { showsInstallSteps = true }
+                  .buttonStyle(.appNormal)
+                  .accessibilityIdentifier("browser-support-reinstall")
+                Text("换浏览器或挪了文件夹时再点")
+                  .themedFont(.caption)
+                  .foregroundStyle(.secondary)
+              }
+              .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
             }
           }
+          .clipped()
+          .animation(reduceMotion ? nil : DesignTokens.Motion.standard, value: showsInstallStepsBlock)
 
           Divider()
 
@@ -218,12 +231,18 @@ struct BrowserSupportSettingsView: View {
     }
   }
 
+  private var statusAnimation: Animation {
+    DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)
+  }
+
   /// 接收状态收成一行：就绪时安静的灰字，不可用/启动中才用状态色突出。
   private var receiverStatusLine: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Image(systemName: receiverSymbol)
         .font(.caption)
         .foregroundStyle(receiverColor)
+        .motionSymbolReplace(reduceMotion: reduceMotion)
+        .animation(statusAnimation, value: receiverSymbol)
       Text(receiverLineText)
         .themedFont(.subheadline)
         .foregroundStyle(appModel.browserReceiverState == .ready ? Color.secondary : receiverColor)
@@ -268,6 +287,8 @@ struct BrowserSupportSettingsView: View {
     GridRow {
       Image(systemName: display.symbol)
         .foregroundStyle(display.needsAction ? appTheme.warning : Color.secondary)
+        .motionSymbolReplace(reduceMotion: reduceMotion)
+        .animation(statusAnimation, value: display.symbol)
         .frame(width: 18)
       Text(browser.displayName)
         .gridColumnAlignment(.leading)

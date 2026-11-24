@@ -4,6 +4,7 @@ import SwiftUI
 /// 设置 → 按意思搜（2026-09-29）。
 struct SemanticSearchSettingsView: View {
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let service: SemanticSearchService
 
   var body: some View {
@@ -33,6 +34,7 @@ struct SemanticSearchSettingsView: View {
             if let notice = statusNotice {
               SettingsInlineNotice(message: notice.text, tone: notice.tone)
                 .accessibilityIdentifier("semantic-search-status")
+                .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
             }
             SettingsActionRow(showsProgress: isWorking) {
               if case .failed = service.state {
@@ -51,6 +53,10 @@ struct SemanticSearchSettingsView: View {
               }
             }
           }
+          // 只在提示条出现 / 消失时动；下载百分比换值不触发。
+          .animation(
+            reduceMotion ? nil : DesignTokens.Motion.quick,
+            value: statusNotice != nil)
         }
       )
     }
@@ -69,7 +75,7 @@ struct SemanticSearchSettingsView: View {
     case let .downloading(fraction): ("正在下载模型… \(Int((fraction * 100).rounded()))%", .info)
     case .loading: ("正在载入模型…", .info)
     case let .indexing(done, total): ("正在建索引… \(done) / \(total) 条", .info)
-    case let .ready(count): ("已就绪，\(count) 条内容可以按意思搜。", .info)
+    case let .ready(count): ("已就绪，\(count) 条内容可以按意思搜。", .success)
     case let .failed(message): (message, .danger)
     }
   }

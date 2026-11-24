@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CompanionNoteSyncSettingsView: View {
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Bindable var model: CompanionNoteSyncCoordinator
 
   var body: some View {
@@ -32,31 +33,50 @@ struct CompanionNoteSyncSettingsView: View {
           // 没法同步（日用包没有 iCloud 能力）时先判这一条：这时协调器的 phase 也是
           // failed，但那不是「同步失败」，是「这一版没有这个功能」，不该用红色报错。
           // 用户要知道的只有「现在不能用」；签名、容器这些原因在 ⓘ 里。
-          if !model.canSync && !model.isRunning {
-            SettingsInlineNotice(message: "这一版还不能同步到 iPhone；原因见标题旁的 ⓘ。", tone: .warning)
-              .accessibilityIdentifier("companion-sync-status")
-          } else if model.status.phase == .failed {
-            SettingsInlineNotice(message: model.statusSummary, tone: .danger)
-              .accessibilityIdentifier("companion-sync-status")
-          } else {
-            Text(model.statusSummary)
-              .themedFont(.subheadline)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityIdentifier("companion-sync-status")
+          // 三种状态之间淡入淡出；高度不同，减弱动态时不做动画。
+          VStack(alignment: .leading, spacing: 0) {
+            if !model.canSync && !model.isRunning {
+              SettingsInlineNotice(message: "这一版还不能同步到 iPhone；原因见标题旁的 ⓘ。", tone: .warning)
+                .transition(.opacity)
+                .accessibilityIdentifier("companion-sync-status")
+            } else if model.status.phase == .failed {
+              SettingsInlineNotice(message: model.statusSummary, tone: .danger)
+                .transition(.opacity)
+                .accessibilityIdentifier("companion-sync-status")
+            } else {
+              Text(model.statusSummary)
+                .themedFont(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .contentTransition(.opacity)
+                .transition(.opacity)
+                .accessibilityIdentifier("companion-sync-status")
+            }
           }
+          .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: statusKind)
         },
         titleAccessory: {
           Button {
             Task { await model.synchronize() }
           } label: {
             Text(model.isRunning ? "同步中…" : "立即同步")
+              .contentTransition(.opacity)
           }
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: model.isRunning)
           .buttonStyle(.appProminent(appTheme.accent))
           .disabled(!model.canSync)
           .accessibilityIdentifier("companion-sync-now")
         }
       )
     }
+  }
+
+  /// 当前显示哪一种状态（不可用 / 失败 / 普通说明）；只有它翻转才触发转场。
+  private var statusKind: Int {
+    if !model.canSync && !model.isRunning { return 0 }
+    if model.status.phase == .failed { return 1 }
+    return 2
   }
 }

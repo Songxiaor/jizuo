@@ -12,6 +12,7 @@ struct HitLabView: View {
   var model: HistoryViewModel
   let piece: PieceSummary
   @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var predicted: HitPrediction.Tier = .modest
   @State private var reasoning = ""
@@ -19,6 +20,12 @@ struct HitLabView: View {
   @State private var review = ""
 
   private var existing: HitPrediction? { model.hitPrediction(of: piece.id) }
+
+  /// 0 = 还没写预测，1 = 已记录等结果，2 = 已填结果。
+  private var stageKey: Int {
+    guard let existing else { return 0 }
+    return existing.isSettled ? 2 : 1
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -28,11 +35,22 @@ struct HitLabView: View {
         .textCase(.uppercase)
         .tracking(0.6)
 
-      if let existing {
-        settled(existing)
-      } else {
-        composer
+      // 写预测 → 已记录 → 填结果：内容淡入淡出，不位移。
+      // 只认三态，不认里面的输入文字，打字时不会触发。
+      ZStack(alignment: .topLeading) {
+        if let existing {
+          settled(existing)
+            .id(existing.isSettled ? 2 : 1)
+            .transition(.opacity)
+        } else {
+          composer
+            .id(0)
+            .transition(.opacity)
+        }
       }
+      .animation(
+        (reduceMotion ? nil : DesignTokens.Motion.standard),
+        value: stageKey)
 
       // 单看一次预测什么都说明不了——爆没爆很大程度上是运气。
       // 十次里有七次高估，那才是一个关于你自己的稳定事实。

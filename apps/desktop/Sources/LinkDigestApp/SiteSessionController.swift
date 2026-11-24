@@ -376,6 +376,12 @@ struct SiteLoginSheet: View {
     }
   }
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var statusAnimation: Animation {
+    DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion)
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       HStack {
@@ -395,6 +401,10 @@ struct SiteLoginSheet: View {
         Text(session.statusLabel)
           .themedFont(.caption)
           .foregroundStyle(session.isLoggedIn ? appTheme.success : Color.secondary)
+          // 识别到「登录已保存」时淡入换字、换色；只作用在这一个标签上，不带动上面说明行的高度变化。
+          .contentTransition(.opacity)
+          .animation(statusAnimation, value: session.statusLabel)
+          .animation(statusAnimation, value: session.isLoggedIn)
           .accessibilityIdentifier("\(idPrefix)-login-status")
         Button("完成") { dismiss() }
           .keyboardShortcut(.defaultAction)
@@ -449,8 +459,10 @@ struct SiteLoginSheet: View {
           Text("登录已保存，可关闭此窗口。")
             .themedFont(.caption)
             .foregroundStyle(.secondary)
+            .transition(.opacity)
         }
       }
+      .animation(statusAnimation, value: session.isLoggedIn)
       .padding(12)
     }
     .onAppear { Task { await session.refreshStatus() } }

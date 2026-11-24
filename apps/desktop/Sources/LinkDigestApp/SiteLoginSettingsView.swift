@@ -180,8 +180,10 @@ struct SiteLoginSettingsView: View {
         .foregroundStyle(.secondary)
       if let browserOpenError {
         SettingsInlineNotice(message: browserOpenError, tone: .warning)
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
+    .animation(reduceMotion ? nil : DesignTokens.Motion.quick, value: browserOpenError != nil)
     .padding(.vertical, DesignTokens.Space.md)
     .padding(.horizontal, DesignTokens.Space.lg)
     .modifier(SettingsThemedCardChrome())
@@ -320,7 +322,8 @@ struct SiteLoginSettingsView: View {
 
       if isExpanded {
         detailsContent(platform: platform, session: session)
-          .transition(.opacity.combined(with: .move(edge: .top)))
+          .clipped()
+          .transition(DesignTokens.Transition.reveal(edge: .top, reduceMotion: reduceMotion))
       }
     }
     .padding(.vertical, DesignTokens.Space.sm)
@@ -353,7 +356,8 @@ struct SiteLoginSettingsView: View {
   @ViewBuilder
   private func detailsToggle(platform: SiteSessionPlatform, isExpanded: Bool) -> some View {
     Button {
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+      // 高度会变：减弱动态效果时直接到位。
+      withAnimation(reduceMotion ? nil : DesignTokens.Motion.standard) {
         if isExpanded {
           expandedDetailSites.remove(platform)
         } else {
@@ -361,10 +365,15 @@ struct SiteLoginSettingsView: View {
         }
       }
     } label: {
-      Image(systemName: "info.circle")
+      Image(systemName: isExpanded ? "info.circle.fill" : "info.circle")
+        .motionSymbolReplace(reduceMotion: reduceMotion)
     }
     .buttonStyle(.borderless)
-    .foregroundStyle(.secondary)
+    .foregroundStyle(isExpanded ? appTheme.accent : Color.secondary)
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+      value: isExpanded
+    )
     .help("查看\(platform.displayName)详细信息")
     .accessibilityLabel("\(platform.displayName)详细信息")
   }
