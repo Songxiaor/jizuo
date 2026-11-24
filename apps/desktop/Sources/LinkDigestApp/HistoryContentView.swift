@@ -1441,7 +1441,7 @@ struct HistoryContentView: View {
           .id("\(model.listRebuildToken)|\(model.searchScrollToTopToken)")
           .onChange(of: model.profileImportScrollTarget) { _, target in
             guard let target else { return }
-            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+            withAnimation(reduceMotion ? nil : historyUIAnimation(reduceMotion: reduceMotion)) {
               batchScroll.scrollTo(target, anchor: .center)
             }
             model.consumeProfileImportScrollTarget()
@@ -1826,7 +1826,7 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-navigation-collection-add")
       }
     }
-    .id("collections-\(navigationCollectionsExpanded)")
+    .id("collections-\(navigationCollectionsExpanded)-\(model.collections.count)")
   }
 
   private var navigationRail: some View {
@@ -2661,7 +2661,7 @@ struct HistoryContentView: View {
   private func restoreCreatorDirectoryScroll(using proxy: ScrollViewProxy) {
     guard let creatorID = creatorDirectoryScrollTarget else { return }
     DispatchQueue.main.async {
-      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+      withAnimation(reduceMotion ? nil : historyUIAnimation(reduceMotion: reduceMotion)) {
         proxy.scrollTo(creatorID, anchor: .center)
       }
       creatorDirectoryScrollTarget = nil
@@ -3627,7 +3627,7 @@ struct HistoryContentView: View {
 
   private func scrollToProfileImportTarget(using proxy: ScrollViewProxy) {
     guard let target = model.profileImportScrollTarget else { return }
-    withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+    withAnimation(reduceMotion ? nil : historyUIAnimation(reduceMotion: reduceMotion)) {
       proxy.scrollTo(target, anchor: .center)
     }
     model.consumeProfileImportScrollTarget()
@@ -3636,7 +3636,7 @@ struct HistoryContentView: View {
   private func restoreCreatorWorkScroll(using proxy: ScrollViewProxy, target: Binding<TaskID?>) {
     guard let taskID = target.wrappedValue else { return }
     DispatchQueue.main.async {
-      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+      withAnimation(reduceMotion ? nil : historyUIAnimation(reduceMotion: reduceMotion)) {
         proxy.scrollTo(taskID, anchor: .center)
       }
       target.wrappedValue = nil
@@ -6506,7 +6506,7 @@ private struct HistoryDetailView: View, Equatable {
     }
     .onChange(of: moduleScrollTarget) { _, target in
       guard let target else { return }
-      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+      withAnimation(reduceMotion ? nil : historyUIAnimation(reduceMotion: reduceMotion)) {
         scrollProxy.scrollTo(target, anchor: .top)
       }
       moduleScrollTarget = nil

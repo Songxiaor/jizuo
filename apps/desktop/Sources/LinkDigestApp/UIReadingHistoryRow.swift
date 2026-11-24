@@ -390,7 +390,7 @@ struct UIReadingHistoryRow: View {
     // 鼠标感应区，滑动时它们跟着移动，窗口每一帧都要把整张列表的感应区重算一遍。
     .help(rowHelp(text))
     .fixedSize(horizontal: false, vertical: true)
-    .id("\(row.taskID.rawValue)|\(row.title ?? "")")
+    .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(text.title)
     .accessibilityValue(rowAccessibilityValue(text))

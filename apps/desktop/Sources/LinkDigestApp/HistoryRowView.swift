@@ -215,7 +215,7 @@ struct HistoryRowView: View {
     // 新到行在 macOS List 里可能沿用估算行高并把内容压扁；
     // 仅在真正影响行高的标题文本变化时换 identity，避免收藏/标签/总结等元数据更新销毁行视图、清掉悬停态。
     .fixedSize(horizontal: false, vertical: true)
-    .id("\(row.taskID.rawValue)|\(row.title ?? "")")
+    .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(rowAccessibilityLabel)
     .accessibilityValue(rowAccessibilityValue)
