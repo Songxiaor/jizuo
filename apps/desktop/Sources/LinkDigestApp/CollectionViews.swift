@@ -82,6 +82,7 @@ struct CollectionMenuItems: View {
 /// 新建 / 改名 / 删除合集的弹窗，和加入之后的提示条。挂在历史窗口根部。
 struct CollectionPromptsModifier: ViewModifier {
   @Bindable var model: HistoryViewModel
+  private var copyFeedback = CopyFeedbackController.shared
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   func body(content: Content) -> some View {
@@ -105,31 +106,39 @@ struct CollectionPromptsModifier: ViewModifier {
           }
       }
       .overlay(alignment: .bottom) {
-        if let feedback = model.collectionFeedback {
-          // 带「撤销」的提示（删除后）要能点，其余提示仍然不挡鼠标（2026-10-01）。
-          HStack(spacing: 12) {
-            Label(feedback, systemImage: model.collectionFeedbackSymbol)
-              .lineLimit(2)
-            if model.canUndoFeedback {
-              Button("撤销") { model.undoFeedbackAction() }
-                .buttonStyle(.plain)
-                .themedFont(.callout, weight: .semibold)
-                .foregroundStyle(.tint)
-                .keyboardShortcut("z", modifiers: .command)
-                .accessibilityIdentifier("history-feedback-undo")
+        // 动画严格限制在浮层胶囊内部，严禁挂在根 content 上广播给三栏整树。
+        // 同时感知底部 CopyFeedbackController 胶囊，两枚提示并存时主动上移让位。
+        ZStack(alignment: .bottom) {
+          Color.clear.frame(height: 0).allowsHitTesting(false)
+          if let feedback = model.collectionFeedback {
+            // 带「撤销」的提示（删除后）要能点，其余提示仍然不挡鼠标（2026-10-01）。
+            HStack(spacing: 12) {
+              Label(feedback, systemImage: model.collectionFeedbackSymbol)
+                .lineLimit(2)
+                .motionSymbolReplace(reduceMotion: reduceMotion)
+                .contentTransition(.opacity)
+              if model.canUndoFeedback {
+                Button("撤销") { model.undoFeedbackAction() }
+                  .buttonStyle(.plain)
+                  .themedFont(.callout, weight: .semibold)
+                  .foregroundStyle(.tint)
+                  .keyboardShortcut("z", modifiers: .command)
+                  .accessibilityIdentifier("history-feedback-undo")
+              }
             }
-          }
             .themedFont(.callout, weight: .medium)
             .padding(.vertical, 8).padding(.horizontal, 16)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
-            .padding(.bottom, 28)
-            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
+            .padding(.bottom, copyFeedback.isVisible ? 72 : 28)
+            .transition(DesignTokens.Transition.pill(reduceMotion: reduceMotion))
             .allowsHitTesting(model.canUndoFeedback)
             .accessibilityIdentifier("history-collection-feedback")
+          }
         }
+        .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion), value: model.collectionFeedback)
+        .animation(DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion), value: copyFeedback.isVisible)
       }
-      .animation(historyUIAnimation(reduceMotion: reduceMotion), value: model.collectionFeedback)
   }
 
   /// 弹窗被系统收起（按 Esc、窗口关掉）时也要把状态清掉，否则下次渲染又弹出来。

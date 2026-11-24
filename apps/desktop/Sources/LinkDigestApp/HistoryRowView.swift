@@ -200,17 +200,22 @@ struct HistoryRowView: View {
           .fill(theme.accent)
           .frame(width: 3, height: 28)
           .padding(.leading, DesignTokens.Space.xxs)
+          .transition(.opacity)
       }
     }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+      value: isSelected
+    )
     .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovering
     )
     .onHover { isHovering = $0 }
     // 新到行在 macOS List 里可能沿用估算行高并把内容压扁；
-    // 固定纵向 intrinsic 高度 + 内容变化换 identity，强制按真实内容测量。
+    // 仅在真正影响行高的标题文本变化时换 identity，避免收藏/标签/总结等元数据更新销毁行视图、清掉悬停态。
     .fixedSize(horizontal: false, vertical: true)
-    .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
+    .id("\(row.taskID.rawValue)|\(row.title ?? "")")
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(rowAccessibilityLabel)
     .accessibilityValue(rowAccessibilityValue)

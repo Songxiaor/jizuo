@@ -378,6 +378,10 @@ struct UIReadingHistoryRow: View {
     }
     .foregroundStyle(theme.primaryText)
     .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.instant, reduceMotion: reduceMotion),
+      value: isSelected
+    )
+    .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovering
     )
@@ -386,7 +390,7 @@ struct UIReadingHistoryRow: View {
     // 鼠标感应区，滑动时它们跟着移动，窗口每一帧都要把整张列表的感应区重算一遍。
     .help(rowHelp(text))
     .fixedSize(horizontal: false, vertical: true)
-    .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
+    .id("\(row.taskID.rawValue)|\(row.title ?? "")")
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(text.title)
     .accessibilityValue(rowAccessibilityValue(text))
@@ -488,7 +492,12 @@ struct UIReadingHistoryRow: View {
           Button(action: onToggleFavorite) {
             Image(systemName: row.isFavorite == true ? "star.fill" : "star")
               .foregroundStyle(row.isFavorite == true ? theme.warning : theme.secondaryText)
+              .motionSymbolReplace(reduceMotion: reduceMotion)
           }
+          .animation(
+            DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+            value: row.isFavorite
+          )
           .buttonStyle(.plain)
           .frame(width: 22, height: 20)
           .contentShape(Rectangle())

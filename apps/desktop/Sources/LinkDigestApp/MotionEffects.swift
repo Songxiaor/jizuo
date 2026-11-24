@@ -18,7 +18,7 @@ struct SwapReveal<Key: Hashable>: ViewModifier {
     content
       // 限定范围：动画只作用在这一层透明度上，同一时间详情里别的变化（图片到了、高度变了）
       // 照常一步到位，不会被顺带做成逐帧动画。
-      .animation(isSettled ? .easeOut(duration: 0.15) : nil) {
+      .animation(isSettled ? DesignTokens.Motion.quick : nil) {
         $0.opacity(isSettled ? 1 : 0.35)
       }
       .onChange(of: key) {
