@@ -75,7 +75,7 @@ final class ToolbarAndNoticeConsistencyTests: XCTestCase {
       XCTAssertTrue(source.contains("identifier: \"\(id)\""), "\(id) 要走 NoticeBanner")
       XCTAssertFalse(source.contains(".accessibilityIdentifier(\"\(id)\")"), "\(id) 不能再自己画一份")
     }
-    let trashList = section(in: source, from: "icon: \"trash\",\n          title: \"回收站里的内容", to: "isEmptyTrashConfirmPresented = true")
+    let trashList = section(in: source, from: "icon: \"trash\",\n            title: \"回收站里的内容", to: "isEmptyTrashConfirmPresented = true")
     XCTAssertTrue(trashList.contains("actionStyle: .destructive"), "清空用红色")
     XCTAssertTrue(source.contains(".alert(\"清空回收站？\", isPresented: $isEmptyTrashConfirmPresented)"), "清空要二次确认")
     let trashDetail = section(in: source, from: "title: \"这条在回收站里\"", to: "restoreFromTrash")

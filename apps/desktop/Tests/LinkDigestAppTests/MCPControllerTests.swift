@@ -130,7 +130,7 @@ final class MCPControllerTests: XCTestCase {
     let capturedID = try XCTUnwrap((capturedItem["task_id"] as? String).flatMap(TaskID.init))
     XCTAssertEqual(try history.detail(taskID: capturedID).task.canonicalURL, "https://example.org/mcp-final")
     let repeated = try await call("jizuo_add_links", ["urls": ["https://example.org/mcp-short"]])
-    XCTAssertEqual((repeated["items"] as? [[String: String]])?.first?["status"], "already_saved")
+    XCTAssertEqual((repeated["items"] as? [[String: Any]])?.first?["status"] as? String, "already_saved")
     let processingDenied = try await call("jizuo_transcribe", ["task_id": id.rawValue])
     XCTAssertEqual(processingDenied["error"] as? String, "permission_required")
     let read = try await call("jizuo_read", ["task_id": id.rawValue, "offset": 0, "limit": 4])
